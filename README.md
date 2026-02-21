@@ -7,20 +7,17 @@ A minimalist Python agent implementing Tetlock's "10 Commandments of Superforeca
 ### Installation
 
 ```bash
-pip install pydantic-ai httpx anthropic
+uv sync
 ```
 
 ### Setup Environment
 
-```bash
-export ANTHROPIC_API_KEY="your-key-here"
-export TAVILY_API_KEY="your-tavily-key"  # Optional - enables real web search
-```
+copy the `.env.example` file and add API keys.
 
 ### Run
 
 ```bash
-python superforecaster_v2.py
+uv run superforecaster_v2.py
 ```
 
 ## Architecture
