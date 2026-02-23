@@ -206,6 +206,53 @@ forecast_probability = 0.65
 - Tetlock, P. E., & Gardner, D. (2015). *Superforecasting*
 - Core principle: Breaking down hard questions → probabilistic thinking → iterative improvement
 - The framework trades overconfident narratives for calibrated uncertainty
+- Prompt used to create base structure:
+```
+The book, Superforecasters outlines methodologies for how to forecast future events. Can you use your knowledge of the book and the 10 commandments outlined here:
+
+Core Principles and Techniques
+The framework is characterized by a disciplined, "Bayesian" approach to updating beliefs based on new information. 
+Fermi-ization (Decomposition): Breaking down seemingly intractable questions into smaller, manageable sub-problems, a technique inspired by physicist Enrico Fermi.
+Outside-View First (Base Rates): Instead of focusing on the specifics of a unique event, superforecasters start by analyzing the base rates—how often does this type of event occur in similar situations?
+Inside-View Second (Case Specifics): After establishing the base rate, they adjust their prediction based on the unique factors of the current case.
+Probabilistic Thinking: Moving away from binary "yes/no" predictions to, for example, a 65% or 70% probability. They use granular, specific numbers (e.g., distinguishing 60% from 65%).
+Belief Updating: Treating forecasts as hypotheses to be tested, not treasures to be guarded. When new information arrives, they update their probabilities incrementally, avoiding the temptation to stick to earlier predictions (belief perseverance).
+Dragonfly Eye Perspective: Actively seeking out diverse, opposing, and conflicting viewpoints to avoid confirmation bias. 
+
+The 10 Commandments of Superforecasting
+Tetlock summarized the methodology in "10 Commandments" for aspiring forecasters: 
+Triage: Focus on problems where effort has the highest payoff (avoiding too-easy or too-hard problems).
+Break Down: Decompose questions (Fermi-ize).
+Balance Perspectives: Mix inside and outside views.
+Balance Evidence: Avoid under- or overreacting to new data.
+Seek Causal Forces: Look for underlying, clashing drivers.
+Find Degrees of Doubt: Use granular probabilities.
+Balance Confidence: Be neither a timid waffler nor a reckless gambler.
+Look for Error in Mistakes: Perform post-mortems on failed predictions.
+Bring Out the Best in Others: Leverage team collaboration.
+Master the "Bicycle": Practice the above, as it is a skill learned by doing. 
+
+Key Traits and Mindset
+Superforecasters are not necessarily genius-level intellectuals, but rather possess specific, cultivated habits: 
+
+Active Open-mindedness: Willingness to reconsider beliefs.
+Intellectual Humility: Acknowledging that the future is uncertain.
+Analytical & Numerate: Comfortable with data and statistics.
+"Perpetual Beta": A commitment to self-improvement and learning from mistakes.
+Grit: The tenacity to stick with a long-term, complex problem. 
+
+Implementation and Application
+Teamwork: Superforecasters often work in teams, which helps reduce individual bias, though the best teams are not hierarchical.
+AI Integration: The framework is now being applied to AI, with "Superforecasting LLMs" mimicking these techniques to improve AI-driven predictions, showing up to 41% accuracy improvements in certain scenarios.
+Commercial/Government Use: Organizations like Good Judgment Inc. use this framework for forecasting geopolitical, financial, and public health risks, such as the trajectory of COVID-19 or Fed interest rate decisions.
+I want to create an AI agent that uses, for starters, web search with Tavily, and wikipedia to come up with forecasts based on a question that a user may have. It should spit out a timeframe and a single percentage score. 
+
+A few things the agent should be able to do:
+1. it should use as many/all the principled and mindsets outlined above in a structured way. Core to this method is breaking down large predictions into smaller predictions.
+2. It should follow the methodology above as closely as possible.
+
+Create the agent using pydnatic AI gateway and pydantic agents framework in a single python file with all the tools necessary.
+```
 
 ## License
 
