@@ -1,6 +1,8 @@
 # Superforecasting Agent
 
-A minimalist Python agent implementing Tetlock's "10 Commandments of Superforecasting" using Pydantic AI.
+A minimalist Python agent that can forecast future events.
+
+Implements Tetlock's "10 Commandments of Superforecasting" using Pydantic AI.
 
 ## Quick Start
 
