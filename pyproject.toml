@@ -12,3 +12,8 @@ dependencies = [
     "pydantic-ai>=0.1.0",
     "python-dotenv>=1.0.0",
 ]
+
+[dependency-groups]
+dev = [
+    "logfire>=4.25.0",
+]

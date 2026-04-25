@@ -8,27 +8,26 @@ Clean, minimal implementation focused on extensibility.
 """
 
 import config  # noqa: F401 - loads .env before any os.getenv() calls
-import json
 import os
 from typing import Optional
 import logfire
 
 import httpx
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent, RunContext
-from pydantic_ai.models import ModelMessage
+from pydantic_ai import Agent
 
 logfire.configure(
     service_name="my_local_agent_service",
-    send_to_logfire=False, 
-    scrubbing=False # Optional: set to True to remove sensitive data
+    send_to_logfire='if-token-present', 
+    scrubbing=False, # Optional: set to True to remove sensitive data
 )
 
 # Instrument Pydantic AI operations
 logfire.instrument_pydantic_ai()
 
 # Optional: Instrument HTTP requests to see the raw data sent to the model provider
-logfire.instrument_httpx(capture_all=True)
+# logfire.instrument_httpx(capture_all=True)
+
 
 
 # ============================================================================

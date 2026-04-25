@@ -2458,6 +2458,11 @@ dependencies = [
     { name = "python-dotenv" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "logfire" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "anthropic", specifier = ">=0.7.0" },
@@ -2467,6 +2472,9 @@ requires-dist = [
     { name = "pydantic-ai", specifier = ">=0.1.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "logfire", specifier = ">=4.25.0" }]
 
 [[package]]
 name = "temporalio"
