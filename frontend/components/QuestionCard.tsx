@@ -132,13 +132,39 @@ export function QuestionCard({ question, isTop5, isOwn, onChange, onEdit }: Prop
                     : "default"
                 }
               />
+              {isOwn && (
+                <Tooltip title="You submitted this question">
+                  <Chip label="Your submission" size="small" color="secondary" variant="outlined" />
+                </Tooltip>
+              )}
               <Typography variant="caption" color="text.secondary">
                 resolves {formatDate(question.proposed_resolution_date)}
               </Typography>
             </Stack>
-            <Typography variant="body1" sx={{ fontWeight: 500 }}>
-              {question.text}
-            </Typography>
+            <Stack direction="row" spacing={1} alignItems="flex-start">
+              <Typography variant="body1" sx={{ fontWeight: 500, flexGrow: 1 }}>
+                {question.text}
+              </Typography>
+              {isOwn && question.status === "pending" && (
+                <Stack
+                  direction="row"
+                  spacing={0.5}
+                  sx={{ flexShrink: 0 }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <Tooltip title="Edit">
+                    <IconButton size="small" onClick={() => onEdit(question)} aria-label="edit">
+                      <EditIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                  <Tooltip title="Delete">
+                    <IconButton size="small" onClick={handleDelete} aria-label="delete" color="error">
+                      <DeleteIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                </Stack>
+              )}
+            </Stack>
             <Collapse in={expanded}>
               <Box sx={{ mt: 1.5, pt: 1.5, borderTop: "1px solid", borderColor: "divider" }}>
                 <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
@@ -147,21 +173,6 @@ export function QuestionCard({ question, isTop5, isOwn, onChange, onEdit }: Prop
                 <Typography variant="body2" sx={{ mt: 0.5 }}>
                   {question.resolution_criteria}
                 </Typography>
-                {isOwn && question.status === "pending" && (
-                  <Stack
-                    direction="row"
-                    spacing={1}
-                    sx={{ mt: 1.5 }}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <IconButton size="small" onClick={() => onEdit(question)} aria-label="edit">
-                      <EditIcon fontSize="small" />
-                    </IconButton>
-                    <IconButton size="small" onClick={handleDelete} aria-label="delete">
-                      <DeleteIcon fontSize="small" />
-                    </IconButton>
-                  </Stack>
-                )}
               </Box>
             </Collapse>
             {error && (
