@@ -1,0 +1,7 @@
+{
+  "question": "Will the US impose new tariffs specifically targeting Chinese semiconductor imports before December 31, 2026?",
+  "resolution_criteria": "The US government (via Executive Order, USTR action, or Congressional legislation signed into law) imposes import tariffs or duties that specifically apply to semiconductors or chipmaking equipment originating from China, beyond any measures already in effect as of January 1, 2026. Confirmed by publication in the Federal Register or official White House/USTR press release.",
+  "resolution_source": "Federal Register (federalregister.gov), USTR official statements, White House press releases",
+  "resolution_date": "2026-12-31T23:59:59Z",
+  "category": "economics"
+}

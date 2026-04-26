@@ -3,10 +3,22 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-*.pyw
-*.pyz
-*.pywz
-*.pyzw
 .venv/
 .DS_Store
 
+# DB
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Frontend
+node_modules/
+.next/
+.next/cache/
+dist/
+build/
+
+# Editor
+.idea/
+*.swp
