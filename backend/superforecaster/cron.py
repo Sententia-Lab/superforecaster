@@ -10,11 +10,11 @@ the API and CLI can trigger them on demand.
 
 from __future__ import annotations
 
-import os
-
 import logfire
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+
+from config import get_settings
 
 from . import db
 from .models import RefreshSummary, QuestionRecord
@@ -110,8 +110,9 @@ def start_scheduler() -> AsyncIOScheduler:
     if _scheduler is not None and _scheduler.running:
         return _scheduler
 
-    refresh_cron = os.getenv("REFRESH_CRON_SCHEDULE", "0 6 * * *")
-    digest_cron = os.getenv("DIGEST_CRON_SCHEDULE", "0 9 28-31 * *")
+    settings = get_settings()
+    refresh_cron = settings.refresh_cron_schedule
+    digest_cron = settings.digest_cron_schedule
 
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(

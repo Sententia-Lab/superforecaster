@@ -9,17 +9,97 @@ Implements Tetlock's "10 Commandments of Superforecasting" using Pydantic AI.
 ### Installation
 
 ```bash
+cd backend
 uv sync
 ```
 
 ### Setup Environment
 
-copy the `.env.example` file and add API keys.
-
-### Run
+Copy the example files and fill in the required keys:
 
 ```bash
-uv run superforecaster_v2.py
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env
+```
+
+**Backend** (`backend/.env`):
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `PYDANTIC_AI_GATEWAY_API_KEY` | Yes | Runs the Pydantic AI agents |
+| `TAVILY_API_KEY` | No | Web search (degrades gracefully if unset) |
+| `ADMIN_API_KEY` | For API/admin | Bearer token for admin routes |
+
+**Frontend** (`frontend/.env`):
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `NEXT_PUBLIC_API_URL` | No | API base URL (defaults to `http://localhost:8000`) |
+
+All backend settings are loaded via `backend/config.py`.
+
+### Run the Agent (CLI)
+
+All agent commands run from the `backend/` directory:
+
+```bash
+cd backend
+```
+
+**Forecast a new question** (interactive prompts, saves to SQLite):
+
+```bash
+uv run python -m superforecaster forecast
+```
+
+**Forecast from a bundled fixture** (no prompts; good for a first smoke test):
+
+```bash
+uv run python -m superforecaster forecast --fixture
+```
+
+**Forecast without saving to the database:**
+
+```bash
+uv run python -m superforecaster forecast --fixture --no-save
+```
+
+**Refresh or check resolution** on an existing forecast:
+
+```bash
+uv run python -m superforecaster refresh --fixture
+uv run python -m superforecaster resolve --fixture
+```
+
+To run against a forecast already in the database, pass its UUID:
+
+```bash
+uv run python -m superforecaster refresh --id <forecast-uuid>
+uv run python -m superforecaster resolve --id <forecast-uuid>
+```
+
+All commands print formatted JSON to stdout. The `forecast` command prints the saved forecast ID to stderr when it writes to the database.
+
+### Run via API
+
+Start the FastAPI server, then create forecasts through the admin endpoint:
+
+```bash
+cd backend
+uv run uvicorn api.main:app --reload
+# Swagger UI: http://localhost:8000/docs
+```
+
+Use `POST /forecasts` with `Authorization: Bearer <ADMIN_API_KEY>` to run the forecast agent and persist the result. See `spec/CURRENT_STATE.md` for the full route list.
+
+### Full Stack (Docker)
+
+```bash
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env   # fill in keys
+docker compose up --build
+# API:      http://localhost:8000
+# Frontend: http://localhost:3000
 ```
 
 ## Architecture
@@ -97,28 +177,36 @@ Confidence is calibrated based on sub-question agreement:
 
 ## Example Usage
 
+### CLI
+
+```bash
+cd backend
+uv run python -m superforecaster forecast --fixture --no-save
+```
+
+### Programmatic
+
 ```python
 import asyncio
-from superforecaster_v2 import forecast
+from datetime import datetime, timezone
 
-# Generate a forecast
-result = await forecast(
-    question="Will Bitcoin exceed $100k by end of 2026?",
-    timeframe="12 months"
-)
+from superforecaster.agent import run_forecast
+from superforecaster.models import ForecastInput
 
-print(f"Forecast: {result.probability:.0%}")
-print(f"Confidence: {result.confidence}")
-print(f"Reasoning: {result.reasoning}")
-```
+async def main() -> None:
+    result = await run_forecast(
+        ForecastInput(
+            question="Will Bitcoin exceed $100k by end of 2026?",
+            resolution_criteria="BTC/USD spot price on a major exchange exceeds $100,000 before 2027-01-01 UTC.",
+            resolution_date=datetime(2026, 12, 31, tzinfo=timezone.utc),
+            category="finance",
+        )
+    )
+    print(f"Forecast: {result.probability:.0%}")
+    print(f"Confidence: {result.confidence}")
+    print(f"Reasoning: {result.initial_reasoning}")
 
-Output:
-```
-Forecast: 65%
-Confidence: medium
-Reasoning: Decomposed into 3 independent factors. Base rate suggests 45%. 
-Key drivers: Regulatory environment, Market sentiment, Technical adoption. 
-Final estimate accounts for uncertainty in these areas.
+asyncio.run(main())
 ```
 
 ## Extending the Agent
@@ -190,6 +278,11 @@ The agent searches Wikipedia for historical context. Better implementations woul
 - Track base rate accuracy over time
 
 ## Testing
+
+```bash
+cd backend
+uv run pytest
+```
 
 Superforecasting improves through error analysis. Track your forecasts:
 

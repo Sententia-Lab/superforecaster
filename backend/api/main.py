@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
+import config  # noqa: F401 — loads backend/.env
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from config import get_settings
+
 from superforecaster import db
 from superforecaster.agent import run_forecast
 from superforecaster.models import (
@@ -78,9 +80,7 @@ def edit_question(
     """Edit a question. Caller IP must match submitter unless admin token is supplied."""
     auth = request.headers.get("authorization", "")
     is_admin = False
-    import os
-
-    expected = os.getenv("ADMIN_API_KEY")
+    expected = get_settings().admin_api_key
     if expected and auth.startswith("Bearer ") and auth[len("Bearer "):] == expected:
         is_admin = True
 

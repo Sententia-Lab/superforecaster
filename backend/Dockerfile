@@ -15,6 +15,7 @@ COPY pyproject.toml uv.lock* ./
 RUN uv sync --no-dev
 
 # Copy application code
+COPY config.py ./
 COPY superforecaster/ ./superforecaster/
 COPY api/ ./api/
 
