@@ -32,7 +32,7 @@ export function AdminLogin({ onSubmit }: { onSubmit: () => void }) {
       <DialogTitle>Admin access</DialogTitle>
       <DialogContent>
         <DialogContentText sx={{ mb: 2 }}>
-          Enter the <code>ADMIN_API_KEY</code> from your <code>.env</code>. The token is
+          Enter the <code>ADMIN_API_KEY</code> from your backend <code>.env</code>. The token is
           stored in your browser&apos;s localStorage and sent as a Bearer token on admin
           requests.
         </DialogContentText>

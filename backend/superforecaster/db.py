@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sqlite3
 import uuid
 from collections.abc import Iterator
@@ -40,6 +39,8 @@ def _convert_timestamp(value: bytes) -> datetime:
 
 sqlite3.register_adapter(datetime, _adapt_datetime)
 sqlite3.register_converter("TIMESTAMP", _convert_timestamp)
+
+from config import get_settings
 
 from .models import (
     CalibrationBucket,
@@ -77,7 +78,7 @@ class StateError(Exception):
 
 
 def _db_path() -> str:
-    return os.getenv("DATABASE_PATH", "./superforecaster.db")
+    return get_settings().database_path
 
 
 @contextmanager

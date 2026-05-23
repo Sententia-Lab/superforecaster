@@ -6,9 +6,9 @@ agents register them via the `tools=[...]` argument at construction time.
 
 from __future__ import annotations
 
-import os
-
 import httpx
+
+from config import get_settings
 
 
 async def search_web(query: str) -> str:
@@ -18,7 +18,7 @@ async def search_web(query: str) -> str:
     fallback message if `TAVILY_API_KEY` is not set. The agent treats
     the absence of search results as missing information, not as an error.
     """
-    api_key = os.getenv("TAVILY_API_KEY")
+    api_key = get_settings().tavily_api_key
     if not api_key:
         return f"[Web search unavailable — no TAVILY_API_KEY set. Query was: {query}]"
 

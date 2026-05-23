@@ -7,7 +7,7 @@ services:
       - "8000:8000"
     volumes:
       - sqlite_data:/app/data
-    env_file: .env
+    env_file: backend/.env
     environment:
       DATABASE_PATH: /app/data/superforecaster.db
     healthcheck:
@@ -30,6 +30,7 @@ services:
       - "3000:3000"
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    env_file: frontend/.env
     depends_on:
       api:
         condition: service_healthy

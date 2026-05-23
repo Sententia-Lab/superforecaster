@@ -12,9 +12,9 @@ should_update signal; the orchestrator enforces the threshold.
 
 from __future__ import annotations
 
-import os
-
 from pydantic_ai import Agent
+
+from config import get_settings
 
 from . import db
 from .models import (
@@ -90,7 +90,7 @@ def _format_history(record: ForecastRecord) -> str:
 
 async def run_refresh_agent(record: ForecastRecord) -> ForecastRefreshResult:
     """Run the refresh agent on a forecast record. Returns its raw decision."""
-    lookback_hours = int(os.getenv("SEARCH_LOOKBACK_HOURS", "48"))
+    lookback_hours = get_settings().search_lookback_hours
     current_probability = record.updates[-1].probability if record.updates else 0.5
 
     user_prompt = f"""Decide whether to update this probability forecast.
@@ -141,7 +141,7 @@ async def refresh_forecast(forecast_id: str) -> RefreshActionResponse:
         return RefreshActionResponse(updated=False, reason=result.reasoning)
 
     current_probability = record.updates[-1].probability
-    threshold = float(os.getenv("MIN_PROBABILITY_DELTA", "0.03"))
+    threshold = get_settings().min_probability_delta
     if abs(result.new_probability - current_probability) < threshold:
         return RefreshActionResponse(
             updated=False,

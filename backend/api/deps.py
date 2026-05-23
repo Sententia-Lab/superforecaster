@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import os
-
 from fastapi import Header, HTTPException, Request, status
+
+from config import get_settings
 
 from superforecaster.db import hash_ip
 
 
 async def require_admin(authorization: str | None = Header(default=None)) -> None:
     """Require `Authorization: Bearer <ADMIN_API_KEY>` for admin routes."""
-    expected = os.getenv("ADMIN_API_KEY")
+    expected = get_settings().admin_api_key
     if not expected:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

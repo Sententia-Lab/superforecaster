@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from dotenv import load_dotenv
+import config  # noqa: F401 — loads backend/.env
 
 from . import db
 from .agent import run_forecast
@@ -31,11 +31,6 @@ from .models import (
 )
 from .refresh import refresh_forecast, run_refresh_agent
 from .resolution import check_resolution, run_resolution_agent
-
-
-# Load .env from backend/.env or repo root .env
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
-load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
