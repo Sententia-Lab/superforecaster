@@ -1,190 +1,297 @@
 # Superforecasting Agent
 
-A minimalist Python agent that can forecast future events.
+A forecasting platform that implements Tetlock's superforecasting methodology using Pydantic AI. The backend runs three agents (forecast, refresh, resolution) behind a FastAPI API and CLI; the frontend is a Next.js app for submitting questions, viewing predictions, and admin workflows.
 
-Implements Tetlock's "10 Commandments of Superforecasting" using Pydantic AI.
+## Prerequisites
 
-## Quick Start
+| Tool | Version | Used for |
+| --- | --- | --- |
+| [uv](https://docs.astral.sh/uv/) | latest | Python deps and backend commands |
+| Python | ≥ 3.12 | Backend + agents |
+| Node.js | ≥ 20 | Frontend local dev |
+| Docker + Compose | optional | Full-stack deployment |
 
-### Installation
+---
+
+## Setup
+
+### 1. Install backend dependencies
 
 ```bash
 cd backend
 uv sync
 ```
 
-### Setup Environment
+### 2. Configure environment
 
-Copy the example files and fill in the required keys:
+Copy the example env files and fill in keys:
 
 ```bash
 cp backend/.env.example backend/.env
 cp frontend/.env.example frontend/.env
 ```
 
-**Backend** (`backend/.env`):
+**Backend** (`backend/.env`) — minimum to run agents:
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `PYDANTIC_AI_GATEWAY_API_KEY` | Yes | Runs the Pydantic AI agents |
-| `TAVILY_API_KEY` | No | Web search (degrades gracefully if unset) |
-| `ADMIN_API_KEY` | For API/admin | Bearer token for admin routes |
+| `PYDANTIC_AI_GATEWAY_API_KEY` | One of these | Logfire Gateway key (`pylf_v2_...`) from [logfire.pydantic.dev](https://logfire.pydantic.dev) → Org → **Gateway** |
+| `ANTHROPIC_API_KEY` | One of these | Direct Anthropic API (bypasses gateway) |
+| `TAVILY_API_KEY` | Recommended | Web search for research phase |
+| `ADMIN_API_KEY` | For admin API/UI | Bearer token for `/admin/*` routes |
+| `LOGFIRE_TOKEN` | No | Logfire **write token** (`pylf_v1_...`) for cloud traces — separate from gateway key |
+
+Legacy `paig_...` gateway keys no longer work. See the [Logfire Gateway migration guide](https://pydantic.dev/docs/logfire/gateway-migration/).
 
 **Frontend** (`frontend/.env`):
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `NEXT_PUBLIC_API_URL` | No | API base URL (defaults to `http://localhost:8000`) |
+| `NEXT_PUBLIC_API_URL` | No | API base URL (default `http://localhost:8000`) |
 
-All backend settings are loaded via `backend/config.py`.
+All backend settings are loaded from `backend/.env` via `backend/config.py`.
 
-### Run the Agent (CLI)
+---
 
-All agent commands run from the `backend/` directory:
+## How to Run
+
+All backend commands assume you are in the `backend/` directory:
 
 ```bash
 cd backend
 ```
 
-**Forecast a new question** (interactive prompts, saves to SQLite):
+### CLI — run agents directly
+
+The CLI runs agents without starting the web server. Output is formatted JSON on stdout.
+
+#### Forecast (new question)
+
+**Interactive** — prompts for question, criteria, source, date, category; saves to SQLite:
 
 ```bash
 uv run python -m superforecaster forecast
 ```
 
-**Forecast from a bundled fixture** (no prompts; good for a first smoke test):
+**Fixture smoke test** — uses bundled `superforecaster/fixtures/forecast_question.json`:
 
 ```bash
 uv run python -m superforecaster forecast --fixture
 ```
 
-**Forecast without saving to the database:**
+**No database write** — print forecast JSON only:
 
 ```bash
 uv run python -m superforecaster forecast --fixture --no-save
 ```
 
-**Refresh or check resolution** on an existing forecast:
+**Custom fixture file:**
+
+```bash
+uv run python -m superforecaster forecast --fixture path/to/question.json
+```
+
+**Watch progress in the terminal** (tool calls, usage limits):
+
+```bash
+uv run python -m superforecaster forecast --fixture --no-save --verbose
+```
+
+**Limit research budget** (default `5`; lower = cheaper/faster):
+
+```bash
+uv run python -m superforecaster forecast --fixture --no-save --max-iterations 3
+```
+
+When saving to the database, the forecast UUID is printed to stderr:
+
+```json
+{"forecast_id": "..."}
+```
+
+#### Refresh (update probability on existing forecast)
+
+**In-memory fixture** (no DB write):
 
 ```bash
 uv run python -m superforecaster refresh --fixture
-uv run python -m superforecaster resolve --fixture
 ```
 
-To run against a forecast already in the database, pass its UUID:
+**From database** by UUID:
 
 ```bash
 uv run python -m superforecaster refresh --id <forecast-uuid>
+```
+
+Add `--verbose` to either command for terminal progress.
+
+#### Resolve (check if a forecast should be flagged for resolution)
+
+**In-memory fixture:**
+
+```bash
+uv run python -m superforecaster resolve --fixture
+```
+
+**From database:**
+
+```bash
 uv run python -m superforecaster resolve --id <forecast-uuid>
 ```
 
-All commands print formatted JSON to stdout. The `forecast` command prints the saved forecast ID to stderr when it writes to the database.
+#### CLI help
 
-### Run via API
+```bash
+uv run python -m superforecaster --help
+uv run python -m superforecaster forecast --help
+```
 
-Start the FastAPI server, then create forecasts through the admin endpoint:
+### API — backend server (local)
+
+Starts FastAPI on port 8000. Also starts scheduled jobs (daily refresh, monthly digest) via APScheduler.
 
 ```bash
 cd backend
 uv run uvicorn api.main:app --reload
-# Swagger UI: http://localhost:8000/docs
 ```
 
-Use `POST /forecasts` with `Authorization: Bearer <ADMIN_API_KEY>` to run the forecast agent and persist the result. See `spec/CURRENT_STATE.md` for the full route list.
+| URL | Purpose |
+| --- | --- |
+| http://localhost:8000/docs | Swagger UI |
+| http://localhost:8000/healthz | Health check |
 
-### Full Stack (Docker)
+**Create a forecast via API** (requires `ADMIN_API_KEY` in `backend/.env`):
 
 ```bash
-cp backend/.env.example backend/.env
-cp frontend/.env.example frontend/.env   # fill in keys
+curl -X POST http://localhost:8000/forecasts \
+  -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "Will X happen?",
+    "resolution_criteria": "Resolves YES if ...",
+    "resolution_date": "2026-12-31T00:00:00Z",
+    "resolution_source": "Official source",
+    "category": "politics"
+  }'
+```
+
+Public routes (`GET /forecasts`, `GET /questions`, etc.) need no auth. Admin routes use `Authorization: Bearer <ADMIN_API_KEY>`. See `spec/CURRENT_STATE.md` for the full route list.
+
+### Frontend — web UI (local)
+
+Requires the API running on port 8000 (see above).
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open http://localhost:3000
+
+| Page | Purpose |
+| --- | --- |
+| `/` | Submit and vote on questions |
+| `/predictions` | Active forecasts |
+| `/resolved` | Resolved forecasts + calibration |
+| `/forecasts/[id]` | Forecast detail |
+| `/admin` | Approve questions, run forecasts, refresh, resolve |
+
+On first visit to `/admin`, enter the same value as `ADMIN_API_KEY`. It is stored in browser `localStorage`.
+
+**Production build (local):**
+
+```bash
+cd frontend
+npm run build
+npm start
+```
+
+### Full stack — Docker
+
+From the repo root:
+
+```bash
+cp backend/.env.example backend/.env   # fill in keys
+cp frontend/.env.example frontend/.env
 docker compose up --build
-# API:      http://localhost:8000
-# Frontend: http://localhost:3000
 ```
 
-## Architecture
+| Service | URL |
+| --- | --- |
+| API | http://localhost:8000 |
+| Frontend | http://localhost:3000 |
+| Swagger | http://localhost:8000/docs |
 
-The agent implements Tetlock's 10 commandments in a clean workflow:
+SQLite data persists in the `sqlite_data` Docker volume (`DATABASE_PATH=/app/data/superforecaster.db` inside the API container).
 
-```
-1. TRIAGE           → Accept forecasting question
-2. BREAK DOWN       → Decompose into sub-questions (Fermi-ization)
-3. BASE RATES       → Establish reference class frequency (outside view)
-4. CAUSAL FORCES    → Identify key drivers and mechanisms
-5. EVIDENCE         → Gather supporting & contradicting data
-6. PERSPECTIVES     → Seek opposing viewpoints
-7. PROBABILITIES    → Use granular numbers (65% not "likely")
-8. CONFIDENCE       → Rate certainty separately from probability
-9. CALIBRATION      → Check for overconfidence/blind spots
-10. ITERATE         → Treat forecasts as updateable hypotheses
+**Detached mode:**
+
+```bash
+docker compose up --build -d
 ```
 
-## Key Design Decisions
+**Stop:**
 
-### Simplicity First
-- Single Python file (v2) with ~200 lines of core logic
-- Pydantic models for clean data passing
-- Direct Pydantic AI integration (no custom wrappers)
-
-### Decomposition
-The core insight of superforecasting is that breaking hard questions into independent sub-questions dramatically improves accuracy. The agent:
-
-1. **Identifies sub-questions** using the LLM
-2. **Assigns probabilities** to each (with confidence levels)
-3. **Combines them** using weighted averaging
-4. **Calibrates confidence** based on agreement
-
-```python
-decompositions = [
-    SubPrediction(
-        question="Are baseline conditions favorable?",
-        probability=0.65,
-        rationale="Current trends support outcome",
-        confidence="medium"
-    ),
-    # ... more sub-predictions
-]
-
-final_probability = combine_probabilities(decompositions)
+```bash
+docker compose down
 ```
 
-### Research Integration
+### Tests
 
-Two research tools follow the outside-view-first principle:
-
-1. **Wikipedia** - Historical context, base rates, reference classes
-2. **Web Search** (Tavily) - Current conditions, recent data
-
-The agent queries these for:
-- Base rate (how often do similar events occur?)
-- Causal forces (what drives the outcome?)
-- Evidence (supporting & contradicting)
-
-### Probability Calibration
-
-```python
-def combine_probabilities(subs: list[SubPrediction]) -> float:
-    """Weighted by confidence - high confidence estimates matter more"""
-    weights = {"low": 0.5, "medium": 1.0, "high": 1.5}
-    weighted_sum = sum(sub.probability * weights[sub.confidence] for sub in subs)
-    return weighted_sum / sum(weights[sub.confidence] for sub in subs)
-```
-
-Confidence is calibrated based on sub-question agreement:
-- High confidence: 70%+ sub-questions are high confidence
-- Low confidence: 40%+ sub-questions are low confidence
-- Medium: everything else
-
-## Example Usage
-
-### CLI
+**Backend** (73 tests):
 
 ```bash
 cd backend
-uv run python -m superforecaster forecast --fixture --no-save
+uv run pytest
 ```
 
-### Programmatic
+**Frontend** (build + typecheck):
+
+```bash
+cd frontend
+npm run build
+npm run typecheck
+```
+
+---
+
+## Forecast pipeline and usage limits
+
+Forecasting uses a **two-phase pipeline** so runs always attempt to produce a final answer:
+
+1. **Research** — tool-using agent (`search_web`, `search_wikipedia`); budget scales with `--max-iterations` (default 5 → up to 10 tool calls, 11 LLM requests).
+2. **Synthesis** — tool-free agent; always runs after research (even if research hits its limit); up to 4 LLM requests.
+
+If research exhausts its budget, synthesis still runs using partial evidence captured from the research transcript.
+
+Refresh and resolution agents use separate limits from `AGENT_REQUEST_LIMIT` / `AGENT_TOOL_CALLS_LIMIT` (defaults: 40 requests, 20 tool calls).
+
+Optional env overrides in `backend/.env`:
+
+```bash
+AGENT_MODEL=gateway/anthropic:claude-sonnet-4-6
+AGENT_REQUEST_LIMIT=40
+AGENT_TOOL_CALLS_LIMIT=20
+```
+
+---
+
+## Observability (Logfire)
+
+With a valid `LOGFIRE_TOKEN` (`pylf_v1_...`), agent runs send structured traces to Logfire automatically.
+
+1. Open [logfire.pydantic.dev](https://logfire.pydantic.dev) → your project → **Live** or **Explore**
+2. Filter by tag `agent-progress` or service `superforecaster`
+3. Expand spans for `forecast research` / `forecast synthesis` to see reasoning, tool calls, and results
+
+Terminal progress is available with `--verbose` on CLI commands.
+
+The gateway key (`PYDANTIC_AI_GATEWAY_API_KEY`) is for LLM calls only — it does not send traces to Logfire.
+
+---
+
+## Programmatic usage
 
 ```python
 import asyncio
@@ -200,154 +307,58 @@ async def main() -> None:
             resolution_criteria="BTC/USD spot price on a major exchange exceeds $100,000 before 2027-01-01 UTC.",
             resolution_date=datetime(2026, 12, 31, tzinfo=timezone.utc),
             category="finance",
-        )
+            max_iterations=5,
+        ),
+        verbose=False,
     )
     print(f"Forecast: {result.probability:.0%}")
     print(f"Confidence: {result.confidence}")
-    print(f"Reasoning: {result.initial_reasoning}")
+    print(f"Reasoning: {result.reasoning}")
 
 asyncio.run(main())
 ```
 
-## Extending the Agent
+Run from `backend/` so `config.py` loads `.env`.
 
-### Add New Tools
+---
 
-```python
-def my_custom_tool(param: str) -> str:
-    """Custom research tool"""
-    return "research result"
+## Repository layout
 
-agent = Agent(
-    model="claude-opus-4-5-20251101",
-    tools=[search_web, search_wikipedia, my_custom_tool],
-    # ...
-)
+```
+backend/
+  superforecaster/   # Agents, models, tools, DB, cron
+  api/               # FastAPI routes
+  config.py          # Settings from .env
+frontend/            # Next.js app
+spec/                # Spec-driven docs (SPEC.md, CURRENT_STATE.md)
+docker-compose.yml
 ```
 
-### Improve Decomposition
+For architecture details, data models, and the full API surface, see `spec/CURRENT_STATE.md` and `spec/SPEC.md`.
 
-The current approach uses the LLM to suggest sub-questions. For critical forecasts, you could:
+---
 
-```python
-# Add domain-specific decomposition patterns
-def decompose_geopolitical_event(question: str) -> list[SubPrediction]:
-    """Template for geopolitical questions"""
-    return [
-        "Will trigger event occur?",
-        "Will actors respond as expected?",
-        "Will intended effects materialize?",
-        "Will unintended consequences dominate?",
-    ]
-```
+## Methodology
 
-### Implement Bayesian Combination
+The agents follow Tetlock's superforecasting principles:
 
-Instead of weighted averaging, use proper Bayesian combination:
+1. **Triage** — focus on forecastable questions
+2. **Break down** — Fermi-ize into sub-questions
+3. **Outside view first** — historical analogs and base rates
+4. **Inside view second** — case-specific evidence
+5. **Granular probabilities** — e.g. 65%, not "likely"
+6. **Separate confidence** — certainty distinct from probability
+7. **Iterate** — refresh on new evidence; track calibration
 
-```python
-def bayes_combine(subs: list[SubPrediction]) -> float:
-    """Proper Bayesian update approach"""
-    # This would require more sophisticated probability theory
-    # and independence assumptions
-    pass
-```
+Full agent behavior spec: `spec/superforecasting_methodology.md`.
 
-## Implementation Notes
-
-### Why Pydantic AI?
-
-- Native support for structured outputs (our `Forecast` model)
-- Clean tool integration with type safety
-- Direct Claude API access
-- Minimal boilerplate
-
-### Why Single File?
-
-- Easy to read and understand the full pipeline
-- Simple to extend with custom logic
-- Plays well with version control
-- Natural fit for an agent that fits in one mental model
-
-### Base Rate Finding
-
-The agent searches Wikipedia for historical context. Better implementations would:
-
-- Maintain a database of reference class frequencies
-- Apply Laplace smoothing to avoid overconfident estimates
-- Track base rate accuracy over time
-
-## Testing
-
-```bash
-cd backend
-uv run pytest
-```
-
-Superforecasting improves through error analysis. Track your forecasts:
-
-```python
-# After the event occurs:
-actual_outcome = True  # Did the predicted event happen?
-forecast_probability = 0.65
-
-# Check calibration
-# If you forecast 65% on 100 events, ~65 should occur
-# If 80 occur, you're underconfident; if 50 occur, overconfident
-```
+---
 
 ## References
 
 - Tetlock, P. E., & Gardner, D. (2015). *Superforecasting*
-- Core principle: Breaking down hard questions → probabilistic thinking → iterative improvement
-- The framework trades overconfident narratives for calibrated uncertainty
-- Prompt used to create base structure:
-```
-The book, Superforecasters outlines methodologies for how to forecast future events. Can you use your knowledge of the book and the 10 commandments outlined here:
-
-Core Principles and Techniques
-The framework is characterized by a disciplined, "Bayesian" approach to updating beliefs based on new information. 
-Fermi-ization (Decomposition): Breaking down seemingly intractable questions into smaller, manageable sub-problems, a technique inspired by physicist Enrico Fermi.
-Outside-View First (Base Rates): Instead of focusing on the specifics of a unique event, superforecasters start by analyzing the base rates—how often does this type of event occur in similar situations?
-Inside-View Second (Case Specifics): After establishing the base rate, they adjust their prediction based on the unique factors of the current case.
-Probabilistic Thinking: Moving away from binary "yes/no" predictions to, for example, a 65% or 70% probability. They use granular, specific numbers (e.g., distinguishing 60% from 65%).
-Belief Updating: Treating forecasts as hypotheses to be tested, not treasures to be guarded. When new information arrives, they update their probabilities incrementally, avoiding the temptation to stick to earlier predictions (belief perseverance).
-Dragonfly Eye Perspective: Actively seeking out diverse, opposing, and conflicting viewpoints to avoid confirmation bias. 
-
-The 10 Commandments of Superforecasting
-Tetlock summarized the methodology in "10 Commandments" for aspiring forecasters: 
-Triage: Focus on problems where effort has the highest payoff (avoiding too-easy or too-hard problems).
-Break Down: Decompose questions (Fermi-ize).
-Balance Perspectives: Mix inside and outside views.
-Balance Evidence: Avoid under- or overreacting to new data.
-Seek Causal Forces: Look for underlying, clashing drivers.
-Find Degrees of Doubt: Use granular probabilities.
-Balance Confidence: Be neither a timid waffler nor a reckless gambler.
-Look for Error in Mistakes: Perform post-mortems on failed predictions.
-Bring Out the Best in Others: Leverage team collaboration.
-Master the "Bicycle": Practice the above, as it is a skill learned by doing. 
-
-Key Traits and Mindset
-Superforecasters are not necessarily genius-level intellectuals, but rather possess specific, cultivated habits: 
-
-Active Open-mindedness: Willingness to reconsider beliefs.
-Intellectual Humility: Acknowledging that the future is uncertain.
-Analytical & Numerate: Comfortable with data and statistics.
-"Perpetual Beta": A commitment to self-improvement and learning from mistakes.
-Grit: The tenacity to stick with a long-term, complex problem. 
-
-Implementation and Application
-Teamwork: Superforecasters often work in teams, which helps reduce individual bias, though the best teams are not hierarchical.
-AI Integration: The framework is now being applied to AI, with "Superforecasting LLMs" mimicking these techniques to improve AI-driven predictions, showing up to 41% accuracy improvements in certain scenarios.
-Commercial/Government Use: Organizations like Good Judgment Inc. use this framework for forecasting geopolitical, financial, and public health risks, such as the trajectory of COVID-19 or Fed interest rate decisions.
-I want to create an AI agent that uses, for starters, web search with Tavily, and wikipedia to come up with forecasts based on a question that a user may have. It should spit out a timeframe and a single percentage score. 
-
-A few things the agent should be able to do:
-1. it should use as many/all the principled and mindsets outlined above in a structured way. Core to this method is breaking down large predictions into smaller predictions.
-2. It should follow the methodology above as closely as possible.
-
-Create the agent using pydnatic AI gateway and pydantic agents framework in a single python file with all the tools necessary.
-```
+- [Pydantic AI](https://ai.pydantic.dev/)
+- [Logfire Gateway migration](https://pydantic.dev/docs/logfire/gateway-migration/)
 
 ## License
 

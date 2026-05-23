@@ -11,10 +11,12 @@ face of uncertainty.
 
 from __future__ import annotations
 
+from config import resolve_agent_model
 from pydantic_ai import Agent
 
 from . import db
 from .models import ForecastRecord, ResolutionCheckResult
+from .observability import run_agent
 from .tools import search_web, search_wikipedia
 
 
@@ -52,14 +54,15 @@ PROCESS
 
 
 def build_resolution_agent(
-    model: str = "gateway/anthropic:claude-sonnet-4-6",
+    model: str | None = None,
 ) -> Agent[None, ResolutionCheckResult]:
     return Agent[None, ResolutionCheckResult](
-        model=model,
+        model=model or resolve_agent_model(),
+        name="resolution_agent",
         output_type=ResolutionCheckResult,
         system_prompt=SYSTEM_PROMPT,
         tools=[search_web, search_wikipedia],
-        retries=2,
+        retries=1,
     )
 
 
@@ -73,7 +76,7 @@ def get_resolution_agent() -> Agent[None, ResolutionCheckResult]:
     return _resolution_agent
 
 
-async def run_resolution_agent(record: ForecastRecord) -> ResolutionCheckResult:
+async def run_resolution_agent(record: ForecastRecord, *, verbose: bool = False) -> ResolutionCheckResult:
     """Run the resolution agent on a forecast record. Returns its raw decision."""
     user_prompt = f"""Determine if this forecast question has already resolved.
 
@@ -91,7 +94,12 @@ CATEGORY: {record.category}
 Search for evidence that the criteria has been met or definitively
 cannot be met. Return a ResolutionCheckResult.
 """
-    result = await get_resolution_agent().run(user_prompt)
+    result = await run_agent(
+        get_resolution_agent(),
+        user_prompt,
+        verbose=verbose,
+        run_name="resolution run",
+    )
     return result.output
 
 

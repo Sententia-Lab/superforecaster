@@ -83,6 +83,16 @@ class ForecastInput(BaseModel):
     max_iterations: int = 5
 
 
+class ForecastResearchNotes(BaseModel):
+    """Phase-1 output — research and draft decomposition, no final probability yet."""
+
+    decompositions: list[SubPrediction] = Field(min_length=1, max_length=5)
+    research: ResearchSummary
+    analysis_notes: str = Field(
+        description="Working notes for synthesis: drivers, uncertainties, evidence gaps"
+    )
+
+
 # ---------- Refresh agent ----------
 
 

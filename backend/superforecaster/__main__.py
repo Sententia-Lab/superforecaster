@@ -146,7 +146,8 @@ async def _cmd_forecast(args: argparse.Namespace) -> int:
             resolution_date=resolution_date,
             category=category,
             max_iterations=args.max_iterations,
-        )
+        ),
+        verbose=args.verbose,
     )
 
     if not args.no_save:
@@ -170,7 +171,7 @@ async def _cmd_refresh(args: argparse.Namespace) -> int:
 
     data = _load_fixture(args.fixture, "existing_forecast.json")
     record = _record_from_fixture(data)
-    result = await run_refresh_agent(record)
+    result = await run_refresh_agent(record, verbose=args.verbose)
     _print_json(result)
     return 0
 
@@ -187,12 +188,21 @@ async def _cmd_resolve(args: argparse.Namespace) -> int:
 
     data = _load_fixture(args.fixture, "existing_forecast.json")
     record = _record_from_fixture(data)
-    result = await run_resolution_agent(record)
+    result = await run_resolution_agent(record, verbose=args.verbose)
     _print_json(result)
     return 0
 
 
 # ---------- arg parser ----------
+
+
+def _add_verbose_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Print agent tool calls and usage stats to stderr",
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -205,6 +215,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_forecast.add_argument("--no-save", action="store_true",
                             help="Don't save the result to SQLite")
     p_forecast.add_argument("--max-iterations", type=int, default=5)
+    _add_verbose_flag(p_forecast)
     p_forecast.set_defaults(func=_cmd_forecast)
 
     p_refresh = sub.add_parser("refresh", help="Run the refresh agent")
@@ -212,6 +223,7 @@ def _build_parser() -> argparse.ArgumentParser:
     grp_r.add_argument("--fixture", nargs="?", const="", default=None,
                        help="Load forecast from a fixture file (in-memory, no DB write)")
     grp_r.add_argument("--id", help="Refresh a forecast by UUID from the DB")
+    _add_verbose_flag(p_refresh)
     p_refresh.set_defaults(func=_cmd_refresh)
 
     p_resolve = sub.add_parser("resolve", help="Run the resolution agent")
@@ -219,6 +231,7 @@ def _build_parser() -> argparse.ArgumentParser:
     grp_v.add_argument("--fixture", nargs="?", const="", default=None,
                        help="Load forecast from a fixture file (in-memory, no DB write)")
     grp_v.add_argument("--id", help="Check resolution for a forecast by UUID from the DB")
+    _add_verbose_flag(p_resolve)
     p_resolve.set_defaults(func=_cmd_resolve)
 
     return parser

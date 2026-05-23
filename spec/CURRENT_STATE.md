@@ -83,7 +83,7 @@ What exists in the codebase today, what works, and what's still missing.
 
 All Pydantic v2 models in one file:
 
-- **Agent IO**: `Forecast`, `ForecastInput`, `ForecastRefreshResult`, `ResolutionCheckResult`
+- **Agent IO**: `Forecast`, `ForecastInput`, `ForecastResearchNotes`, `ForecastRefreshResult`, `ResolutionCheckResult`
 - **Decomposition / research**: `SubPrediction`, `HistoricalAnalog`, `ResearchSummary`
 - **DB records**: `ForecastRecord`, `ForecastUpdateRecord`, `QuestionRecord`
 - **API request bodies**: `CreateForecastRequest`, `AddUpdateRequest`, `ResolveRequest`, `CreateQuestionRequest`, `EditQuestionRequest`, `VoteRequest`, `ApproveQuestionRequest`
@@ -110,12 +110,16 @@ Imported by all three agent modules.
 
 All three agents are constructed lazily via `get_*_agent()` factories so the modules can be imported without API keys set. Each is a separate `pydantic_ai.Agent` instance with its own `output_type`.
 
-### `forecast_agent` (`agent.py`)
+### Forecast pipeline (`agent.py`)
 
-- `output_type=Forecast`
-- System prompt enforces 4 phases: decompose → outside view (replanning for historical analogs) → inside view → synthesize
-- Searches iteratively for ≥3 analogous historical events and computes empirical base rate from their binary outcomes
-- Public entry point: `async run_forecast(input: ForecastInput) -> Forecast`
+Two-phase pipeline guarantees a synthesis attempt even when research exhausts its budget:
+
+1. **`forecast_research_agent`** — tools enabled (`search_web`, `search_wikipedia`); `output_type=ForecastResearchNotes`; budget `get_research_limits(max_iterations)` (default 5 → 11 requests, 10 tool calls).
+2. **`forecast_synthesis_agent`** — no tools; `output_type=Forecast`; budget `get_synthesis_limits()` (4 requests, 0 tool calls).
+
+If phase 1 raises `UsageLimitExceeded`, captured run messages are passed to synthesis as partial context. Public entry point: `async run_forecast(input: ForecastInput) -> Forecast`.
+
+`get_forecast_agent()` / `build_forecast_agent()` remain as aliases for the synthesis agent (backward compatibility).
 
 ### `refresh_agent` (`refresh.py`)
 
@@ -346,7 +350,13 @@ Backend settings live in `backend/.env` (see `backend/.env.example`). Frontend s
 | Variable                      | Purpose                       | Default                                |
 | ----------------------------- | ----------------------------- | -------------------------------------- |
 | `ADMIN_API_KEY`               | Bearer token for admin routes | — (required)                           |
-| `PYDANTIC_AI_GATEWAY_API_KEY` | Pydantic AI gateway           | — (required for agent calls)           |
+| `PYDANTIC_AI_GATEWAY_API_KEY` | Logfire Gateway (`pylf_v...`) | — (required unless `ANTHROPIC_API_KEY` set) |
+| `ANTHROPIC_API_KEY`             | Direct Anthropic API          | — (alternative to gateway)                 |
+| `AGENT_MODEL`                   | Override model for all agents | `gateway/anthropic:claude-sonnet-4-6` or `anthropic:claude-sonnet-4-6` |
+| `AGENT_REQUEST_LIMIT`           | Max LLM requests per agent run (refresh/resolution) | `40` |
+| `AGENT_TOOL_CALLS_LIMIT`        | Max tool calls per agent run (refresh/resolution)   | `20` |
+
+Forecast research budget: `max_iterations × 2 + 1` requests, `max_iterations × 2` tool calls (CLI default `max_iterations=5`). Synthesis: 4 requests, 0 tool calls — always runs after research.
 | `TAVILY_API_KEY`              | Web search                    | — (optional; tools degrade gracefully) |
 | `LOGFIRE_TOKEN`               | Observability                 | — (optional)                           |
 | `DATABASE_PATH`               | SQLite file                   | `./superforecaster.db`                 |
