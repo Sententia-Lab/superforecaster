@@ -12,9 +12,8 @@ should_update signal; the orchestrator enforces the threshold.
 
 from __future__ import annotations
 
+from config import get_settings, resolve_agent_model
 from pydantic_ai import Agent
-
-from config import get_settings
 
 from . import db
 from .models import (
@@ -22,6 +21,7 @@ from .models import (
     ForecastRefreshResult,
     RefreshActionResponse,
 )
+from .observability import run_agent
 from .tools import search_web, search_wikipedia
 
 
@@ -56,14 +56,15 @@ WHEN YOU DO NOT UPDATE
 
 
 def build_refresh_agent(
-    model: str = "gateway/anthropic:claude-sonnet-4-6",
+    model: str | None = None,
 ) -> Agent[None, ForecastRefreshResult]:
     return Agent[None, ForecastRefreshResult](
-        model=model,
+        model=model or resolve_agent_model(),
+        name="refresh_agent",
         output_type=ForecastRefreshResult,
         system_prompt=SYSTEM_PROMPT,
         tools=[search_web, search_wikipedia],
-        retries=2,
+        retries=1,
     )
 
 
@@ -88,7 +89,7 @@ def _format_history(record: ForecastRecord) -> str:
     return "\n".join(lines) if lines else "(no updates)"
 
 
-async def run_refresh_agent(record: ForecastRecord) -> ForecastRefreshResult:
+async def run_refresh_agent(record: ForecastRecord, *, verbose: bool = False) -> ForecastRefreshResult:
     """Run the refresh agent on a forecast record. Returns its raw decision."""
     lookback_hours = get_settings().search_lookback_hours
     current_probability = record.updates[-1].probability if record.updates else 0.5
@@ -112,7 +113,12 @@ LOOKBACK: search for news from the last {lookback_hours} hours.
 
 Return a ForecastRefreshResult."""
 
-    result = await get_refresh_agent().run(user_prompt)
+    result = await run_agent(
+        get_refresh_agent(),
+        user_prompt,
+        verbose=verbose,
+        run_name="refresh run",
+    )
     return result.output
 
 
