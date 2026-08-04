@@ -502,6 +502,106 @@ class CritiqueQuestionRequest(BaseModel):
     resolution_date: Optional[datetime] = None
 
 
+# ---------- Drafting a question from freeform text ----------
+
+
+class DraftQuestionRequest(BaseModel):
+    """Body of POST /questions/draft — one block of text, as the user typed it."""
+
+    text: str = Field(min_length=20)
+
+
+class DraftedQuestion(BaseModel):
+    """Freeform text split into the fields a forecast needs.
+
+    Extraction only. Whether the criteria are any good is `CriteriaCritique`'s job —
+    keeping them separate is what lets each be scored on one thing.
+    """
+
+    question: str = Field(description="The question as a single interrogative sentence")
+    resolution_criteria: str
+    resolution_date: datetime
+    category: str
+    resolution_source: str = Field(
+        default="", description="Empty when the text never named one"
+    )
+
+
+class DraftResponse(BaseModel):
+    """Response from POST /questions/draft — extraction plus its critique."""
+
+    parsed: DraftedQuestion
+    critique: CriteriaCritique
+
+
+# ---------- Live runs ----------
+
+RunStatus = Literal["queued", "running", "done", "error", "cancelled", "lost"]
+
+
+class RunEvent(BaseModel):
+    """One frame on the SSE wire.
+
+    `payload` is an untyped dict deliberately. Fourteen event models would be fourteen
+    classes to keep in step with a JavaScript renderer that reads them as JSON
+    regardless; `spec/implemented/spec3.1.md` §3.3 is the schema of record.
+    """
+
+    seq: int
+    run_id: str
+    type: str
+    stage: str = ""
+    attempt: int = 1
+    ts: datetime
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class RunSummary(BaseModel):
+    """A run as the home rail shows it — no events."""
+
+    id: str
+    question: str
+    status: RunStatus
+    stage: str = ""
+    stage_index: int = 0
+    attempt: int = 1
+    tool_calls: int = 0
+    last_seq: int = 0
+    forecast_id: Optional[str] = None
+    error: Optional[str] = None
+    created_at: datetime
+    ended_at: Optional[datetime] = None
+
+
+class RunSnapshot(BaseModel):
+    """Everything about a run without opening a stream. The polling fallback."""
+
+    summary: RunSummary
+    events: list[RunEvent]
+
+
+class CreateRunRequest(BaseModel):
+    """Body of POST /runs."""
+
+    question: str
+    resolution_criteria: str
+    resolution_date: datetime
+    category: str = "general"
+    resolution_source: str = ""
+    max_iterations: int = Field(default=5, ge=1, le=20)
+
+
+class ResumeRunRequest(BaseModel):
+    """Body of POST /runs/{id}/resume.
+
+    `max_iterations` raises the search budget for the retried node. The usual reason to
+    resume is that the old budget ran out, and resuming with the same one would fail at
+    the same place.
+    """
+
+    max_iterations: Optional[int] = Field(default=None, ge=1, le=20)
+
+
 # ---------- Model garden ----------
 
 

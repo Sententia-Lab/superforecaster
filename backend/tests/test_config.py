@@ -54,8 +54,19 @@ def test_get_usage_limits_unlimited_env(monkeypatch):
 
 def test_get_research_limits_scales_with_max_iterations():
     limits = get_research_limits(5)
-    assert limits.request_limit == 11
-    assert limits.tool_calls_limit == 10
+    assert limits.request_limit == 16
+    assert limits.tool_calls_limit == 15
+
+
+def test_research_limits_are_tunable_per_iteration(monkeypatch):
+    """These were literals at 2 and 2, which capped a default run at ten tool calls —
+    reachable in a normal run, and reaching it killed the whole graph."""
+    monkeypatch.setenv("RESEARCH_TOOL_CALLS_PER_ITERATION", "6")
+    monkeypatch.setenv("RESEARCH_REQUESTS_PER_ITERATION", "4")
+
+    limits = get_research_limits(5)
+    assert limits.tool_calls_limit == 30
+    assert limits.request_limit == 21
 
 
 def test_get_synthesis_limits():

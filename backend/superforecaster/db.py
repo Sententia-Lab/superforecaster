@@ -176,8 +176,30 @@ def init_db() -> None:
                 started_at TIMESTAMP NOT NULL,
                 summary_json TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS runs (
+                id TEXT PRIMARY KEY,
+                question TEXT NOT NULL,
+                resolution_criteria TEXT NOT NULL,
+                resolution_source TEXT NOT NULL DEFAULT '',
+                resolution_date TIMESTAMP NOT NULL,
+                category TEXT NOT NULL,
+                status TEXT NOT NULL,
+                forecast_id TEXT REFERENCES forecasts(id) ON DELETE SET NULL,
+                error TEXT,
+                created_at TIMESTAMP NOT NULL,
+                ended_at TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_runs_status ON runs(status);
+            CREATE INDEX IF NOT EXISTS ix_runs_created ON runs(created_at DESC);
             """
         )
+
+    # A run only ever lives in memory (see `superforecaster.runs`). Anything still
+    # marked live after a restart is gone, and saying so beats leaving the UI on a
+    # spinner that will never resolve.
+    mark_orphaned_runs_lost()
 
 
 # ---------- Helpers ----------
@@ -883,6 +905,113 @@ def last_refresh_run() -> dict | None:
     return {
         "started_at": _ensure_aware(row["started_at"]),
         "summary": json.loads(row["summary_json"]),
+    }
+
+
+# ---------- Live runs ----------
+#
+# Only the run's identity and terminal state are stored. The reasoning trail is not:
+# it lives in the in-memory ring buffer in `superforecaster.runs` for as long as the
+# run is watchable, and is then dropped. Persisting it would mean an event table and a
+# replay path for something that is cheaper to re-run than to store.
+
+
+def create_run(
+    run_id: str,
+    question: str,
+    resolution_criteria: str,
+    resolution_source: str,
+    resolution_date: datetime,
+    category: str,
+) -> None:
+    """Insert a queued run.
+
+    Written before the background task is scheduled, so a crash in the gap between the
+    two surfaces as a `lost` run rather than as no record at all.
+    """
+    with connect() as conn:
+        conn.execute(
+            """INSERT INTO runs (id, question, resolution_criteria, resolution_source,
+                                 resolution_date, category, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)""",
+            (
+                run_id,
+                question,
+                resolution_criteria,
+                resolution_source,
+                resolution_date,
+                category,
+                _utcnow(),
+            ),
+        )
+
+
+def finish_run(
+    run_id: str,
+    *,
+    status: str,
+    forecast_id: str | None = None,
+    error: str | None = None,
+) -> None:
+    """Write a run's terminal state. Idempotent — safe to call from a `finally`."""
+    with connect() as conn:
+        conn.execute(
+            """UPDATE runs
+                  SET status = ?, forecast_id = ?, error = ?, ended_at = ?
+                WHERE id = ?""",
+            (status, forecast_id, error, _utcnow(), run_id),
+        )
+
+
+def get_run(run_id: str) -> dict | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+    return _row_to_run(row) if row is not None else None
+
+
+def list_runs(status: str | None = None, limit: int = 20) -> list[dict]:
+    """Newest first.
+
+    Unlike the in-memory registry this survives a restart, which is what lets the UI
+    show a `lost` run instead of nothing.
+    """
+    sql = "SELECT * FROM runs"
+    params: list[object] = []
+    if status is not None:
+        sql += " WHERE status = ?"
+        params.append(status)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+
+    with connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [_row_to_run(r) for r in rows]
+
+
+def mark_orphaned_runs_lost() -> int:
+    """Flip every still-live run to `lost`. Called from `init_db`. Returns the count."""
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE runs SET status = 'lost', ended_at = ? "
+            "WHERE status IN ('queued', 'running')",
+            (_utcnow(),),
+        )
+        return cur.rowcount
+
+
+def _row_to_run(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "question": row["question"],
+        "resolution_criteria": row["resolution_criteria"],
+        "resolution_source": row["resolution_source"],
+        "resolution_date": _ensure_aware(row["resolution_date"]),
+        "category": row["category"],
+        "status": row["status"],
+        "forecast_id": row["forecast_id"],
+        "error": row["error"],
+        "created_at": _ensure_aware(row["created_at"]),
+        "ended_at": _ensure_aware(row["ended_at"]) if row["ended_at"] else None,
     }
 
 

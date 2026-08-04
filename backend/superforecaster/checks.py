@@ -19,6 +19,8 @@ here beyond mathematical constants.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass, field
+from typing import Any
 
 from config import CheckThresholds, get_check_thresholds
 
@@ -44,11 +46,29 @@ def _thresholds(t: CheckThresholds | None) -> CheckThresholds:
     return t if t is not None else get_check_thresholds()
 
 
-def _signed(a: Adjustment) -> float:
-    """An adjustment's contribution in probability points. Noise contributes nothing."""
+def signed_adjustment(a: Adjustment) -> float:
+    """An adjustment's contribution in probability points. Noise contributes nothing.
+
+    Public because the streaming waterfall chart shows the same anchor -> adjustments
+    -> stated walk that `check_derivation` verifies. Re-deriving it there would let the
+    picture and the check disagree about what the evidence implies.
+    """
     if a.is_noise or a.direction == "neutral":
         return 0.0
     return a.magnitude if a.direction == "up" else -a.magnitude
+
+
+_signed = signed_adjustment
+
+
+def implied_probability(o: OutsideView, i: InsideView) -> float:
+    """P6. Where the base rate plus the agent's own stated adjustments lands.
+
+    Clamped to [0, 1] — a chain of adjustments can walk off either end, and a forecast
+    is a probability regardless of what the arithmetic wanted to say.
+    """
+    total = o.aggregate_base_rate + sum(signed_adjustment(a) for a in i.adjustments)
+    return min(1.0, max(0.0, total))
 
 
 def _spread(o: OutsideView) -> float:
@@ -244,8 +264,7 @@ def check_derivation(
     by `evals.scoring.round_number_rate` instead.
     """
     th = _thresholds(t)
-    implied = o.aggregate_base_rate + sum(_signed(a) for a in i.adjustments)
-    implied = min(1.0, max(0.0, implied))
+    implied = implied_probability(o, i)
 
     drift = abs(f.probability - implied)
     if drift > th.derivation_slack:
@@ -417,6 +436,189 @@ def is_large_move(d: UpdateDecision, t: CheckThresholds | None = None) -> bool:
 # ---------- Suites ----------
 
 
+@dataclass(frozen=True)
+class CheckResult:
+    """One check, whether it passed, and the data it looked at.
+
+    Exists because a UI showing the critique needs to distinguish "this check ran and
+    passed" from "this check never ran" — and a list of violations cannot. The label is
+    carried here rather than derived by the caller so the principle numbering has one
+    home.
+
+    `evidence` is the input the verdict was reached on: the actual base rates and
+    spread for P7, the actual anchor-plus-adjustments walk for P6, the five bias slots
+    and which were filled for P15. A violation's `detail` says what went wrong in a
+    sentence; this is the material to check that sentence against.
+    """
+
+    principle: int
+    name: str
+    label: str
+    passed: bool
+    violation: CheckViolation | None = None
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+
+FORECAST_CHECK_LABELS: tuple[tuple[str, int, str], ...] = (
+    ("decomposition", 1, "P1 · P2 decomposition"),
+    ("dragonfly", 7, "P7 dragonfly"),
+    ("signal_vs_noise", 9, "P9 signal vs noise"),
+    ("disconfirming", 14, "P14 disconfirming"),
+    ("bias_coverage", 15, "P15 bias coverage"),
+    ("derivation", 6, "P6 derivation"),
+    ("calibration_hygiene", 16, "P16 calibration hygiene"),
+)
+"""(name, principle, display label) in the order the checks run and are shown.
+
+The order matches `run_forecast_checks_detailed`. A check that fails may report a
+different `name` than the slot it occupies — `check_decomposition` returns
+"knowability" for its P2 arm — so the slot name is what identifies the row, and the
+violation carries its own more specific name.
+"""
+
+
+def check_evidence(
+    forecast: Forecast,
+    decomposition: Decomposition,
+    outside: OutsideView,
+    inside: InsideView,
+    t: CheckThresholds | None = None,
+) -> dict[str, dict[str, Any]]:
+    """The material each check reasoned over, keyed by check name.
+
+    Built here rather than inside the seven validators, so those stay exactly as they
+    were: they answer pass or fail, and this answers "on what basis". A violation's
+    `detail` states the conclusion in a sentence; this is what you check that sentence
+    against. Pure, like everything else in this module.
+    """
+    th = _thresholds(t)
+
+    walk: list[dict[str, Any]] = []
+    running = outside.aggregate_base_rate
+    for a in inside.adjustments:
+        delta = signed_adjustment(a)
+        running = min(1.0, max(0.0, running + delta))
+        walk.append(
+            {
+                "evidence": a.evidence,
+                "direction": a.direction,
+                "delta": delta,
+                "running": running,
+                "is_noise": a.is_noise,
+            }
+        )
+    implied = implied_probability(outside, inside)
+    covered = {b.bias for b in inside.bias_checks}
+    real = [a for a in inside.adjustments if not a.is_noise and a.direction != "neutral"]
+
+    return {
+        "decomposition": {
+            "chain_note": decomposition.chain_note,
+            "sub_claims": [
+                {
+                    "question": s.question,
+                    "probability": s.probability,
+                    "knowability": s.knowability,
+                    "has_rationale": bool(s.rationale.strip()),
+                }
+                for s in decomposition.sub_claims
+            ],
+            "researchable": sum(
+                1 for s in decomposition.sub_claims if s.knowability == "researchable"
+            ),
+        },
+        "dragonfly": {
+            "classes": [
+                {
+                    "name": rc.name,
+                    "base_rate": rc.base_rate,
+                    "sample_size": rc.sample_size,
+                }
+                for rc in outside.reference_classes
+            ],
+            "spread": _spread(outside),
+            "threshold": th.reference_class_disagreement,
+            "disagreement": outside.disagreement,
+        },
+        "signal_vs_noise": {
+            "adjustments": [
+                {
+                    "evidence": a.evidence,
+                    "magnitude": a.magnitude,
+                    "is_noise": a.is_noise,
+                    "flip_test": a.flip_test,
+                }
+                for a in inside.adjustments
+            ],
+        },
+        "disconfirming": {
+            "steel_man": inside.steel_man,
+            "what_would_change_my_mind": inside.what_would_change_my_mind,
+            "directions": [a.direction for a in real],
+            "real_adjustments": len(real),
+        },
+        "bias_coverage": {
+            "required": list(ALL_BIASES),
+            "assessed": [
+                {"bias": b.bias, "assessment": b.assessment} for b in inside.bias_checks
+            ],
+            "missing": [b for b in ALL_BIASES if b not in covered],
+        },
+        "derivation": {
+            "anchor": outside.aggregate_base_rate,
+            "walk": walk,
+            "implied": implied,
+            "stated": forecast.probability,
+            "drift": abs(forecast.probability - implied),
+            "slack": th.derivation_slack,
+        },
+        "calibration_hygiene": {
+            "probability": forecast.probability,
+            "confidence": forecast.confidence,
+            "floor": th.calibration_floor,
+            "ceiling": th.calibration_ceiling,
+            "spread": _spread(outside),
+            "agreement_threshold": th.reference_class_agreement,
+        },
+    }
+
+
+def run_forecast_checks_detailed(
+    forecast: Forecast,
+    decomposition: Decomposition,
+    outside: OutsideView,
+    inside: InsideView,
+    t: CheckThresholds | None = None,
+) -> list[CheckResult]:
+    """Every forecast-side check, passes included, in `FORECAST_CHECK_LABELS` order.
+
+    `run_forecast_checks` is a filter over this, so the two can never disagree about
+    which checks exist.
+    """
+    th = _thresholds(t)
+    violations = [
+        check_decomposition(decomposition, th),
+        check_dragonfly(outside, th),
+        check_signal_vs_noise(inside, th),
+        check_disconfirming(inside, th),
+        check_bias_coverage(inside, th),
+        check_derivation(forecast, outside, inside, th),
+        check_calibration_hygiene(forecast, outside, th),
+    ]
+    evidence = check_evidence(forecast, decomposition, outside, inside, th)
+    return [
+        CheckResult(
+            principle=v.principle if v is not None else principle,
+            name=name,
+            label=label,
+            passed=v is None,
+            violation=v,
+            evidence=evidence.get(name, {}),
+        )
+        for (name, principle, label), v in zip(FORECAST_CHECK_LABELS, violations)
+    ]
+
+
 def run_forecast_checks(
     forecast: Forecast,
     decomposition: Decomposition,
@@ -429,17 +631,13 @@ def run_forecast_checks(
     Takes the pieces rather than a `ForecastState` so this module stays free of any
     dependency on `graphs`, which imports it.
     """
-    th = _thresholds(t)
-    results = [
-        check_decomposition(decomposition, th),
-        check_dragonfly(outside, th),
-        check_signal_vs_noise(inside, th),
-        check_disconfirming(inside, th),
-        check_bias_coverage(inside, th),
-        check_derivation(forecast, outside, inside, th),
-        check_calibration_hygiene(forecast, outside, th),
+    return [
+        r.violation
+        for r in run_forecast_checks_detailed(
+            forecast, decomposition, outside, inside, t
+        )
+        if r.violation is not None
     ]
-    return [v for v in results if v is not None]
 
 
 def run_update_checks(

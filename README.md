@@ -1,6 +1,6 @@
 # Superforecasting Agent
 
-A forecasting platform that implements Tetlock's superforecasting methodology using Pydantic AI. The backend runs three agents (forecast, refresh, resolution) behind a FastAPI API and CLI; the frontend is a Next.js app for submitting questions, viewing predictions, and admin workflows.
+A forecasting platform that implements Tetlock's superforecasting methodology using Pydantic AI. The backend runs nine agents behind two graphs, a FastAPI API, and a CLI. The frontend is a zero-build static app served by the API — you submit a question in plain prose, watch the forecast graph reason through it live over SSE, and get a probability with the anchor-to-stated walk that produced it.
 
 ## Prerequisites
 
@@ -8,7 +8,6 @@ A forecasting platform that implements Tetlock's superforecasting methodology us
 | --- | --- | --- |
 | [uv](https://docs.astral.sh/uv/) | latest | Python deps and backend commands |
 | Python | ≥ 3.12 | Backend + agents |
-| Node.js | ≥ 20 | Frontend local dev |
 | Docker + Compose | optional | Full-stack deployment |
 
 ---
@@ -28,7 +27,6 @@ Copy the example env files and fill in keys:
 
 ```bash
 cp backend/.env.example backend/.env
-cp frontend/.env.example frontend/.env
 ```
 
 **Backend** (`backend/.env`) — minimum to run agents:
@@ -38,16 +36,14 @@ cp frontend/.env.example frontend/.env
 | `PYDANTIC_AI_GATEWAY_API_KEY` | One of these | Logfire Gateway key (`pylf_v2_...`) from [logfire.pydantic.dev](https://logfire.pydantic.dev) → Org → **Gateway** |
 | `ANTHROPIC_API_KEY` | One of these | Direct Anthropic API (bypasses gateway) |
 | `TAVILY_API_KEY` | Recommended | Web search for research phase |
+| `RESEARCH_TOOL_CALLS_PER_ITERATION` | No | Tool-call budget per unit of search depth (default 3) |
+| `RUN_CHECKPOINT_DIR` | No | Where graph snapshots live, so a failed run can resume (default `./run_checkpoints`) |
 | `ADMIN_API_KEY` | For admin API/UI | Bearer token for `/admin/*` routes |
 | `LOGFIRE_TOKEN` | No | Logfire **write token** (`pylf_v1_...`) for cloud traces — separate from gateway key |
 
 Legacy `paig_...` gateway keys no longer work. See the [Logfire Gateway migration guide](https://pydantic.dev/docs/logfire/gateway-migration/).
 
-**Frontend** (`frontend/.env`):
-
-| Variable | Required | Purpose |
-| --- | --- | --- |
-| `NEXT_PUBLIC_API_URL` | No | API base URL (default `http://localhost:8000`) |
+The frontend needs no configuration — it is static files served same-origin by the API.
 
 All backend settings are loaded from `backend/.env` via `backend/config.py`.
 
@@ -179,33 +175,25 @@ Public routes (`GET /forecasts`, `GET /questions`, etc.) need no auth. Admin rou
 
 ### Frontend — web UI (local)
 
-Requires the API running on port 8000 (see above).
+No install and no build. Start the API and open it:
 
 ```bash
-cd frontend
-npm install
-npm run dev
+cd backend && uv run uvicorn api.main:app --reload
 ```
 
-Open http://localhost:3000
+Open http://localhost:8000
 
 | Page | Purpose |
 | --- | --- |
-| `/` | Submit and vote on questions |
-| `/predictions` | Active forecasts |
-| `/resolved` | Resolved forecasts + calibration |
-| `/forecasts/[id]` | Forecast detail |
-| `/admin` | Approve questions, run forecasts, refresh, resolve |
+| `/` | Draft a question, watch a run stream, read saved results |
+| `/admin.html` | Approve questions, run forecasts, refresh, resolve |
 
-On first visit to `/admin`, enter the same value as `ADMIN_API_KEY`. It is stored in browser `localStorage`.
+Starting a run is admin-gated. Click **Admin** in the header and paste the same value as
+`ADMIN_API_KEY`; it is stored in browser `localStorage`. Watching a run needs no token.
 
-**Production build (local):**
-
-```bash
-cd frontend
-npm run build
-npm start
-```
+Your backlog, finished results, and the reasoning trail of each run are kept in
+`localStorage` (the last 12 trails). A run that fails part-way keeps a server-side
+checkpoint — **Resume** re-runs only the step that died.
 
 ### Full stack — Docker
 
@@ -213,14 +201,15 @@ From the repo root:
 
 ```bash
 cp backend/.env.example backend/.env   # fill in keys
-cp frontend/.env.example frontend/.env
 docker compose up --build
 ```
 
+One service. The frontend is bind-mounted into the API container and served at `/`.
+
 | Service | URL |
 | --- | --- |
-| API | http://localhost:8000 |
-| Frontend | http://localhost:3000 |
+| App + API | http://localhost:8000 |
+| Admin | http://localhost:8000/admin.html |
 | Swagger | http://localhost:8000/docs |
 
 SQLite data persists in the `sqlite_data` Docker volume (`DATABASE_PATH=/app/data/superforecaster.db` inside the API container).
@@ -239,33 +228,36 @@ docker compose down
 
 ### Tests
 
-**Backend** (73 tests):
+**Backend** (313 tests, no network and no API keys needed):
 
 ```bash
 cd backend
 uv run pytest
 ```
 
-**Frontend** (build + typecheck):
-
-```bash
-cd frontend
-npm run build
-npm run typecheck
-```
-
 ---
 
 ## Forecast pipeline and usage limits
 
-Forecasting uses a **two-phase pipeline** so runs always attempt to produce a final answer:
+Forecasting is a five-node graph — decompose → find base rates → adjust (inside view) →
+synthesize → critique — with one retry edge from critique back to synthesis. See
+`spec/CURRENT_STATE.md` for the wiring.
 
-1. **Research** — tool-using agent (`search_web`, `search_wikipedia`); budget scales with `--max-iterations` (default 5 → up to 10 tool calls, 11 LLM requests).
-2. **Synthesis** — tool-free agent; always runs after research (even if research hits its limit); up to 4 LLM requests.
+The two researching steps (base rates, inside view) are tool-using and their budget scales
+with search depth (`--max-iterations`, default 5):
 
-If research exhausts its budget, synthesis still runs using partial evidence captured from the research transcript.
+```
+request_limit    = depth × RESEARCH_REQUESTS_PER_ITERATION + 1     # default 3 → 16
+tool_calls_limit = depth × RESEARCH_TOOL_CALLS_PER_ITERATION       # default 3 → 15
+```
 
-Refresh and resolution agents use separate limits from `AGENT_REQUEST_LIMIT` / `AGENT_TOOL_CALLS_LIMIT` (defaults: 40 requests, 20 tool calls).
+Synthesis is tool-free with its own small budget (4 requests). Refresh and resolution use
+`AGENT_REQUEST_LIMIT` / `AGENT_TOOL_CALLS_LIMIT` (40 requests, 20 tool calls).
+
+**Exhausting a budget raises `UsageLimitExceeded` and kills that node** — it does not degrade
+into a partial answer. That is why runs are checkpointed: the completed steps are kept, and
+resuming re-runs only the one that failed. Raise the budget on the way back in, either with a
+higher search depth on resume or by raising `RESEARCH_TOOL_CALLS_PER_ITERATION`.
 
 Optional env overrides in `backend/.env`:
 
@@ -273,6 +265,8 @@ Optional env overrides in `backend/.env`:
 AGENT_MODEL=gateway/anthropic:claude-sonnet-4-6
 AGENT_REQUEST_LIMIT=40
 AGENT_TOOL_CALLS_LIMIT=20
+RESEARCH_TOOL_CALLS_PER_ITERATION=3
+RESEARCH_REQUESTS_PER_ITERATION=3
 ```
 
 ---
@@ -326,11 +320,12 @@ Run from `backend/` so `config.py` loads `.env`.
 
 ```
 backend/
-  superforecaster/   # Agents, models, tools, DB, cron
-  api/               # FastAPI routes
+  superforecaster/   # Agents, graphs, models, tools, checks, DB, cron
+    runs.py          #   live-run registry + typed state -> SSE events
+  api/               # FastAPI routes, including /runs and its SSE stream
   config.py          # Settings from .env
-frontend/            # Next.js app
-spec/                # Spec-driven docs (SPEC.md, CURRENT_STATE.md)
+frontend/            # static app — index.html, app.js, api.js, admin.html
+spec/                # Spec-driven docs (CURRENT_STATE.md, ADR.md)
 docker-compose.yml
 ```
 

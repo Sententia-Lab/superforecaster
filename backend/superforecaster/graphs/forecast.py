@@ -19,7 +19,9 @@ Why a graph rather than four function calls in a row:
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import Any, Callable, Protocol
 
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
@@ -32,6 +34,29 @@ from ..models import CheckViolation, Forecast, ForecastInput
 from .state import ForecastDeps, ForecastState
 
 MAX_SYNTHESIS_ATTEMPTS = 2
+
+STAGE_KEYS: dict[str, str] = {
+    "Decompose": "decompose",
+    "FindBaseRates": "outside",
+    "AdjustInsideView": "inside",
+    "Synthesize": "synth",
+    "Critique": "critique",
+}
+"""Node class name -> the short stage key the UI groups events under."""
+
+
+class GraphHooks(Protocol):
+    """Observation points on a graph run.
+
+    Implemented by `runs.Run`, and None for the CLI, cron, and evals — which is what
+    keeps the streaming machinery from being something every caller has to know about.
+    """
+
+    def stage_started(self, stage: str, attempt: int) -> None:
+        """Called before a node runs."""
+
+    def stage_finished(self, stage: str, state: ForecastState) -> None:
+        """Called after a node runs, with the field it just wrote already on `state`."""
 
 
 @dataclass
@@ -141,6 +166,10 @@ async def run_forecast_graph(
     as_of=None,
     model: str | None = None,
     verbose: bool = False,
+    hooks: GraphHooks | None = None,
+    emit: Callable[[str, dict[str, Any]], None] | None = None,
+    persistence: Any = None,
+    resume: bool = False,
 ) -> tuple[Forecast, list[CheckViolation]]:
     """Run the forecast pipeline. The single entry point for API, CLI, and evals.
 
@@ -149,12 +178,28 @@ async def run_forecast_graph(
 
     Question metadata is re-stamped from the input afterwards — the model has no
     business restating it, and letting it try invites drift.
+
+    `hooks` and `emit` are the streaming seam and both default to off, in which case
+    this drives exactly the nodes `forecast_graph.run()` did. `hooks` fires per node;
+    `emit` rides on `ForecastDeps` down to the agents' own event stream handler, so
+    tool calls and token deltas surface without any agent knowing about it.
+
+    `persistence` snapshots state around every node, so a run that dies part-way can be
+    picked up from its last completed node rather than paying for the whole graph
+    again. `resume=True` restores from those snapshots instead of starting at
+    `Decompose` — the caller is responsible for having rewound a failed snapshot first
+    (see `checkpoints.rewind_for_resume`).
     """
-    deps = ForecastDeps(as_of=as_of, model=model, verbose=verbose)
+    deps = ForecastDeps(as_of=as_of, model=model, verbose=verbose, emit=emit)
     state = ForecastState(input=input)
 
-    result = await forecast_graph.run(Decompose(), state=state, deps=deps)
-    forecast = result.output.model_copy(
+    if hooks is None and persistence is None:
+        result = await forecast_graph.run(Decompose(), state=state, deps=deps)
+        output = result.output
+    else:
+        output = await _run_with_hooks(state, deps, hooks, persistence, resume)
+
+    forecast = output.model_copy(
         update={
             "question": input.question,
             "resolution_criteria": input.resolution_criteria,
@@ -163,6 +208,77 @@ async def run_forecast_graph(
         }
     )
     return forecast, state.violations
+
+
+@asynccontextmanager
+async def _graph_run(
+    state: ForecastState, deps: ForecastDeps, persistence: Any, resume: bool
+):
+    """Either a fresh walk from `Decompose`, or one restored from snapshots.
+
+    On resume the state comes out of persistence, not the `state` argument — that is
+    the point, and it is why the caller does not need to rebuild what already ran.
+    """
+    if resume:
+        if persistence is None:
+            raise ValueError("resume requires a persistence backend")
+        async with forecast_graph.iter_from_persistence(
+            persistence, deps=deps
+        ) as graph_run:
+            yield graph_run
+    else:
+        async with forecast_graph.iter(
+            Decompose(), state=state, deps=deps, persistence=persistence
+        ) as graph_run:
+            yield graph_run
+
+
+async def _run_with_hooks(
+    state: ForecastState,
+    deps: ForecastDeps,
+    hooks: GraphHooks | None,
+    persistence: Any = None,
+    resume: bool = False,
+) -> Forecast:
+    """Drive the graph one node at a time so each transition can be observed.
+
+    `stage_started` fires before the node's agent is called and `stage_finished` after,
+    which is the only ordering that lets a UI show a stage as busy while it works.
+
+    The retry edge needs no special handling: `Synthesize` is simply yielded twice, and
+    `synthesis_attempts` — which the node itself increments — tells the two apart.
+    """
+    async with _graph_run(state, deps, persistence, resume) as graph_run:
+        live_state = graph_run.state
+        node = graph_run.next_node
+        while not isinstance(node, End):
+            stage = STAGE_KEYS[type(node).__name__]
+            if hooks:
+                hooks.stage_started(stage, _attempt_for(stage, live_state))
+            node = await graph_run.next(node)
+            if hooks:
+                hooks.stage_finished(stage, live_state)
+        result = graph_run.result
+
+    assert result is not None
+    # A resumed run's state lives in the GraphRun, not the caller's `state` — copy the
+    # violations back so `run_forecast_graph` reports them either way.
+    state.violations = list(live_state.violations)
+    return result.output
+
+
+def _attempt_for(stage: str, state: ForecastState) -> int:
+    """Which attempt a stage is about to make.
+
+    Only Synthesize and the Critique that judges it can repeat. `synthesis_attempts` is
+    incremented by the Synthesize node, so before it runs the attempt is one higher and
+    after it runs — which is when Critique starts — it is already correct.
+    """
+    if stage == "synth":
+        return state.synthesis_attempts + 1
+    if stage == "critique":
+        return max(1, state.synthesis_attempts)
+    return 1
 
 
 def forecast_mermaid() -> str:

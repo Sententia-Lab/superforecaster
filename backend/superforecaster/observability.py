@@ -6,6 +6,7 @@ import json
 import sys
 from collections.abc import AsyncIterable
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 import logfire
@@ -14,6 +15,7 @@ from pydantic_ai.messages import (
     AgentStreamEvent,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
+    PartDeltaEvent,
     PartEndEvent,
     TextPart,
     ThinkingPart,
@@ -119,6 +121,49 @@ def _preview(value: Any, limit: int | None = 240) -> str:
     return text
 
 
+# The single human-meaningful argument of each search tool. Three parameter names for
+# the same idea, so the UI would otherwise have to know each tool's signature.
+_QUERY_ARG_NAMES = ("query", "topic", "claim")
+
+
+def _tool_query_arg(args: Any) -> str:
+    """The query a tool call is asking about, for display.
+
+    Tool args arrive as a JSON string or a dict depending on the provider, and a call
+    that fails to parse still deserves a readable label rather than an exception.
+    """
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except (ValueError, TypeError):
+            return args
+    if isinstance(args, dict):
+        for name in _QUERY_ARG_NAMES:
+            value = args.get(name)
+            if isinstance(value, str) and value:
+                return value
+        return _preview(args, 200)
+    return _preview(args, 200)
+
+
+def _source_payload(ref: Any) -> dict[str, Any]:
+    """A `SourceRef` as the UI's `source` event.
+
+    `credibility` is None: nothing in the backend scores a domain today, and inventing
+    a number to fill a coloured dot would be the UI lying with the server's authority.
+    """
+    url = getattr(ref, "url", "") or ""
+    published = getattr(ref, "published_date", None)
+    return {
+        "url": url,
+        "domain": urlparse(url).netloc,
+        "title": getattr(ref, "title", "") or urlparse(url).netloc or url,
+        "published_date": published.isoformat() if published else None,
+        "tool": getattr(ref, "tool", ""),
+        "credibility": None,
+    }
+
+
 def _make_event_handler(*, verbose: bool):
     # No cloud sink to inspect the data in later, so print it all locally instead of a short preview.
     full = not cloud_tracing_active()
@@ -130,7 +175,34 @@ def _make_event_handler(*, verbose: bool):
         stream: AsyncIterable[AgentStreamEvent],
     ) -> None:
         tool_n = 0
+        emit = getattr(ctx.deps, "emit", None)
+        # Tools append to `deps.sources_seen` themselves for the leakage audit. Diffing
+        # that list is how a `source` event gets a real URL without touching any tool.
+        sources_reported = len(getattr(ctx.deps, "sources_seen", ()) or ())
+
         async for event in stream:
+            if emit is not None:
+                if isinstance(event, FunctionToolCallEvent):
+                    emit(
+                        "query",
+                        {
+                            "tool": event.part.tool_name,
+                            "q": _tool_query_arg(event.part.args),
+                            "hits": None,
+                        },
+                    )
+                elif isinstance(event, FunctionToolResultEvent):
+                    seen = getattr(ctx.deps, "sources_seen", None) or []
+                    for ref in seen[sources_reported:]:
+                        emit("source", _source_payload(ref))
+                    sources_reported = len(seen)
+                elif isinstance(event, PartDeltaEvent):
+                    # ToolCallPartDelta carries `args_delta`, not `content_delta`, so
+                    # this picks up narration without leaking partial JSON arguments.
+                    delta = getattr(event.delta, "content_delta", None)
+                    if isinstance(delta, str) and delta:
+                        emit("thought", {"delta": delta})
+
             if isinstance(event, FunctionToolCallEvent):
                 tool_n += 1
                 logfire.info(
@@ -211,7 +283,10 @@ async def run_agent(
     full = not cloud_tracing_active()
     show = verbose or full
     logging_active = cloud_tracing_active() or console_active()
-    trace_events = verbose or logging_active
+    # A streamed run needs the handler attached even with tracing and console both off —
+    # the UI is the sink in that case.
+    streaming = getattr(deps, "emit", None) is not None
+    trace_events = verbose or logging_active or streaming
 
     if show:
         print("[agent] starting run...", file=sys.stderr, flush=True)

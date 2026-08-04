@@ -18,6 +18,13 @@ GATEWAY_MIGRATION_URL = "https://pydantic.dev/docs/logfire/gateway-migration/"
 DEFAULT_AGENT_REQUEST_LIMIT = 40
 DEFAULT_AGENT_TOOL_CALLS_LIMIT = 20
 
+# How much budget one unit of `max_iterations` buys a researching agent. These were
+# hardcoded at 2 and 2, which meant the default `max_iterations=5` capped the outside
+# and inside view at ten tool calls — reachable in a normal run, and hitting it killed
+# the whole graph. Configuration rather than a literal, per ADR 14.
+DEFAULT_RESEARCH_REQUESTS_PER_ITERATION = 3
+DEFAULT_RESEARCH_TOOL_CALLS_PER_ITERATION = 3
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -34,6 +41,11 @@ class Settings:
     search_lookback_hours: int
     agent_request_limit: int | None
     agent_tool_calls_limit: int | None
+    run_max_concurrent: int
+    run_event_buffer: int
+    run_retention_minutes: int
+    run_checkpoint_dir: str
+    frontend_dir: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +102,11 @@ def get_settings() -> Settings:
         search_lookback_hours=int(os.getenv("SEARCH_LOOKBACK_HOURS", "48")),
         agent_request_limit=request_limit,
         agent_tool_calls_limit=tool_calls_limit,
+        run_max_concurrent=int(os.getenv("RUN_MAX_CONCURRENT", "5")),
+        run_event_buffer=int(os.getenv("RUN_EVENT_BUFFER", "5000")),
+        run_retention_minutes=int(os.getenv("RUN_RETENTION_MINUTES", "60")),
+        run_checkpoint_dir=os.getenv("RUN_CHECKPOINT_DIR", "./run_checkpoints"),
+        frontend_dir=os.getenv("FRONTEND_DIR", str(_BACKEND_ROOT.parent / "frontend")),
     )
 
 
@@ -128,10 +145,28 @@ def get_usage_limits(*, max_iterations: int | None = None) -> UsageLimits:
 
 
 def get_research_limits(max_iterations: int) -> UsageLimits:
-    """Tight budget for the tool-using research phase."""
+    """Budget for the tool-using research phase.
+
+    Scales with `max_iterations` so a caller asking for deeper research gets it. The
+    per-iteration rates are configurable because the right number is a guess until a
+    backtest says otherwise — and because exceeding it raises `UsageLimitExceeded`,
+    which kills the run rather than degrading it.
+    """
+    requests_per = int(
+        os.getenv(
+            "RESEARCH_REQUESTS_PER_ITERATION",
+            str(DEFAULT_RESEARCH_REQUESTS_PER_ITERATION),
+        )
+    )
+    tool_calls_per = int(
+        os.getenv(
+            "RESEARCH_TOOL_CALLS_PER_ITERATION",
+            str(DEFAULT_RESEARCH_TOOL_CALLS_PER_ITERATION),
+        )
+    )
     return UsageLimits(
-        request_limit=max_iterations * 2 + 1,
-        tool_calls_limit=max_iterations * 2,
+        request_limit=max_iterations * requests_per + 1,
+        tool_calls_limit=max_iterations * tool_calls_per,
     )
 
 
