@@ -71,6 +71,26 @@ Primary offenders: confirmation bias, availability heuristic, narrative fallacy,
 ### 16. Calibration over boldness
 A well-calibrated 60% beats a miscalibrated 90% over time. Resist the pull toward confident-sounding round numbers.
 
+An extreme probability is not forbidden — some questions really do resolve at 0.5%. But it has to be argued for: which reference class carries the extreme, why the spread between the classes does not undercut it, and what would have to be true for it to be wrong. If that argument cannot be written down, the number is wrong and should move. See ADR 29.
+
+---
+
+## On confidence
+
+Confidence and probability are different quantities, and conflating them is a live failure mode rather than a hypothetical one.
+
+**Probability** is the forecast. It already carries the uncertainty: 0.60 means this resolves yes about 60 times in 100. There is no separate "how sure am I" to state on top of it, and a forecast-level confidence label is not a second dimension of the answer — it is a restatement of the first, or it is nothing.
+
+**Confidence**, where the term is used at all, belongs to the edge between a *source* and the *claim it supports*: how strongly does this particular piece of evidence back this particular claim? It is a property of the evidence, not of the forecaster's feelings about the number.
+
+    high    directly on point, from something positioned to know
+    medium  relevant but indirect — adjacent population, older data, partial coverage
+    low     suggestive only: a single report, an analogy, an interested party's claim
+
+A claim is graded by its **strongest** source, not its average one. Citing a solid dataset alongside a weak blog post does not make a claim worse supported than citing the dataset alone; grading by average would teach an agent to hide its weaker sources, which is the opposite of what this is for.
+
+A forecast-level figure may be **derived** from these — weighted across claims by how much each one matters — but it is never asserted. There is deliberately no field in which a model can state its own confidence. A previous version had one, gated a check on it, and the model learned to lower its own confidence label to clear the check. See ADR 29.
+
 ---
 
 ## Quick Reference Checklist
@@ -84,4 +104,7 @@ Before submitting a forecast, verify:
 - [ ] Regression to the mean has been applied where signals are extreme
 - [ ] Probability uses fine granularity (not rounded to nearest 10%)
 - [ ] Disconfirming evidence has been actively sought
+- [ ] Every base rate cites at least one source, graded for how well it supports that claim
+- [ ] The aggregate base rate is the weighted average its own reference classes imply
+- [ ] A probability outside the calibration band carries a written justification
 - [ ] Reasoning trace is recorded for later post-mortem

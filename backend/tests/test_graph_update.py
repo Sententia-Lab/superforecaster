@@ -47,7 +47,6 @@ def a_record(probability: float = 0.50) -> ForecastRecord:
                 id="u1",
                 forecast_id="fc_1",
                 probability=probability,
-                confidence="medium",
                 reasoning="initial",
                 is_late=False,
                 created_at=now,
@@ -213,7 +212,6 @@ async def test_material_consistent_update_is_written(stub):
         {
             "forecast_id": "fc_1",
             "probability": 0.60,
-            "confidence": "medium",
             "reasoning": "r",
         }
     ]

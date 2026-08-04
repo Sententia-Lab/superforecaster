@@ -24,10 +24,12 @@ from superforecaster.models import (
     Decomposition,
     EvidenceItem,
     Forecast,
+    GradedSource,
     InsideView,
     OutsideView,
     ReferenceClass,
     ResearchSummary,
+    SourceRef,
     SubPrediction,
     UpdateDecision,
 )
@@ -46,7 +48,6 @@ def sub(
         question=question,
         probability=probability,
         rationale=rationale,
-        confidence="medium",
         knowability=knowability,
     )
 
@@ -59,9 +60,28 @@ def decomposition(**kwargs) -> Decomposition:
     return Decomposition(**{**defaults, **kwargs})
 
 
-def ref(name: str = "all acquisitions", base_rate: float = 0.20) -> ReferenceClass:
+def graded(
+    source: str = "SEC filings",
+    confidence: str = "high",
+    url: str | None = None,
+) -> GradedSource:
+    return GradedSource(
+        source=source, confidence=confidence, url=url, note="directly on point"
+    )
+
+
+def ref(
+    name: str = "all acquisitions",
+    base_rate: float = 0.20,
+    weight: float = 1.0,
+    sources: list[GradedSource] | None = None,
+) -> ReferenceClass:
     return ReferenceClass(
-        name=name, base_rate=base_rate, sample_size=40, source="SEC filings"
+        name=name,
+        base_rate=base_rate,
+        sample_size=40,
+        weight=weight,
+        sources=sources if sources is not None else [graded()],
     )
 
 
@@ -80,6 +100,7 @@ def adjustment(
     flip_test: str = "I would drop back to the base rate",
     is_noise: bool = False,
     evidence: str = "the board approved it",
+    sources: list[GradedSource] | None = None,
 ) -> Adjustment:
     return Adjustment(
         evidence=evidence,
@@ -87,6 +108,7 @@ def adjustment(
         magnitude=magnitude,
         flip_test=flip_test,
         is_noise=is_noise,
+        sources=sources if sources is not None else [graded()],
     )
 
 
@@ -104,17 +126,19 @@ def inside(**kwargs) -> InsideView:
     return InsideView(**{**defaults, **kwargs})
 
 
-def forecast(probability: float = 0.28, confidence: str = "medium") -> Forecast:
+def forecast(
+    probability: float = 0.28, extreme_justification: str = ""
+) -> Forecast:
     return Forecast(
         question="Will A acquire B?",
         resolution_criteria="Deal closes",
         resolution_date=datetime(2027, 1, 1, tzinfo=timezone.utc),
         category="business",
         probability=probability,
-        confidence=confidence,
         decompositions=[sub(), sub(), sub()],
         research=ResearchSummary(),
         reasoning="base rate then adjustments",
+        extreme_justification=extreme_justification,
     )
 
 
@@ -377,34 +401,266 @@ def test_calibration_hygiene_clean_in_range():
     assert checks.check_calibration_hygiene(forecast(0.28), outside()) is None
 
 
-def test_calibration_hygiene_rejects_unearned_extreme():
-    v = checks.check_calibration_hygiene(forecast(0.995, "medium"), outside())
+def test_calibration_hygiene_flags_unargued_extreme():
+    v = checks.check_calibration_hygiene(forecast(0.995), outside())
     assert v is not None
     assert v.principle == 16
 
 
-def test_calibration_hygiene_allows_earned_extreme():
-    """High confidence plus reference classes that agree earns the extreme."""
+def test_calibration_hygiene_is_advisory_not_blocking():
+    """P16 stopped being a gate: it flags an extreme, it does not send it back.
+
+    The old check blocked, and a retry could satisfy it by lowering its own confidence
+    label and retreating the probability — neither of which is new evidence.
+    """
+    v = checks.check_calibration_hygiene(forecast(0.995), outside())
+    assert v is not None
+    assert v.blocking is False
+
+
+def test_calibration_hygiene_allows_argued_extreme():
+    """An extreme is justified, not forbidden — writing the argument is what clears it."""
     o = outside(
         reference_classes=[ref("a", 0.97), ref("b", 0.99)], aggregate_base_rate=0.98
     )
-    assert checks.check_calibration_hygiene(forecast(0.99, "high"), o) is None
+    f = forecast(0.99, extreme_justification="class 'b' carries it; n=40 and both agree")
+    assert checks.check_calibration_hygiene(f, o) is None
 
 
-def test_calibration_hygiene_rejects_extreme_when_classes_disagree():
+def test_calibration_hygiene_flags_retreat_to_the_boundary():
+    """The regression this whole change exists for.
+
+    A failing attempt used to pass by moving the probability to exactly the floor while
+    *lowering* its confidence. The band check was `floor <= p <= ceiling`, so landing on
+    the boundary skipped the earned-extreme test entirely and nothing about the evidence
+    had changed.
+    """
     o = outside(
-        reference_classes=[ref("a", 0.40), ref("b", 0.95)],
-        aggregate_base_rate=0.70,
+        reference_classes=[ref("a", 0.05), ref("b", 0.35)],
+        aggregate_base_rate=0.20,
         disagreement="explained",
     )
-    assert checks.check_calibration_hygiene(forecast(0.99, "high"), o) is not None
+    v = checks.check_calibration_hygiene(forecast(0.02), o)
+    assert v is not None
+    assert v.principle == 16
+    assert "edge" in v.detail
+
+
+def test_calibration_hygiene_allows_the_boundary_when_classes_agree():
+    """Sitting at the edge is only suspect when the outside view is itself unsure."""
+    o = outside(
+        reference_classes=[ref("a", 0.02), ref("b", 0.04)], aggregate_base_rate=0.03
+    )
+    assert checks.check_calibration_hygiene(forecast(0.02), o) is None
 
 
 def test_calibration_bounds_are_configurable(monkeypatch):
     monkeypatch.setenv("CHECK_CALIBRATION_CEILING", "0.999")
-    assert (
-        checks.check_calibration_hygiene(forecast(0.995, "medium"), outside()) is None
+    assert checks.check_calibration_hygiene(forecast(0.995), outside()) is None
+
+
+# ---------- P1: sub-claim linkage ----------
+
+
+def ided(*ids: str) -> Decomposition:
+    return decomposition(
+        sub_claims=[sub().model_copy(update={"id": i}) for i in ids or ("sc1", "sc2", "sc3")]
     )
+
+
+def test_linkage_accepts_references_to_real_sub_claims():
+    d = ided("sc1", "sc2", "sc3")
+    o = outside(reference_classes=[ref("a", 0.20), ref("b", 0.24)])
+    o.reference_classes[0].sub_claim_ids = ["sc1"]
+    f = forecast().model_copy(update={"decompositions": d.sub_claims})
+    assert checks.check_linkage(f, d, o, inside()) is None
+
+
+def test_linkage_catches_an_invented_sub_claim_id():
+    d = ided("sc1", "sc2", "sc3")
+    o = outside(reference_classes=[ref("a", 0.20), ref("b", 0.24)])
+    o.reference_classes[0].sub_claim_ids = ["sc9"]
+    f = forecast().model_copy(update={"decompositions": d.sub_claims})
+    v = checks.check_linkage(f, d, o, inside())
+    assert v is not None
+    assert "sc9" in v.detail
+
+
+def test_linkage_catches_synthesis_dropping_a_sub_claim():
+    """Synthesis regenerates `Forecast.decompositions`; every link dangles if it drifts."""
+    d = ided("sc1", "sc2", "sc3")
+    # Deep copies: a slice would alias the decomposition's own objects, so renaming one
+    # would rename it on both sides and the check would have nothing to find.
+    carried = [s.model_copy(deep=True) for s in d.sub_claims]
+    carried[2] = carried[2].model_copy(update={"id": "renamed"})
+    f = forecast().model_copy(update={"decompositions": carried})
+    v = checks.check_linkage(f, d, outside(), inside())
+    assert v is not None
+    assert "points at nothing" in v.detail
+
+
+def test_linkage_allows_a_class_that_addresses_the_whole_question():
+    d = ided("sc1", "sc2", "sc3")
+    f = forecast().model_copy(update={"decompositions": d.sub_claims})
+    assert checks.check_linkage(f, d, outside(), inside()) is None
+
+
+# ---------- P7: base-rate aggregation ----------
+
+
+def test_aggregation_accepts_an_honestly_weighted_anchor():
+    o = outside(
+        reference_classes=[ref("a", 0.10, weight=0.25), ref("b", 0.90, weight=0.75)],
+        aggregate_base_rate=0.70,
+        disagreement="explained",
+    )
+    assert checks.check_aggregation(o) is None
+
+
+def test_aggregation_rejects_an_anchor_the_weights_do_not_support():
+    """The hole this check fills: the anchor used to be an unverifiable blend."""
+    o = outside(
+        reference_classes=[ref("a", 0.10, weight=0.5), ref("b", 0.90, weight=0.5)],
+        aggregate_base_rate=0.85,
+        disagreement="explained",
+    )
+    v = checks.check_aggregation(o)
+    assert v is not None
+    assert v.principle == 7
+    assert "0.500" in v.detail
+
+
+def test_aggregation_slack_is_configurable(monkeypatch):
+    o = outside(
+        reference_classes=[ref("a", 0.20, weight=1.0), ref("b", 0.30, weight=1.0)],
+        aggregate_base_rate=0.35,
+    )
+    assert checks.check_aggregation(o) is not None
+    monkeypatch.setenv("CHECK_AGGREGATE_SLACK", "0.15")
+    assert checks.check_aggregation(o) is None
+
+
+def test_aggregation_reports_when_no_class_carries_weight():
+    o = outside(
+        reference_classes=[ref("a", 0.20, weight=0.0), ref("b", 0.30, weight=0.0)],
+        aggregate_base_rate=0.25,
+    )
+    v = checks.check_aggregation(o)
+    assert v is not None
+    assert "no reference class carries any weight" in v.detail
+
+
+# ---------- Citations ----------
+
+
+def test_citations_pass_when_every_url_was_retrieved():
+    o = outside(
+        reference_classes=[
+            ref("a", 0.20, sources=[graded(url="https://x.test/a")]),
+            ref("b", 0.24),
+        ]
+    )
+    seen = [SourceRef(url="https://x.test/a", tool="search_web")]
+    assert checks.check_citations(o, inside(), seen) is None
+
+
+def test_citations_catch_a_url_that_was_never_fetched():
+    o = outside(
+        reference_classes=[
+            ref("a", 0.20, sources=[graded(url="https://invented.test/report")]),
+            ref("b", 0.24),
+        ]
+    )
+    v = checks.check_citations(o, inside(), [])
+    assert v is not None
+    assert "invented.test" in v.detail
+
+
+def test_citations_ignore_sources_with_no_url():
+    """A paywalled dataset is a legitimate source; only a fabricated link is a lie."""
+    assert checks.check_citations(outside(), inside(), []) is None
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "/goto?url=CAESzAEB7keqTahb",  # a redirect fragment, not a link
+        "goto?url=abc",
+        "javascript:alert(1)",
+        "   ",
+        "not a url at all",
+    ],
+)
+def test_graded_source_drops_a_url_that_is_not_absolute_http(bad):
+    """A relative href resolves against our own origin — a dead link that looks real.
+
+    Search results reach the model as prose, so what comes back is whatever it copied.
+    """
+    assert GradedSource(source="x", url=bad, confidence="high", note="n").url is None
+
+
+def test_graded_source_keeps_a_real_url():
+    s = GradedSource(
+        source="x", url="https://example.test/a?b=c", confidence="high", note="n"
+    )
+    assert s.url == "https://example.test/a?b=c"
+
+
+# ---------- Source confidence ----------
+
+
+def test_claim_support_takes_the_strongest_source():
+    """Max, not mean — citing extra weak corroboration must not downgrade a claim.
+
+    Averaging would teach the agent to cite less, which is the opposite of the point.
+    """
+    assert checks.claim_support([graded(confidence="high")]) == "high"
+    assert (
+        checks.claim_support([graded(confidence="high"), graded(confidence="low")])
+        == "high"
+    )
+
+
+def test_claim_support_with_no_sources_is_low():
+    assert checks.claim_support([]) == "low"
+
+
+def test_aggregate_source_confidence_is_weighted_by_fit_and_magnitude():
+    strong = outside(
+        reference_classes=[
+            ref("a", 0.20, weight=1.0, sources=[graded(confidence="high")]),
+            ref("b", 0.24, weight=1.0, sources=[graded(confidence="high")]),
+        ]
+    )
+    i = inside(
+        adjustments=[adjustment("up", 0.10, sources=[graded(confidence="high")])]
+    )
+    assert checks.aggregate_source_confidence(strong, i) == "high"
+
+    thin = outside(
+        reference_classes=[
+            ref("a", 0.20, weight=1.0, sources=[graded(confidence="low")]),
+            ref("b", 0.24, weight=1.0, sources=[graded(confidence="low")]),
+        ]
+    )
+    assert checks.aggregate_source_confidence(thin, i) == "medium"
+
+
+def test_aggregate_source_confidence_skips_noise_adjustments():
+    """Noise contributes zero to the probability, so it must not drag the grade."""
+    o = outside(
+        reference_classes=[
+            ref("a", 0.20, sources=[graded(confidence="high")]),
+            ref("b", 0.24, sources=[graded(confidence="high")]),
+        ]
+    )
+    noisy = inside(
+        adjustments=[
+            adjustment("up", 0.10, sources=[graded(confidence="high")]),
+            adjustment("up", 0.0, is_noise=True, sources=[]),
+        ]
+    )
+    assert checks.aggregate_source_confidence(o, noisy) == "high"
 
 
 # ---------- P11: Bayesian direction ----------

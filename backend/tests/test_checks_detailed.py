@@ -32,7 +32,7 @@ def test_returns_every_check_in_display_order():
     assert [r.name for r in detailed()] == [n for n, _, _ in checks.FORECAST_CHECK_LABELS]
 
 
-def test_a_clean_forecast_passes_all_seven():
+def test_a_clean_forecast_passes_every_check():
     results = detailed(0.28)
     assert all(r.passed for r in results)
     assert all(r.violation is None for r in results)

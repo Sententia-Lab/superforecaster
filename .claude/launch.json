@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "superforecaster",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "uvicorn", "api.main:app", "--port", "8099"],
+      "cwd": "backend",
+      "port": 8099
+    }
+  ]
+}

@@ -40,14 +40,34 @@ average them and move on. Leave `disagreement` empty only when the classes broad
 agree.
 
 AGGREGATE
-Set `aggregate_base_rate` to your best single anchor across the classes, weighted by
-how well each fits this specific question. Say nothing about case specifics — that is
-the next step's job, and its adjustments are measured as a delta from your number.
+Set `weight` on each class: how well it fits THIS question, relative to the others.
+This is fit, not size — a class drawn from 10,000 cases that only glances at the
+question deserves a low weight. Then set `aggregate_base_rate` to the weighted average
+those weights imply. A check recomputes it, so the two have to agree.
+
+Say nothing about case specifics — that is the next step's job, and its adjustments are
+measured as a delta from your number.
+
+GRADE YOUR SOURCES
+Every class needs at least one entry in `sources`. Grade each for how strongly it
+supports *this specific* base rate, not how reputable it is in general:
+    high    a real dataset or study measuring this population directly
+    medium  relevant but indirect — adjacent population, older data, partial coverage
+    low     a single report, a secondhand figure, or a number you had to infer
+Say why in `note`. Set `source` to a human label — the publication, dataset, or filing
+("PitchBook M&A Report 2024"), never a bare URL. Put the link in `url`, and only when
+you actually retrieved that page: a check verifies cited URLs against what your searches
+returned, and inventing one is a violation. Copy the link exactly as the search results
+gave it, in full — a partial or redirect fragment is dropped and the citation loses its
+link.
+
+Padding the list with weak citations does not help you — a class is graded by its
+*strongest* source, so an extra thin one neither raises nor lowers it. If the evidence
+is genuinely thin, say so and lower `sample_size` rather than inventing a rate.
 
 BUDGET
 You have a limited search budget. Prefer a few well-chosen searches over exhaustive
-looping. If evidence is thin, say so in the class `source` and lower `sample_size`
-rather than inventing a rate.
+looping.
 """
 
 
@@ -82,14 +102,18 @@ async def run_outside_view(
 ) -> OutsideView:
     """Find reference classes and base rates. Searches; budget-limited."""
     researchable = [
-        s.question for s in decomposition.sub_claims if s.knowability == "researchable"
+        s for s in decomposition.sub_claims if s.knowability == "researchable"
     ]
     focus = (
         "Prioritise base rates for these sub-claims, which were labelled researchable:\n"
-        + "\n".join(f"  - {q}" for q in researchable)
+        + "\n".join(f"  - {s.id}: {s.question}" for s in researchable)
+        + "\n\nSet `sub_claim_ids` on each reference class to the ids it informs, so a "
+        "reader can tell which part of the question a rate answers. Leave it empty for "
+        "a class that speaks to the question as a whole."
         if researchable
         else "No sub-claim was labelled researchable — find the best reference class you "
-        "can for the question as a whole, and be explicit about how loose the fit is."
+        "can for the question as a whole, and be explicit about how loose the fit is. "
+        "Leave `sub_claim_ids` empty."
     )
 
     prompt = f"""Establish the outside view for this question.

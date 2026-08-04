@@ -109,11 +109,14 @@ def score_outside_view(out: Any, expect: dict) -> ComponentScore:
     truth = expect.get("true_base_rate")
     assertions = {
         "two_or_more_classes": len(out.reference_classes) >= 2,
-        "every_class_sourced": all(rc.source.strip() for rc in out.reference_classes),
+        "every_class_sourced": all(
+            any(s.source.strip() for s in rc.sources) for rc in out.reference_classes
+        ),
         "every_class_has_sample": all(
             rc.sample_size >= 1 for rc in out.reference_classes
         ),
         "check_clean": checks.check_dragonfly(out) is None,
+        "anchor_matches_weights": checks.check_aggregation(out) is None,
     }
     if truth is not None:
         assertions["rate_near_documented_truth"] = (

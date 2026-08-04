@@ -135,7 +135,6 @@ class GuardUpdate(BaseNode[UpdateState, ForecastDeps, UpdateOutcome]):
         db.add_forecast_update(
             forecast_id=ctx.state.record.id,
             probability=decision.posterior,
-            confidence="medium",
             reasoning=decision.reasoning,
         )
         return End(

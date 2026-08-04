@@ -28,16 +28,15 @@ def _make_forecast(
         resolution_date=resolution_date,
         category="test",
         probability=probability,
-        confidence="medium",
         decompositions=[
             SubPrediction(
-                question="Sub 1?", probability=0.5, rationale="r1", confidence="medium"
+                question="Sub 1?", probability=0.5, rationale="r1"
             ),
             SubPrediction(
-                question="Sub 2?", probability=0.5, rationale="r2", confidence="medium"
+                question="Sub 2?", probability=0.5, rationale="r2"
             ),
             SubPrediction(
-                question="Sub 3?", probability=0.5, rationale="r3", confidence="medium"
+                question="Sub 3?", probability=0.5, rationale="r3"
             ),
         ],
         research=ResearchSummary(
@@ -89,7 +88,7 @@ def test_add_update_appends_row():
     fid = db.save_forecast(f, resolution_source="x")
 
     update = db.add_forecast_update(
-        fid, probability=0.6, confidence="high", reasoning="new evidence"
+        fid, probability=0.6, reasoning="new evidence"
     )
     assert update.probability == pytest.approx(0.6)
     assert update.is_late is False
@@ -107,7 +106,7 @@ def test_add_update_after_resolution_date_raises():
     fid = db.save_forecast(f, resolution_source="x", submission_gap_days=0)
 
     with pytest.raises(db.StateError, match="update deadline"):
-        db.add_forecast_update(fid, probability=0.7, confidence="medium", reasoning="r")
+        db.add_forecast_update(fid, probability=0.7, reasoning="r")
 
 
 def test_late_flag_set_within_24h_of_resolution():
@@ -116,7 +115,7 @@ def test_late_flag_set_within_24h_of_resolution():
     fid = db.save_forecast(f, resolution_source="x", submission_gap_days=0)
 
     update = db.add_forecast_update(
-        fid, probability=0.6, confidence="medium", reasoning="r"
+        fid, probability=0.6, reasoning="r"
     )
     assert update.is_late is True
 
@@ -140,8 +139,8 @@ def test_time_weighted_average_matches_spec_example():
     with db.connect() as conn:
         conn.execute(
             """
-            INSERT INTO forecast_updates (id, forecast_id, probability, confidence, reasoning, is_late, created_at)
-            VALUES ('update-2', ?, 0.50, 'medium', 'change', 0, ?)
+            INSERT INTO forecast_updates (id, forecast_id, probability, reasoning, is_late, created_at)
+            VALUES ('update-2', ?, 0.50, 'change', 0, ?)
             """,
             (fid, base + timedelta(days=60)),
         )

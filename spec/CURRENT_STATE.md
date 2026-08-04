@@ -8,6 +8,32 @@ implements — `P<n>` throughout this document refers to them.
 
 ---
 
+## What changed most recently (2026-08-04)
+
+**Forecast-level `confidence` is gone.** It was self-reported, undefined in the methodology
+doc, and read by exactly one consumer: the P16 gate. That gate could be cleared by *lowering*
+the label and retreating the probability to the band edge, which is what prompted the change.
+See ADR 29.
+
+Confidence is now `GradedSource.confidence` — a property of the edge between a source and the
+claim it supports. It aggregates to a forecast-level figure that is derived, never asserted.
+`ResolutionCheckResult.confidence` survives untouched: it grades an observation about the
+world, a different axis.
+
+**P16 is advisory.** `check_calibration_hygiene` sets `blocking=False` — the first and only
+non-blocking check — and keys off the new `Forecast.extreme_justification`.
+
+**Three blocking checks were added**, all arithmetic or set membership: `check_aggregation`,
+`check_citations`, `check_linkage`. Reference classes gained `weight` and `sources`;
+adjustments gained `sources`; sub-claims gained `id`, and both classes and adjustments point
+back at them through `sub_claim_ids`.
+
+**The `forecast_updates.confidence` column was dropped.** There is no migration mechanism in
+the repo (only `CREATE TABLE IF NOT EXISTS`), so an existing `superforecaster.db` must be
+deleted and recreated. Alembic remains unbuilt — see Known Issues.
+
+---
+
 ## System Map
 
 ```mermaid
@@ -122,11 +148,17 @@ Several constraints below carry methodology weight rather than just validating s
 are the half of a principle a schema can enforce.
 
 ```
+GradedSource                      # one source, and how well it backs ONE claim
+  source         str
+  url            str | None       # only when actually retrieved; check_citations verifies
+  confidence     SourceConfidence # the ONLY confidence concept on the forecast path
+  note           str              # why that grade — strength, and fit to this claim
+
 SubPrediction                     # P1 + P2 — one Fermi-ized sub-question
+  id             str = ""         # "sc1"; stamped by run_decompose, not the model
   question       str              # specific, testable
   probability    float            # ge=0, le=1
   rationale      str
-  confidence     Confidence
   knowability    Knowability = "judgment"
                                   # researchable = a base rate can be looked up.
                                   # Defaulted so forecasts persisted before P2 existed
@@ -140,7 +172,10 @@ ReferenceClass                    # one outside-view lens
   name           str              # what population this rate is drawn from
   base_rate      float            # ge=0, le=1
   sample_size    int              # ge=1 — how many cases back the rate
-  source         str
+  weight         float            # ge=0, le=1 — FIT to this question, not size.
+                                  # check_aggregation recomputes the anchor from these.
+  sources        list[GradedSource]    # min_length=1
+  sub_claim_ids  list[str] = []   # which SubPrediction.ids; empty = the whole question
   analogs        list[HistoricalAnalog]
 
 OutsideView                       # output of outside_view_agent
@@ -154,6 +189,8 @@ Adjustment                        # one inside-view move away from the base rate
   magnitude      float            # ge=0, le=0.5 — probability POINTS, not a multiplier
   flip_test      str              # P9 — "if the opposite were true my estimate would ___"
   is_noise       bool = False     # set when the flip test shows it isn't decision-relevant
+  sources        list[GradedSource] = []   # may be empty — a judgment call, grades as low
+  sub_claim_ids  list[str] = []   # which SubPrediction.ids; empty = the whole question
 
 BiasCheck
   bias           BiasName
@@ -168,10 +205,10 @@ InsideView                        # output of inside_view_agent
 Forecast                          # output of synthesize_agent; the persisted artifact
   question, resolution_criteria, resolution_date, category
   probability    float            # ge=0, le=1
-  confidence     Confidence
   decompositions list[SubPrediction]   # min_length=3, max_length=5
   research       ResearchSummary
   reasoning      str              # must trace base rate -> adjustments -> final
+  extreme_justification str = ""  # P16 — required outside the calibration band
 
 ForecastInput                     # what the graph receives
   question, resolution_criteria, resolution_date, category
@@ -299,7 +336,7 @@ ModelEntry                        # one model in the garden
 
 ```
 ForecastUpdateRecord              # one probability update row
-  id, forecast_id, probability, confidence, reasoning, is_late, created_at
+  id, forecast_id, probability, reasoning, is_late, created_at
 
 ForecastRecord                    # a forecast plus its full update history
   id, question, resolution_criteria, resolution_source, category
@@ -354,7 +391,7 @@ ComponentReport agent, n, pass_rate, assertion_pass_rates, scores
 ```
 CreateForecastRequest    question, resolution_criteria, resolution_source,
                          resolution_date, category, submission_gap_days=7
-AddUpdateRequest         probability, confidence, reasoning
+AddUpdateRequest         probability, reasoning
 ResolveRequest           outcome            # 0.0, 1.0, or None for ambiguous
 CreateQuestionRequest    text, resolution_criteria, proposed_resolution_date
 EditQuestionRequest      text?, resolution_criteria?, proposed_resolution_date?
@@ -382,7 +419,7 @@ get_settings() -> Settings
     monkeypatch. Frozen dataclass, not BaseSettings.
 
 get_check_thresholds() -> CheckThresholds
-    The eight CHECK_* values used by checks.py. Also re-read every call.
+    The eleven CHECK_* values used by checks.py. Also re-read every call.
 
 get_model_garden_margin_days() -> int
     Safety margin applied to published training cutoffs. MODEL_GARDEN_MARGIN_DAYS, default 90.
@@ -468,9 +505,40 @@ check_bias_coverage(i, t=None) -> CheckViolation | None
     pins the list at five entries but cannot stop five of the same bias.
 
 check_calibration_hygiene(f, o, t=None) -> CheckViolation | None
-    P16. Probabilities outside [calibration_floor, calibration_ceiling] are allowed only
-    when confidence == "high" AND the reference classes agree within
-    t.reference_class_agreement. Near-certainty has to be earned by the outside view.
+    P16. **ADVISORY — blocking=False.** The only non-blocking check. Flags a probability
+    outside [calibration_floor, calibration_ceiling] with an empty extreme_justification,
+    and one sitting AT the band edge while the classes span more than
+    t.reference_class_agreement. An extreme is justified, not forbidden; see ADR 29.
+
+check_aggregation(o, t=None) -> CheckViolation | None
+    P7. aggregate_base_rate must equal the weighted mean its own reference-class weights
+    imply, within t.aggregate_slack. The anchor of the whole P6 chain used to be a blend
+    the agent performed in its head and nothing could recompute.
+
+check_citations(o, i, seen) -> CheckViolation | None
+    Every GradedSource.url must appear in `seen` (deps.sources_seen). A cited URL renders
+    as a clickable link, so a fabricated one is worse than none. `seen` arrives as a plain
+    list[SourceRef] because this module must not import ForecastDeps.
+
+check_linkage(f, d, o, i, t=None) -> CheckViolation | None
+    P1. Every sub_claim_ids entry must name a real SubPrediction.id, and the ids the
+    forecast carries must match the ones the decomposition produced — synthesis
+    regenerates Forecast.decompositions, and a reworded sub-claim leaves every link
+    pointing at nothing.
+
+claim_support(sources) -> SourceConfidence
+    A claim's STRONGEST source, not its mean. Averaging would penalise citing extra
+    corroboration, which teaches the agent to cite less. Empty -> "low".
+
+aggregate_source_confidence(o, i, t=None) -> SourceConfidence
+    The forecast-level figure, derived and never asserted. claim_support per claim, then
+    a weighted mean: reference classes by `weight`, adjustments by |magnitude| with noise
+    skipped. The two views are normalised separately and averaged, since a class weight
+    and a magnitude are different units.
+
+weighted_base_rate(o) -> float | None
+    What the classes and their weights imply the anchor should be. Public so the UI and
+    check_aggregation cannot disagree. None when nothing carries weight.
 
 evidence_weight(d) -> float
     P11. SUM log(p_if_true / p_if_false) — the total weight of evidence. Likelihoods of 0
@@ -503,20 +571,22 @@ check_evidence(forecast, decomposition, outside, inside, t=None)
     this answers "on what basis". A violation's `detail` states a conclusion; this is
     what you check that conclusion against.
 
-run_forecast_checks_detailed(forecast, decomposition, outside, inside, t=None)
-    -> list[CheckResult]
-    All seven checks, passes included, in FORECAST_CHECK_LABELS order. Exists because a
+run_forecast_checks_detailed(forecast, decomposition, outside, inside, t=None,
+                             sources_seen=()) -> list[CheckResult]
+    All ten checks, passes included, in FORECAST_CHECK_LABELS order. Exists because a
     UI showing the critique must distinguish "ran and passed" from "never ran", which a
     list of violations cannot. `CheckResult` carries principle, name, label, passed,
     and the violation (None on a pass).
 
-    Passing results carry no detail — the seven validators only produce a message on
+    Passing results carry no detail — the validators only produce a message on
     failure. The UI renders the check name alone rather than inventing one.
 
-run_forecast_checks(forecast, decomposition, outside, inside, t=None) -> list[CheckViolation]
-    All seven forecast-side checks. Now a filter over run_forecast_checks_detailed, so
-    the two can never disagree about which checks exist. Takes the four pieces rather
-    than a ForecastState so this module keeps no dependency on `graphs`.
+run_forecast_checks(forecast, decomposition, outside, inside, t=None, sources_seen=())
+    -> list[CheckViolation]
+    All ten forecast-side checks. A filter over run_forecast_checks_detailed, so the two
+    can never disagree about which checks exist. Takes the pieces rather than a
+    ForecastState so this module keeps no dependency on `graphs`; `sources_seen` arrives
+    the same way, since it lives on ForecastDeps.
 
 signed_adjustment(a) -> float
     An adjustment's contribution; noise and neutral contribute 0. Public because the
@@ -534,7 +604,12 @@ run_update_checks(d, t=None) -> list[CheckViolation]
 blocking(violations) -> list[CheckViolation]
     The subset that should trigger another synthesis attempt.
 
-_spread(o) -> float        # max - min base_rate across reference classes
+base_rate_spread(o) -> float
+    max - min base_rate across the reference classes. A RANGE, not a variance — the
+    thresholds are calibrated to one, and two classes 0.20 apart have a variance of 0.01.
+    Public because the UI reports it as a statistic in its own right. `_spread` is
+    retained as an alias.
+
 _thresholds(t) -> CheckThresholds
 ```
 
@@ -835,7 +910,7 @@ connect() -> Iterator[Connection]          # contextmanager
 hash_ip(ip) -> str                         # SHA-256; raw IPs never stored
 
 save_forecast(forecast, resolution_source, submission_gap_days=7) -> str
-add_forecast_update(forecast_id, probability, confidence, reasoning) -> ForecastUpdateRecord
+add_forecast_update(forecast_id, probability, reasoning) -> ForecastUpdateRecord
 get_forecast(forecast_id) -> ForecastRecord | None
 list_forecasts(status=None, limit=50, offset=0) -> list[ForecastRecord]
 list_active_forecast_ids() -> list[str]           # unresolved, non-ambiguous
@@ -1146,8 +1221,11 @@ Backend reads everything through `config.py`. `backend/.env`; see `backend/.env.
 | `SEARCH_LOOKBACK_HOURS` | Update news window | `48` |
 | `CHECK_RC_DISAGREEMENT` | P7 — spread demanding an explanation | `0.20` |
 | `CHECK_RC_AGREEMENT` | P16 — spread counting as agreement | `0.10` |
-| `CHECK_CALIBRATION_FLOOR` | P16 — lowest unearned probability | `0.02` |
-| `CHECK_CALIBRATION_CEILING` | P16 — highest unearned probability | `0.98` |
+| `CHECK_AGGREGATE_SLACK` | P7 — stated vs weight-implied anchor tolerance | `0.05` |
+| `CHECK_SUPPORT_HIGH` | Mean source rank (0–2) at or above which support reads "high" | `1.5` |
+| `CHECK_SUPPORT_MEDIUM` | …and "medium"; below it, "low" | `0.5` |
+| `CHECK_CALIBRATION_FLOOR` | P16 — bottom of the band needing a justification | `0.02` |
+| `CHECK_CALIBRATION_CEILING` | P16 — top of the band needing a justification | `0.98` |
 | `CHECK_LARGE_MOVE` | P12 — jump triggering VerifyLargeMove | `0.75` |
 | `CHECK_DERIVATION_SLACK` | P6 — stated vs implied tolerance | `0.05` |
 | `CHECK_ROUND_NUMBER_RATE` | P8 — run-level rounding rate (unused until spec4) | `0.40` |
@@ -1215,7 +1293,14 @@ touches.
 `pick_clean_model` returns `None` for everything. Needs live API keys.
 
 **Two dead models.** `ForecastResearchNotes` and `ForecastRefreshResult` have zero references
-outside `models.py`.
+outside `models.py`. (`ForecastRefreshResult.new_confidence`, dead in the same way, was deleted
+outright on 2026-08-04.)
+
+**There is no schema migration mechanism.** `db.init_db()` is `CREATE TABLE IF NOT EXISTS` and
+nothing else — no Alembic, no `PRAGMA user_version`, no `ALTER TABLE` anywhere. An existing
+`.db` therefore keeps its old columns forever, and dropping one means deleting the file. This
+was acceptable on 2026-08-04 because nothing is deployed; it stops being acceptable the moment
+something is. Alembic is the agreed fix and is not built.
 
 **`test_forecasting_baseline/run_baseline.py` raises on import** — `datetime.date(2022, 2, 1)`
 after `from datetime import datetime`. Its 66 questions are unusable for clean scoring anyway
@@ -1235,6 +1320,24 @@ prompts remain unexercised (see below).
 **Two limits the UI carries rather than hides.** `thought` events only appear when the model
 emits thinking or text before its structured output, so a stage can legitimately show tool
 calls and no narration. `source.credibility` is always `null` — nothing scores a domain.
+
+**Sources are agent-typed strings, not retrieved objects.** The search tools return one prose
+blob (`_format_results` flattens Tavily's title/url/date/snippet into text), so `GradedSource`
+is filled in by the model from what it read rather than joined to a real `SourceRef`.
+`check_citations` catches a fabricated URL, but "how relevant is this source to this claim" is
+asserted in `GradedSource.note`, not computed. Structured tool output is a separate spec.
+
+**The outside view is projected grouped, not flat.** `runs.group_by_sub_claim` arranges the
+reference classes under the sub-claims they name in `sub_claim_ids`, and each group carries
+`checks.sub_claim_rate` — the same weighted arithmetic `check_aggregation` applies to the whole
+question. A sub-claim nothing researched carries `rate: null` rather than a number. The wire
+events changed with it: `ref` and `analog` are gone, replaced by one `claim` per sub-claim with
+its classes and their analogs nested.
+
+**Sub-claim linkage lives in flight only.** `OutsideView` and `InsideView` are never persisted
+— `db` stores `decompositions_json` and `research_json` and nothing else — so `sub_claim_ids`
+reaches the UI over SSE and is gone once the run ages out. A saved forecast does not show which
+base rate answered which sub-claim.
 
 **The registry is in-process**, so the API is pinned to `--workers 1`. Two workers would each
 hold half the runs and a stream opened on the wrong one would replay nothing.

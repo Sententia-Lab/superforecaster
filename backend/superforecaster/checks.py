@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterable
 
 from config import CheckThresholds, get_check_thresholds
 
@@ -30,8 +30,12 @@ from .models import (
     CheckViolation,
     Decomposition,
     Forecast,
+    GradedSource,
     InsideView,
     OutsideView,
+    ReferenceClass,
+    SourceConfidence,
+    SourceRef,
     UpdateDecision,
 )
 
@@ -71,10 +75,89 @@ def implied_probability(o: OutsideView, i: InsideView) -> float:
     return min(1.0, max(0.0, total))
 
 
-def _spread(o: OutsideView) -> float:
-    """How far apart the reference classes are."""
+def base_rate_spread(o: OutsideView) -> float:
+    """How far apart the reference classes are: max minus min.
+
+    A range, not a variance — the thresholds it is compared against are calibrated to
+    one, and two classes 0.20 apart have a variance of 0.01, an order of magnitude
+    smaller. Renaming this without recomputing would change nothing; recomputing it
+    without retuning `reference_class_disagreement` would quietly break P7.
+
+    Public because the UI reports it as a statistic in its own right, and re-deriving it
+    there would let the number shown and the number checked drift apart.
+    """
     rates = [rc.base_rate for rc in o.reference_classes]
     return max(rates) - min(rates) if rates else 0.0
+
+
+_spread = base_rate_spread
+
+
+_CONFIDENCE_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
+_RANK_CONFIDENCE: tuple[SourceConfidence, ...] = ("low", "medium", "high")
+
+
+def claim_support(sources: list[GradedSource]) -> SourceConfidence:
+    """How well one claim is supported: its strongest source.
+
+    Max rather than mean. A claim backed by a solid dataset *and* a blog post is not
+    worse supported than one backed by the dataset alone — averaging would penalise
+    citing extra corroboration, which teaches the agent to cite less. Overstating is
+    caught by `check_citations`, not by arithmetic here.
+
+    No sources at all grades `low` rather than raising: an adjustment can legitimately
+    be a judgment call, and recording that honestly is more useful than forbidding it.
+    """
+    if not sources:
+        return "low"
+    return _RANK_CONFIDENCE[max(_CONFIDENCE_RANK[s.confidence] for s in sources)]
+
+
+def _weighted_support(pairs: list[tuple[float, SourceConfidence]]) -> float | None:
+    """Weighted mean rank over (weight, grade). None when nothing carries weight."""
+    total = sum(w for w, _ in pairs)
+    if total <= _EPSILON:
+        return None
+    return sum(w * _CONFIDENCE_RANK[c] for w, c in pairs) / total
+
+
+def aggregate_source_confidence(
+    o: OutsideView, i: InsideView, t: CheckThresholds | None = None
+) -> SourceConfidence:
+    """The forecast's overall evidential support — derived, never self-reported.
+
+    Two levels. Within a claim, `claim_support` takes the strongest source. Across
+    claims, a weighted mean: reference classes by `weight` (fit, not sample size), and
+    adjustments by `magnitude`, since evidence that barely moves the number should not
+    drive the grade. Noise is skipped for the same reason `signed_adjustment` zeroes it.
+
+    The two views are normalised separately and then averaged, rather than pooled — a
+    class `weight` and an adjustment `magnitude` are different units, and pooling them
+    would silently let the outside view dominate as an artefact of scale rather than a
+    decision anyone made.
+    """
+    th = _thresholds(t)
+    outside = _weighted_support(
+        [(rc.weight, claim_support(rc.sources)) for rc in o.reference_classes]
+    )
+    inside = _weighted_support(
+        [
+            (abs(a.magnitude), claim_support(a.sources))
+            for a in i.adjustments
+            if not a.is_noise
+        ]
+    )
+
+    scores = [s for s in (outside, inside) if s is not None]
+    if not scores:
+        return "low"
+
+    mean = sum(scores) / len(scores)
+    if mean >= th.support_high:
+        return "high"
+    if mean >= th.support_medium:
+        return "medium"
+    return "low"
 
 
 # ---------- Decomposition ----------
@@ -141,6 +224,162 @@ def check_dragonfly(
             f"(> {th.reference_class_disagreement:.2f}) but `disagreement` is empty: {rates}",
         )
     return None
+
+
+def weighted_base_rate(o: OutsideView) -> float | None:
+    """What the reference classes and their weights imply the anchor should be.
+
+    Public for the same reason as `signed_adjustment`: the UI shows this alongside the
+    stated anchor, and re-deriving it there would let the picture and `check_aggregation`
+    disagree about what the classes say.
+
+    None when no class carries any weight, which the schema forbids but a hand-built
+    fixture can still produce.
+    """
+    total = sum(rc.weight for rc in o.reference_classes)
+    if total <= _EPSILON:
+        return None
+    return sum(rc.weight * rc.base_rate for rc in o.reference_classes) / total
+
+
+def classes_for(sub_claim_id: str, o: OutsideView) -> list[ReferenceClass]:
+    """The reference classes that say they inform this sub-claim."""
+    return [rc for rc in o.reference_classes if sub_claim_id in rc.sub_claim_ids]
+
+
+def sub_claim_rate(sub_claim_id: str, o: OutsideView) -> float | None:
+    """What the outside view actually found for one sub-claim.
+
+    The weighted mean of the classes that name it, by the same `weight` and the same
+    arithmetic `check_aggregation` uses on the whole question — so a per-sub-claim rate
+    and the overall anchor cannot tell different stories.
+
+    None when no class claims this sub-claim. That is the honest answer for a `judgment`
+    sub-claim, and for a `researchable` one it means the research did not land.
+    """
+    classes = classes_for(sub_claim_id, o)
+    total = sum(rc.weight for rc in classes)
+    if not classes or total <= _EPSILON:
+        return None
+    return sum(rc.weight * rc.base_rate for rc in classes) / total
+
+
+def check_aggregation(
+    o: OutsideView, t: CheckThresholds | None = None
+) -> CheckViolation | None:
+    """P7. The single anchor has to be what the classes actually say.
+
+    `aggregate_base_rate` is the anchor of the entire P6 chain, and it used to be a
+    weighted blend the agent performed in its head — so classes at 0.10 and 0.90 could
+    produce an anchor of 0.85 and nothing would object. With `weight` on the record the
+    blend is arithmetic, and arithmetic either holds or it does not.
+    """
+    th = _thresholds(t)
+    implied = weighted_base_rate(o)
+    if implied is None:
+        return CheckViolation(
+            principle=7,
+            name="aggregation",
+            detail="no reference class carries any weight, so the aggregate base rate "
+            "cannot be derived from them",
+        )
+
+    drift = abs(o.aggregate_base_rate - implied)
+    if drift > th.aggregate_slack:
+        rates = ", ".join(
+            f"{rc.name}={rc.base_rate:.2f}@{rc.weight:.2f}" for rc in o.reference_classes
+        )
+        return CheckViolation(
+            principle=7,
+            name="aggregation",
+            detail=f"aggregate_base_rate {o.aggregate_base_rate:.3f} is {drift:.3f} away "
+            f"from the {implied:.3f} its own class weights imply "
+            f"(slack {th.aggregate_slack:.3f}): {rates}",
+        )
+    return None
+
+
+def check_linkage(
+    f: Forecast,
+    d: Decomposition,
+    o: OutsideView,
+    i: InsideView,
+    t: CheckThresholds | None = None,
+) -> CheckViolation | None:
+    """P1. A reference back to a sub-claim has to point at one that exists.
+
+    Two ways this dangles. A class or adjustment can name an id the decomposition never
+    had; or synthesis, which regenerates `Forecast.decompositions`, can quietly reword
+    or drop a sub-claim — leaving every link pointing at nothing. Both are cheap to
+    catch and invisible otherwise.
+    """
+    known = {s.id for s in d.sub_claims if s.id}
+
+    referenced = {
+        cid
+        for holder in (*o.reference_classes, *i.adjustments)
+        for cid in holder.sub_claim_ids
+    }
+    unknown = sorted(referenced - known)
+    if unknown:
+        return CheckViolation(
+            principle=1,
+            name="linkage",
+            detail=f"sub-claim id{'s' if len(unknown) != 1 else ''} "
+            f"{', '.join(unknown)} referenced but not in the decomposition "
+            f"({', '.join(sorted(known)) or 'none'})",
+        )
+
+    carried = {s.id for s in f.decompositions if s.id}
+    if known and carried != known:
+        return CheckViolation(
+            principle=1,
+            name="linkage",
+            detail=f"the forecast carries sub-claims {', '.join(sorted(carried)) or 'none'} "
+            f"but the decomposition produced {', '.join(sorted(known))} — every link "
+            f"into the dropped ones now points at nothing",
+        )
+    return None
+
+
+# ---------- Sources ----------
+
+
+def _cited_sources(o: OutsideView, i: InsideView) -> list[GradedSource]:
+    return [s for rc in o.reference_classes for s in rc.sources] + [
+        s for a in i.adjustments for s in a.sources
+    ]
+
+
+def check_citations(
+    o: OutsideView,
+    i: InsideView,
+    seen: Iterable[SourceRef],
+) -> CheckViolation | None:
+    """Every cited URL has to be one the agent actually fetched.
+
+    A graded source renders as a clickable link, which makes a fabricated URL worse than
+    no URL — it looks authoritative. `deps.sources_seen` already records what the tools
+    really returned, so this is set membership.
+
+    Takes the retrieved sources as a plain argument rather than reaching for
+    `ForecastDeps`: this module does not import from `agents` or `graphs`, and the
+    `Critique` node is where the two meet.
+    """
+    retrieved = {ref.url for ref in seen if ref.url}
+    invented = sorted(
+        {s.url for s in _cited_sources(o, i) if s.url and s.url not in retrieved}
+    )
+    if not invented:
+        return None
+
+    shown = ", ".join(invented[:3]) + (" …" if len(invented) > 3 else "")
+    return CheckViolation(
+        principle=4,
+        name="citations",
+        detail=f"{len(invented)} cited URL{'s' if len(invented) != 1 else ''} "
+        f"were never retrieved by a search: {shown}",
+    )
 
 
 # ---------- Inside view ----------
@@ -283,31 +522,61 @@ def check_calibration_hygiene(
     o: OutsideView,
     t: CheckThresholds | None = None,
 ) -> CheckViolation | None:
-    """P16. Near-certainty has to be earned, not asserted.
+    """P16. An extreme probability is justified, not forbidden. **Advisory.**
 
-    A well-calibrated 60% beats a miscalibrated 90%. Probabilities outside the
-    configured floor/ceiling are allowed, but only when the agent is confident *and*
-    its reference classes broadly agree — that is, when the outside view itself
-    supports an extreme rather than the narrative doing all the work.
+    A well-calibrated 60% beats a miscalibrated 90%. But a hard gate on this is the
+    wrong shape, and the old one proved it: it required `confidence == "high"`, a field
+    the model wrote itself, so a failing retry could pass by *lowering* confidence to
+    "low" and retreating the probability to exactly the floor. Landing on the boundary
+    skipped the test entirely, and nothing about the evidence had changed.
+
+    So this no longer blocks. It asks the agent to argue for an extreme in
+    `extreme_justification` and flags the ones it did not argue for — the same shape as
+    `check_dragonfly` requiring `disagreement`, and the same reasoning as ADR 16: the
+    right response to a bold number is to check whether it holds up, not to forbid it.
+
+    Two things get flagged:
+
+    - a probability outside the band with no justification written
+    - a probability at the far tail of a wide reference-class spread, where the outside
+      view itself is telling you the number is less certain than it looks
     """
     th = _thresholds(t)
     p = f.probability
-    if th.calibration_floor <= p <= th.calibration_ceiling:
-        return None
+    justified = bool(f.extreme_justification.strip())
+    spread = base_rate_spread(o)
 
-    spread = _spread(o)
-    earned = f.confidence == "high" and spread <= th.reference_class_agreement
-    if earned:
-        return None
+    if p < th.calibration_floor or p > th.calibration_ceiling:
+        if justified:
+            return None
+        return CheckViolation(
+            principle=16,
+            name="calibration_hygiene",
+            detail=f"probability {p:.3f} is outside "
+            f"[{th.calibration_floor:.2f}, {th.calibration_ceiling:.2f}] and "
+            f"`extreme_justification` is empty — an extreme has to be argued for",
+            blocking=False,
+        )
 
-    return CheckViolation(
-        principle=16,
-        name="calibration_hygiene",
-        detail=f"probability {p:.3f} is outside "
-        f"[{th.calibration_floor:.2f}, {th.calibration_ceiling:.2f}] with "
-        f"confidence='{f.confidence}' and a reference-class spread of {spread:.2f} "
-        f"(needs 'high' and <= {th.reference_class_agreement:.2f})",
-    )
+    # Inside the band, but hugging an edge while the classes disagree. This is the case
+    # the old check waved through: retreating to exactly the floor was enough to pass.
+    near_edge = min(p - th.calibration_floor, th.calibration_ceiling - p)
+    if (
+        near_edge <= th.calibration_floor
+        and spread > th.reference_class_agreement
+        and not justified
+    ):
+        return CheckViolation(
+            principle=16,
+            name="calibration_hygiene",
+            detail=f"probability {p:.3f} sits at the edge of "
+            f"[{th.calibration_floor:.2f}, {th.calibration_ceiling:.2f}] while the "
+            f"reference classes span {spread:.2f} "
+            f"(> {th.reference_class_agreement:.2f}) — a near-extreme resting on "
+            f"classes that disagree, with nothing written in `extreme_justification`",
+            blocking=False,
+        )
+    return None
 
 
 # ---------- Updating ----------
@@ -461,7 +730,10 @@ class CheckResult:
 
 FORECAST_CHECK_LABELS: tuple[tuple[str, int, str], ...] = (
     ("decomposition", 1, "P1 · P2 decomposition"),
+    ("linkage", 1, "P1 sub-claim linkage"),
     ("dragonfly", 7, "P7 dragonfly"),
+    ("aggregation", 7, "P7 base-rate aggregation"),
+    ("citations", 4, "P4 citations"),
     ("signal_vs_noise", 9, "P9 signal vs noise"),
     ("disconfirming", 14, "P14 disconfirming"),
     ("bias_coverage", 15, "P15 bias coverage"),
@@ -533,12 +805,43 @@ def check_evidence(
                     "name": rc.name,
                     "base_rate": rc.base_rate,
                     "sample_size": rc.sample_size,
+                    "weight": rc.weight,
+                    "support": claim_support(rc.sources),
                 }
                 for rc in outside.reference_classes
             ],
-            "spread": _spread(outside),
+            "spread": base_rate_spread(outside),
             "threshold": th.reference_class_disagreement,
             "disagreement": outside.disagreement,
+        },
+        "linkage": {
+            "sub_claims": [
+                {"id": s.id, "question": s.question} for s in decomposition.sub_claims
+            ],
+            "classes": [
+                {"name": rc.name, "sub_claim_ids": rc.sub_claim_ids}
+                for rc in outside.reference_classes
+            ],
+            "adjustments": [
+                {"evidence": a.evidence, "sub_claim_ids": a.sub_claim_ids}
+                for a in inside.adjustments
+            ],
+        },
+        "aggregation": {
+            "classes": [
+                {"name": rc.name, "base_rate": rc.base_rate, "weight": rc.weight}
+                for rc in outside.reference_classes
+            ],
+            "stated": outside.aggregate_base_rate,
+            "implied": weighted_base_rate(outside),
+            "slack": th.aggregate_slack,
+        },
+        "citations": {
+            "cited": [
+                {"source": s.source, "url": s.url, "confidence": s.confidence}
+                for s in _cited_sources(outside, inside)
+            ],
+            "support": aggregate_source_confidence(outside, inside, th),
         },
         "signal_vs_noise": {
             "adjustments": [
@@ -574,11 +877,11 @@ def check_evidence(
         },
         "calibration_hygiene": {
             "probability": forecast.probability,
-            "confidence": forecast.confidence,
             "floor": th.calibration_floor,
             "ceiling": th.calibration_ceiling,
-            "spread": _spread(outside),
+            "spread": base_rate_spread(outside),
             "agreement_threshold": th.reference_class_agreement,
+            "justification": forecast.extreme_justification,
         },
     }
 
@@ -589,16 +892,24 @@ def run_forecast_checks_detailed(
     outside: OutsideView,
     inside: InsideView,
     t: CheckThresholds | None = None,
+    sources_seen: Iterable[SourceRef] = (),
 ) -> list[CheckResult]:
     """Every forecast-side check, passes included, in `FORECAST_CHECK_LABELS` order.
 
     `run_forecast_checks` is a filter over this, so the two can never disagree about
     which checks exist.
+
+    `sources_seen` defaults to empty so callers that only have the four graph artifacts
+    still work — with nothing retrieved, `check_citations` has nothing to contradict and
+    only fires on a URL the agent could not have seen.
     """
     th = _thresholds(t)
     violations = [
         check_decomposition(decomposition, th),
+        check_linkage(forecast, decomposition, outside, inside, th),
         check_dragonfly(outside, th),
+        check_aggregation(outside, th),
+        check_citations(outside, inside, sources_seen),
         check_signal_vs_noise(inside, th),
         check_disconfirming(inside, th),
         check_bias_coverage(inside, th),
@@ -625,16 +936,18 @@ def run_forecast_checks(
     outside: OutsideView,
     inside: InsideView,
     t: CheckThresholds | None = None,
+    sources_seen: Iterable[SourceRef] = (),
 ) -> list[CheckViolation]:
     """Every forecast-side check. Called by the `Critique` node. Empty list is clean.
 
     Takes the pieces rather than a `ForecastState` so this module stays free of any
-    dependency on `graphs`, which imports it.
+    dependency on `graphs`, which imports it. `sources_seen` arrives the same way — it
+    lives on `ForecastDeps`, which this module also must not import.
     """
     return [
         r.violation
         for r in run_forecast_checks_detailed(
-            forecast, decomposition, outside, inside, t
+            forecast, decomposition, outside, inside, t, sources_seen
         )
         if r.violation is not None
     ]

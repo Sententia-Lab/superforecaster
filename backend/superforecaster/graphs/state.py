@@ -19,6 +19,7 @@ from ..models import (
     InsideView,
     OutsideView,
     ResolutionCheckResult,
+    SourceRef,
     UpdateDecision,
 )
 
@@ -41,6 +42,10 @@ class ForecastState:
     forecast: Forecast | None = None
     violations: list[CheckViolation] = field(default_factory=list)
     synthesis_attempts: int = 0
+    # Snapshotted from `deps.sources_seen` by `Critique`, because `check_citations`
+    # needs it and the UI re-runs the same checks without access to deps. Two callers
+    # reading different inputs is how a UI ends up reporting a pass the graph failed.
+    sources_seen: list[SourceRef] = field(default_factory=list)
 
 
 @dataclass

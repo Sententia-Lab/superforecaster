@@ -88,8 +88,8 @@ def _format_updates(record: ForecastRecord) -> str:
     for i, u in enumerate(record.updates, 1):
         late = " [LATE]" if u.is_late else ""
         lines.append(
-            f"{i}. {u.created_at.isoformat()} — p={u.probability:.3f} "
-            f"({u.confidence}){late}\n   {u.reasoning}"
+            f"{i}. {u.created_at.isoformat()} — p={u.probability:.3f}"
+            f"{late}\n   {u.reasoning}"
         )
     return "\n".join(lines) if lines else "(no updates)"
 

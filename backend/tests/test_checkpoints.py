@@ -117,7 +117,7 @@ async def test_resume_re_runs_only_the_failed_node(monkeypatch, stub_agents):  #
     assert stub_agents["synthesize"] == 1
 
 
-async def _working_inside(input, outside, deps):
+async def _working_inside(input, decomposition, outside, deps):
     from tests.test_graph_forecast import an_inside_view
 
     return an_inside_view()
@@ -156,6 +156,46 @@ async def test_resume_can_raise_the_search_budget(monkeypatch, stub_agents):  # 
 
     assert resumed.input.max_iterations == 12
     assert resumed.status == "done"
+
+
+async def test_the_raised_budget_reaches_the_agent_that_failed(monkeypatch, stub_agents):  # noqa: F811
+    """The regression: resuming deeper used to change nothing the agent could see.
+
+    Research agents read the budget off graph state (`ctx.state.input`), and
+    `iter_from_persistence` restores that from the snapshot — so a resumed node re-ran
+    on the OLD depth and hit the same UsageLimitExceeded, while the UI reported the new
+    one. `resumed.input.max_iterations` was 12 and the agent still saw 5.
+    """
+    seen: list[int] = []
+
+    async def recording_inside(input, decomposition, outside, deps):
+        seen.append(input.max_iterations)
+        from tests.test_graph_forecast import an_inside_view
+
+        return an_inside_view()
+
+    failing(monkeypatch, "run_inside_view", RuntimeError("nope"))
+    run = runs.start(forecast_input())
+    await run.task
+
+    monkeypatch.setattr(fg, "run_inside_view", recording_inside)
+    resumed = runs.resume_run(run.id, max_iterations=12)
+    await resumed.task
+
+    assert seen == [12], f"the resumed agent ran at depth {seen}, not 12"
+
+
+async def test_run_summary_reports_the_depth_in_use(monkeypatch, stub_agents):  # noqa: F811
+    """The resume prompt prefills from this; without it, it always suggested 10."""
+    failing(monkeypatch, "run_inside_view", RuntimeError("nope"))
+    run = runs.start(forecast_input())
+    await run.task
+    assert run.summary().max_iterations == 5
+
+    monkeypatch.setattr(fg, "run_inside_view", _working_inside)
+    resumed = runs.resume_run(run.id, max_iterations=12)
+    await resumed.task
+    assert resumed.summary().max_iterations == 12
 
 
 async def test_resume_produces_a_saved_forecast(monkeypatch, stub_agents):  # noqa: F811

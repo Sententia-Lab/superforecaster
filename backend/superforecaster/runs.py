@@ -197,11 +197,12 @@ class Run:
         if stage == "decompose" and state.decomposition is not None:
             project_decompose(self, state.decomposition)
         elif stage == "outside" and state.outside is not None:
-            project_outside(self, state.outside)
+            assert state.decomposition is not None
+            project_outside(self, state.decomposition, state.outside)
         elif stage == "inside" and state.inside is not None:
             project_inside(self, state.inside)
         elif stage == "synth" and state.forecast is not None:
-            project_synth(self, state.forecast, state.synthesis_attempts)
+            project_synth(self, state, state.synthesis_attempts)
         elif stage == "critique":
             project_critique(self, state)
 
@@ -257,6 +258,7 @@ class Run:
             error=self.error,
             created_at=self.created_at,
             ended_at=self.ended_at,
+            max_iterations=self.input.max_iterations,
         )
 
     def snapshot(self, from_seq: int = 0) -> RunSnapshot:
@@ -524,42 +526,92 @@ def project_decompose(run: Run, d: Decomposition) -> None:
         run.emit(
             "sub",
             {
+                "id": s.id,
                 "question": s.question,
                 "p": s.probability,
                 "knowability": s.knowability,
-                "confidence": s.confidence,
                 "rationale": s.rationale,
             },
         )
     run.emit("note", {"label": "chain_note", "text": d.chain_note})
 
 
-def project_outside(run: Run, o: OutsideView) -> None:
-    """P4 + P7 — the reference classes, their analogs, and the anchor.
+def _class_payload(rc: Any) -> dict[str, Any]:
+    return {
+        "name": rc.name,
+        "rate": rc.base_rate,
+        "n": rc.sample_size,
+        "weight": rc.weight,
+        "support": checks.claim_support(rc.sources),
+        "sources": [s.model_dump() for s in rc.sources],
+        "analogs": [
+            {"description": a.description, "outcome": a.outcome, "relevance": a.relevance}
+            for a in rc.analogs
+        ],
+    }
+
+
+def group_by_sub_claim(d: Decomposition, o: OutsideView) -> list[dict[str, Any]]:
+    """The outside view arranged under the sub-claims it was sent to research.
+
+    A flat list of reference classes cannot answer the question a reader actually has —
+    *which part of this did you look up, and what did you find?* The grouping is a
+    projection of `ReferenceClass.sub_claim_ids`, a field the agent fills in, so the UI
+    is reading a relationship the backend asserted rather than inventing one.
+
+    `rate` is `checks.sub_claim_rate`, the same weighted arithmetic `check_aggregation`
+    applies to the whole question. A sub-claim nothing researched carries `rate: None`
+    rather than a fabricated number — which for a `judgment` sub-claim is the correct
+    answer, and for a `researchable` one is a visible gap.
+
+    Classes claiming no sub-claim land in a final group with `id: None`: legitimate for a
+    lens on the whole question, and worth seeing when it is really an unattributed rate.
+    """
+    groups = [
+        {
+            "id": s.id,
+            "question": s.question,
+            "knowability": s.knowability,
+            "rationale": s.rationale,
+            "rate": checks.sub_claim_rate(s.id, o),
+            "classes": [_class_payload(rc) for rc in checks.classes_for(s.id, o)],
+        }
+        for s in d.sub_claims
+    ]
+
+    claimed = {cid for rc in o.reference_classes for cid in rc.sub_claim_ids}
+    loose = [
+        rc
+        for rc in o.reference_classes
+        if not rc.sub_claim_ids or not (set(rc.sub_claim_ids) & claimed)
+    ]
+    if loose:
+        groups.append(
+            {
+                "id": None,
+                "question": "The question as a whole",
+                "knowability": "researchable",
+                "rationale": "",
+                "rate": None,
+                "classes": [_class_payload(rc) for rc in loose],
+            }
+        )
+    return groups
+
+
+def project_outside(run: Run, d: Decomposition, o: OutsideView) -> None:
+    """P4 + P7 — what was researched for each sub-claim, and the anchor.
+
+    Grouped rather than flat: see `group_by_sub_claim`. Everything here still lands in
+    one burst, because this runs on `stage_finished` — the live progress a reader sees
+    during research is the `query` and `source` events, not these.
 
     `disagreement` is what the aggregate note says when it is non-empty. That sentence
     is the half of P7 the schema cannot enforce, and putting it in the UI is the point
     of having demanded it.
     """
-    for rc in o.reference_classes:
-        run.emit(
-            "ref",
-            {
-                "name": rc.name,
-                "rate": rc.base_rate,
-                "n": rc.sample_size,
-                "source": rc.source,
-            },
-        )
-        for a in rc.analogs:
-            run.emit(
-                "analog",
-                {
-                    "description": a.description,
-                    "outcome": a.outcome,
-                    "relevance": a.relevance,
-                },
-            )
+    for group in group_by_sub_claim(d, o):
+        run.emit("claim", group)
 
     pct = round(o.aggregate_base_rate * 100)
     run.emit(
@@ -583,6 +635,9 @@ def project_inside(run: Run, i: InsideView) -> None:
                 "mag": 0.0 if a.is_noise else a.magnitude,
                 "flip": a.flip_test,
                 "noise": a.is_noise,
+                "sub_claim_ids": a.sub_claim_ids,
+                "support": checks.claim_support(a.sources),
+                "sources": [s.model_dump() for s in a.sources],
             },
         )
     run.emit("note", {"label": "steel_man", "text": i.steel_man})
@@ -594,25 +649,37 @@ def project_inside(run: Run, i: InsideView) -> None:
         run.emit("bias", {"bias": b.bias, "assessment": b.assessment})
 
 
-def project_synth(run: Run, f: Forecast, attempt: int) -> None:
+def project_synth(run: Run, state: ForecastState, attempt: int) -> None:
     """P6, P8, P16 — the number.
 
     `ok` is None: whether this draft survives is the critique's verdict, which lands as
     the `check` events immediately after.
+
+    `support` is derived from the graded sources behind the reference classes and
+    adjustments, not read off the forecast — the model has no field to assert it in,
+    which is the point.
     """
+    f = state.forecast
+    assert f is not None
+    support = (
+        checks.aggregate_source_confidence(state.outside, state.inside)
+        if state.outside and state.inside
+        else None
+    )
     run.emit(
         "draft",
         {
             "p": f.probability,
             "ok": None,
-            "confidence": f.confidence,
-            "note": f"Attempt {attempt} · {f.confidence} confidence.",
+            "support": support,
+            "note": f"Attempt {attempt}"
+            + (f" · {support} evidential support." if support else "."),
         },
     )
 
 
 def project_critique(run: Run, state: ForecastState) -> None:
-    """All seven checks, passes included, then the retry banner when routing back.
+    """Every check, passes included, then the retry banner when routing back.
 
     `retrying` is derived from the same condition the `Critique` node itself uses, not
     guessed — if the two ever disagree the UI would claim a retry that never happened.
@@ -622,7 +689,11 @@ def project_critique(run: Run, state: ForecastState) -> None:
     assert state.decomposition is not None
 
     results = checks.run_forecast_checks_detailed(
-        state.forecast, state.decomposition, state.outside, state.inside
+        state.forecast,
+        state.decomposition,
+        state.outside,
+        state.inside,
+        sources_seen=state.sources_seen,
     )
     for r in results:
         run.emit(
@@ -632,6 +703,10 @@ def project_critique(run: Run, state: ForecastState) -> None:
                 "name": r.name,
                 "ok": r.passed,
                 "principle": r.principle,
+                # False marks an advisory verdict — worth reading, but it did not send
+                # the forecast back. Without it the UI cannot tell a warning from a
+                # failure, since both arrive as ok=false.
+                "blocking": r.violation.blocking if r.violation else None,
                 "detail": r.violation.detail if r.violation else "",
                 # The numbers the verdict was reached on, pass or fail — so the check
                 # can be argued with rather than only believed.
@@ -716,7 +791,11 @@ def result_payload(
         "question": forecast.question,
         "probability": forecast.probability,
         "anchor": outside.aggregate_base_rate if outside else None,
-        "confidence": forecast.confidence,
+        "support": (
+            checks.aggregate_source_confidence(outside, inside)
+            if outside and inside
+            else None
+        ),
         "reasoning": forecast.reasoning,
         "waterfall": waterfall,
         "violations": [

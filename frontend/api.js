@@ -21,8 +21,37 @@ function setAdminToken(token) {
 }
 
 /**
+ * Flatten whatever FastAPI put in `detail` into one line.
+ *
+ * A 422 from request validation carries a LIST of objects, not a string:
+ *   [{type, loc: ["body","max_iterations"], msg: "Input should be <= 20", input: 25}]
+ * Callers toast `detail` directly, so forwarding that verbatim renders as
+ * "[object Object]" — which is exactly what a rejected search depth used to show.
+ */
+function detailToText(detail, status) {
+  if (typeof detail === "string" && detail) return detail;
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((d) => {
+        const field = Array.isArray(d?.loc) ? d.loc[d.loc.length - 1] : null;
+        const msg = d?.msg || d?.type;
+        if (!msg) return null;
+        return field ? `${field}: ${msg}` : msg;
+      })
+      .filter(Boolean);
+    if (parts.length) return parts.join("; ");
+  }
+  if (detail && typeof detail === "object") {
+    const msg = detail.msg || detail.message;
+    if (msg) return String(msg);
+  }
+  return `HTTP ${status}`;
+}
+
+/**
  * @throws {{status:number, detail:string}} on any non-2xx — callers branch on
  *   `status` (429 means every run slot is busy, 403 means no admin token).
+ *   `detail` is ALWAYS a string; see `detailToText`.
  */
 async function req(path, { method = "GET", body, admin = false } = {}) {
   const headers = { "Content-Type": "application/json" };
@@ -44,7 +73,7 @@ async function req(path, { method = "GET", body, admin = false } = {}) {
   try { data = await res.json(); } catch { /* empty or non-JSON body */ }
 
   if (!res.ok) {
-    throw { status: res.status, detail: (data && data.detail) || `HTTP ${res.status}` };
+    throw { status: res.status, detail: detailToText(data && data.detail, res.status) };
   }
   return data;
 }

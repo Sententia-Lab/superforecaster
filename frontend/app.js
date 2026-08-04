@@ -18,6 +18,8 @@ const TRAIL_PREFIX = "sf_trail_v1:";
 const MAX_TRAILS = 12;
 const MAX_SLOTS = 5;
 const POLL_MS = 4000;
+/** Mirrors `models.MAX_SEARCH_DEPTH`. Clamp here so a raise never bounces as a 422. */
+const MAX_SEARCH_DEPTH = 50;
 
 const STAGE_META = {
   decompose: { num: "1", label: "Decompose", principles: "P1 · P2" },
@@ -25,8 +27,33 @@ const STAGE_META = {
   inside: { num: "3", label: "Adjust — inside view", principles: "P5 · P9 · P14 · P15" },
   synth: { num: "4", label: "Synthesize", principles: "P6 · P8 · P16" },
   critique: { num: "5", label: "Critique", principles: "checks.py" },
+  // Not a graph node — a seam in the trail, so the stages above it are visibly the
+  // ones that already ran rather than looking like part of this attempt.
+  resume: { num: "↻", label: "Resumed", principles: "" },
 };
 const STAGE_ORDER = ["decompose", "outside", "inside", "synth", "critique"];
+
+/**
+ * One line per methodology principle, so a bare "P7" explains itself.
+ *
+ * Keyed by check *slot name*, not principle number: `check_decomposition` occupies the
+ * P1·P2 slot but reports principle 2 when its knowability arm fails, so keying off the
+ * number would show the wrong blurb under the right label.
+ *
+ * `spec/superforecasting_methodology.md` is the source of truth. These are condensed
+ * from it; if the two disagree, the doc is right.
+ */
+const PRINCIPLES = {
+  decomposition: "P1 · P2 — Break the question into 3–5 sub-claims you could argue about separately, and say which ones have a lookupable base rate and which are judgment.",
+  dragonfly: "P7 — Consult several reference classes, not one. When they disagree, that disagreement is information about how uncertain the question is, and has to be explained rather than averaged away.",
+  aggregation: "P7 — The single anchor has to be the weighted average its own reference classes imply. A blend nobody can recompute is a number you cannot check.",
+  citations: "P4 — Base rates get looked up, not reasoned to. Every cited URL must be one the agent actually retrieved.",
+  signal_vs_noise: "P9 — For each piece of evidence, ask what your estimate would do if you had found the opposite. If the answer is 'nothing much', it is noise and must move the number by zero.",
+  disconfirming: "P14 — Look for what would prove you wrong before you settle, not after. Argue the opposing case properly, and name what would change your mind.",
+  bias_coverage: "P15 — Address all five named biases explicitly: confirmation, availability, narrative, scope insensitivity, and anchoring.",
+  derivation: "P6 — The final probability must equal the base rate plus the stated adjustments. This is what stops a compelling story pulling the estimate away from the evidence.",
+  calibration_hygiene: "P16 — A well-calibrated 60% beats a miscalibrated 90%. An extreme probability is allowed, but it has to be argued for rather than asserted.",
+};
 
 const CATEGORIES = ["general", "finance", "economics", "politics", "ai", "energy",
                     "science", "health", "sport", "tech"];
@@ -64,6 +91,70 @@ const pct = (p) => (p === null || p === undefined ? "—" : `${Math.round(p * 10
 const signed = (d) => (d > 0 ? `+${Math.round(d * 100)}` : `${Math.round(d * 100)}`);
 const domainOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return u || ""; } };
 
+/** True only for an absolute http(s) URL. */
+const isExternal = (u) => {
+  try { const p = new URL(u); return p.protocol === "http:" || p.protocol === "https:"; }
+  catch { return false; }
+};
+
+/**
+ * An external link. `noopener noreferrer` because every one of these is untrusted.
+ *
+ * Anything that is not an absolute http(s) URL renders as plain text. A relative href
+ * would resolve against this app's own origin — a citation that looks real and goes
+ * nowhere is worse than no link at all. The backend drops these too; this is the
+ * second line, since saved records predate that validator.
+ */
+const link = (url, text) =>
+  isExternal(url)
+    ? h("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, text)
+    : h("span", {}, text);
+
+/**
+ * What to call a source in the UI.
+ *
+ * A raw URL is not a name. The model is asked for a human label, but when it hands back
+ * a link instead, show the domain rather than 90 characters of redirect payload.
+ */
+const sourceLabel = (s) => {
+  const name = (s.source || "").trim();
+  const looksLikeLink = isExternal(name) || name.startsWith("/") || name.includes("?url=");
+  if (name && !looksLikeLink) return name;
+  // Prefer a real domain; failing that say so, rather than printing 90 characters of
+  // redirect payload as if it were the name of a publication.
+  if (isExternal(s.url)) return domainOf(s.url);
+  if (isExternal(name)) return domainOf(name);
+  return "unnamed source";
+};
+
+/**
+ * How strongly a source, or a claim's strongest source, supports it.
+ *
+ * Colour rather than a bare word because the point is to make thin evidence visible
+ * at a glance. It says nothing about whether the probability is right.
+ */
+const supportChip = (v) =>
+  h("span.chip", { class: { high: "for", medium: "warn", low: "against" }[v] || "" },
+    v ? `${v} support` : "ungraded");
+
+/**
+ * A disclosure whose open state survives a re-render.
+ *
+ * Native `<details>` cannot be used for anything a user opens mid-run: `render()`
+ * rebuilds the whole tree on every event, so the element — and its `open` — is thrown
+ * away several times a second while a run streams.
+ */
+const disclosure = (key, summary, body) => {
+  // `state.opened`, not `state.collapsed` — the stage accordion stores the inverse
+  // (truthy means hidden), and one map meaning both things is a bug waiting to happen.
+  const open = !!state.opened[key];
+  return h("div.disclose", {},
+    h("button.disclose-t", { type: "button", "aria-expanded": String(open),
+      onClick: () => { state.opened[key] = !open; scheduleRender(); } },
+      h("span.caret", {}, open ? "▾" : "▸"), summary),
+    open ? h("div.work", {}, body()) : null);
+};
+
 // ---------- state ----------
 
 const state = {
@@ -78,9 +169,9 @@ const state = {
   openId: null,
   saved: [],
   backlog: [],
-  collapsed: {},           // stageKey -> true
+  collapsed: {},           // stageKey -> true (stage group is HIDDEN)
+  opened: {},              // disclosureKey -> true (disclosure is SHOWN)
   trailMissing: {},        // runId -> true, once hydration has been tried and failed
-  expandedBacklog: {},
   toast: null,
   busy: false,
 };
@@ -319,21 +410,31 @@ function onQueueToBacklog() {
 async function onResume(runId) {
   const run = state.runs[runId];
   const current = run?.summary?.max_iterations || 5;
+  const suggested = Math.min(MAX_SEARCH_DEPTH, Math.max(current + 1, current * 2));
   const depth = window.prompt(
-    "Search depth to resume with (higher = more tool calls per research step):",
-    String(Math.min(20, current * 2)),
+    `Search depth to resume with (higher = more tool calls per research step).\n`
+    + `Currently ${current}. Maximum ${MAX_SEARCH_DEPTH}.`,
+    String(suggested),
   );
   if (depth === null) return;
 
+  const asked = Number(depth);
+  if (!Number.isFinite(asked) || asked < 1) return toast("Search depth must be a number.");
+  // Clamp here rather than letting the server 422: the error text that got the reader
+  // to this prompt tells them to raise the depth, so bouncing the raise is a poor answer.
+  const wanted = Math.min(MAX_SEARCH_DEPTH, Math.round(asked));
+  if (wanted !== Math.round(asked)) toast(`Search depth capped at ${MAX_SEARCH_DEPTH}.`);
+
   try {
-    const summary = await resumeRun(runId, Number(depth) || undefined);
+    const summary = await resumeRun(runId, wanted);
     if (run) {
       run.summary = { ...run.summary, ...summary };
       run.detach = null;
     }
     // Re-attach from where the frames stopped: the resumed run continues the same
-    // sequence, so replaying from the start would duplicate the whole trail.
-    attachRun(summary, (run?.lastSeq ?? 0) + 1);
+    // sequence, so replaying from the start would duplicate the whole trail. `keep`
+    // because that also means the server will not re-send what already ran.
+    attachRun(summary, (run?.lastSeq ?? 0) + 1, true);
     setState({ phase: "view", openId: runId });
   } catch (e) {
     toast(e.detail || "Could not resume.");
@@ -377,19 +478,28 @@ function onDeleteSaved(id) {
 
 // ---------- streaming ----------
 
-/** Register a run and open its stream. Idempotent — reopening is a no-op. */
-function attachRun(summary, fromSeq = 0) {
+/**
+ * Register a run and open its stream. Idempotent — reopening is a no-op.
+ *
+ * `keep` reattaches to a run whose trail is already on screen, as resume does. The
+ * stream continues from `fromSeq` rather than replaying, so the server will never
+ * re-send the earlier stages — throwing them away here loses them for good, which is
+ * how resuming used to blank the base rates it had already found.
+ */
+function attachRun(summary, fromSeq = 0, keep = false) {
   const existing = state.runs[summary.id];
   if (existing && existing.detach) return existing;
 
-  const local = {
-    summary,
-    stages: [],
-    result: null,
-    lastSeq: fromSeq,
-    toolCalls: 0,
-    detach: null,
-  };
+  const local = keep && existing
+    ? { ...existing, summary, lastSeq: Math.max(existing.lastSeq ?? 0, fromSeq), detach: null }
+    : {
+        summary,
+        stages: [],
+        result: null,
+        lastSeq: fromSeq,
+        toolCalls: 0,
+        detach: null,
+      };
   state.runs[summary.id] = local;
 
   local.detach = openRunStream(
@@ -434,6 +544,14 @@ function applyEvent(runId, ev) {
       run.summary = { ...run.summary, forecast_id: ev.payload.forecast_id };
       saveResult(runId, ev.payload);
       return;
+    case "resume":
+      // Needs its own case: the fall-through below appends to the *last stage group*,
+      // and a resume arrives before the resumed node has emitted its `stage`. It used
+      // to hit `if (!group) return` and vanish, leaving the renderer dead code.
+      run.summary = { ...run.summary, status: "running",
+                      max_iterations: ev.payload.max_iterations ?? run.summary.max_iterations };
+      run.stages.push({ key: `resume-${ev.seq}`, stage: "resume", attempt: 1, items: [ev] });
+      return;
     case "end":
       run.summary = { ...run.summary, status: ev.payload.status, forecast_id: ev.payload.forecast_id };
       // Persist the trail now that it is complete. The server drops it when the run
@@ -464,7 +582,7 @@ function saveResult(runId, payload) {
     question: payload.question,
     probability: payload.probability,
     anchor: payload.anchor,
-    confidence: payload.confidence,
+    support: payload.support,
     reasoning: payload.reasoning,
     waterfall: payload.waterfall,
     violations: payload.violations,
@@ -493,8 +611,12 @@ async function pollRuns() {
         if (!isTerminal(summary.status)) { attachRun(summary); changed = true; }
       } else if (!local.detach) {
         // No live stream: either never opened, or dropped. Reopen from where the
-        // frames stopped rather than replaying the whole timeline.
-        if (!isTerminal(summary.status)) { attachRun(summary, local.lastSeq + 1); changed = true; }
+        // frames stopped rather than replaying the whole timeline — and `keep` the
+        // trail, since not replaying means nothing will send those stages again.
+        if (!isTerminal(summary.status)) {
+          attachRun(summary, local.lastSeq + 1, true);
+          changed = true;
+        }
         else if (local.summary.status !== summary.status) {
           local.summary = { ...local.summary, ...summary };
           changed = true;
@@ -528,63 +650,80 @@ const EVENT_RENDERERS = {
     h("div.ev.source", {},
       h("span", { style: `width:6px;height:6px;border-radius:50%;background:var(--pv-text-3);flex:none;margin-top:6px` }),
       h("div", {},
-        h("div", {}, p.title || domainOf(p.url)),
-        h("div.micro", {}, domainOf(p.url), p.published_date ? ` · ${p.published_date.slice(0, 10)}` : ""),
-        p.snippet ? h("div.dim.mono", {}, p.snippet) : null)),
+        h("div", {}, link(p.url, p.title || domainOf(p.url))),
+        h("div.micro", {}, domainOf(p.url), p.published_date ? ` · ${p.published_date.slice(0, 10)}` : ""))),
 
   sub: (p) =>
     h("div.ev.sub", {},
       h("div.evhead", {},
-        h("span.num-strong", {}, pct(p.p)),
         h("span.chip", { class: p.knowability === "researchable" ? "for" : "" }, p.knowability),
-        h("span.micro", {}, p.confidence)),
+        p.id ? h("span.micro", {}, p.id) : null),
       h("div", {}, p.question),
       h("div.dim", {}, p.rationale)),
 
-  ref: (p) =>
-    h("div.ev.ref", {},
+  // One sub-claim and everything the outside view found for it. The unit a reader
+  // actually asks about — "which part of this did you look up, and what did you find" —
+  // which a flat list of reference classes cannot answer.
+  claim: (p, ev) => {
+    const n = (p.classes || []).length;
+    return h("div.ev.claim", {},
       h("div.evhead", {},
-        h("span.num-strong", {}, pct(p.rate)),
-        h("span.micro", {}, `n=${p.n}`)),
-      h("div", {}, p.name),
-      h("div.minibar", {}, h("i", { style: `width:${Math.min(100, p.rate * 100)}%` })),
-      h("div.micro", {}, p.source)),
+        h("span.num-strong", { style: p.rate === null ? "color:var(--pv-text-3)" : "" },
+          p.rate === null ? "—" : pct(p.rate)),
+        p.id ? h("span.micro", {}, p.id) : null,
+        h("div.spacer", {}),
+        h("span.chip", { class: p.knowability === "researchable" ? "for" : "" },
+          p.knowability)),
+      h("div", {}, p.question),
+      n === 0
+        ? h("div.micro", {},
+            p.knowability === "researchable"
+              ? "no reference class found — nothing was researched for this"
+              : "judgment — no base rate to look up")
+        : disclosure(`claim-${ev.seq}`,
+            h("span.micro", {}, `${n} reference class${n === 1 ? "" : "es"}`),
+            () => (p.classes || []).map((c, i) => renderClass(c, `${ev.seq}-${i}`))));
+  },
 
-  analog: (p) =>
-    h("div.ev.analog", {},
-      h("div.evhead", {},
-        h("span.chip", { class: p.outcome >= 1 ? "for" : "against" }, p.outcome >= 1 ? "yes" : "no"),
-        h("span", {}, p.description)),
-      h("div.dim", {}, p.relevance)),
-
-  adj: (p) =>
+  adj: (p, ev) =>
     h("div.ev.adj", { class: p.noise ? "noise" : "" },
       h("div.evhead", {},
         h("span.num-strong", {
           style: `color:${p.noise ? "var(--pv-text-3)" : p.dir === "up" ? "var(--pv-green)" : "var(--pv-red)"}`,
         }, p.noise ? "0 pts" : `${p.dir === "up" ? "+" : "−"}${Math.round(p.mag * 100)} pts`),
-        p.noise ? h("span.chip", {}, "noise") : null),
+        p.noise ? h("span.chip", {}, "noise") : null,
+        h("div.spacer", {}),
+        p.noise ? null : supportChip(p.support)),
       h("div", {}, p.evidence),
-      h("div.dim", {}, h("span.micro", {}, "flip test "), p.flip)),
+      h("div.dim", {}, h("span.micro", {}, "flip test "), p.flip),
+      addresses(p.sub_claim_ids),
+      p.noise ? null : renderSources(`adj-${ev.seq}`, p.sources)),
 
   bias: (p) =>
     h("div.ev.bias", {},
       h("div.micro", {}, p.bias),
       h("div.dim", {}, p.assessment)),
 
-  check: (p) =>
-    h("details.ev.check", {
-      open: !p.ok || undefined,
-      style: p.ok ? "" : "background:var(--pv-red-fill);border-color:var(--pv-red-soft)",
-    },
-      h("summary", {},
-        h("span", { style: `color:${p.ok ? "var(--pv-green)" : "var(--pv-red)"}` }, p.ok ? "✓" : "✗"),
+  check: (p, ev) => {
+    // An advisory verdict is not a failure. P16 flags a bold number for a reader to
+    // judge; colouring it like a broken check would teach people to ignore both.
+    const advisory = !p.ok && p.blocking === false;
+    const tone = p.ok ? "var(--pv-green)" : advisory ? "var(--pv-yellow)" : "var(--pv-red)";
+    const fill = p.ok ? ""
+      : advisory ? "background:var(--pv-yellow-fill);border-color:transparent"
+      : "background:var(--pv-red-fill);border-color:var(--pv-red-soft)";
+    return h("div.ev.check", { style: fill },
+      h("div.evhead", {},
+        h("span", { style: `color:${tone}` }, p.ok ? "✓" : advisory ? "!" : "✗"),
         h("span.k", {}, p.check),
-        h("span.micro.showwork", {}, "show the numbers")),
+        advisory ? h("span.chip.warn", {}, "advisory") : null),
       // Passing checks carry no detail — the validators only produce a message when
       // something failed, and inventing one would be the UI making things up.
       p.detail ? h("div.dim", { style: "margin-top:5px" }, p.detail) : null,
-      renderCheckEvidence(p.name, p.evidence || {})),
+      renderPrinciple(`why-${ev.seq}`, p.name),
+      disclosure(`work-${ev.seq}`, h("span.micro", {}, "show the numbers"),
+        () => renderCheckEvidence(p.name, p.evidence || {}) || h("span.dim", {}, "—")));
+  },
 
   brief: (p) =>
     h("div.ev.brief", {},
@@ -628,6 +767,69 @@ const EVENT_RENDERERS = {
 };
 
 /**
+ * Which decomposed sub-claim this base rate or adjustment answers.
+ *
+ * Empty is meaningful, not missing: a reference class can legitimately speak to the
+ * whole question rather than one part of it.
+ */
+const addresses = (ids) =>
+  h("div.micro", {}, ids && ids.length ? `addresses ${ids.join(", ")}` : "addresses the whole question");
+
+/**
+ * One reference class, inside the sub-claim it was found for.
+ *
+ * Analogs nest here. They are a child collection on `ReferenceClass` but used to be
+ * emitted as flat sibling events, so which class an analog belonged to was carried only
+ * by arrival order — a convention nothing wrote down and the UI could not show.
+ */
+function renderClass(c, key) {
+  return h("div.refcard", {},
+    h("div.evhead", {},
+      h("span.num-strong", {}, pct(c.rate)),
+      h("span.micro", {}, `n=${c.n}`),
+      c.weight === undefined ? null : h("span.micro", {}, `weight ${c.weight.toFixed(2)}`),
+      h("div.spacer", {}),
+      supportChip(c.support)),
+    h("div", {}, c.name),
+    h("div.minibar", {}, h("i", { style: `width:${Math.min(100, c.rate * 100)}%` })),
+    renderSources(`src-${key}`, c.sources),
+    (c.analogs || []).length
+      ? disclosure(`analogs-${key}`,
+          h("span.micro", {}, `${c.analogs.length} analog${c.analogs.length === 1 ? "" : "s"}`),
+          () => c.analogs.map((a) =>
+            h("div.srcrow", {},
+              h("span.chip", { class: a.outcome >= 1 ? "for" : "against" },
+                a.outcome >= 1 ? "yes" : "no"),
+              h("div", {},
+                h("div", {}, a.description),
+                a.relevance ? h("div.dim", {}, a.relevance) : null))))
+      : null);
+}
+
+/** The graded sources behind one claim, collapsed until asked for. */
+function renderSources(key, sources) {
+  if (!sources || !sources.length) {
+    return h("div.micro", {}, "no sources — judgment call");
+  }
+  const label = `${sources.length} source${sources.length === 1 ? "" : "s"}`;
+  return disclosure(key, h("span.micro", {}, label), () =>
+    sources.map((s) =>
+      h("div.srcrow", {},
+        supportChip(s.confidence),
+        h("div", {},
+          h("div", {}, link(s.url, sourceLabel(s))),
+          s.note ? h("div.dim", {}, s.note) : null))));
+}
+
+/** What the principle behind a check actually says, collapsed until asked for. */
+function renderPrinciple(key, name) {
+  const text = PRINCIPLES[name];
+  if (!text) return null;
+  return disclosure(key, h("span.micro", {}, "what this principle says"), () =>
+    h("div.dim", {}, text));
+}
+
+/**
  * The material a check reached its verdict on.
  *
  * One renderer per check because the interesting numbers differ: P6 is an arithmetic
@@ -654,11 +856,30 @@ function renderCheckEvidence(name, e) {
 
     case "dragonfly":
       return h("div.work", {},
-        (e.classes || []).map((c) => row(c.name, `${pct(c.base_rate)} · n=${c.sample_size}`)),
+        (e.classes || []).map((c) =>
+          row(c.name, `${pct(c.base_rate)} · n=${c.sample_size} · ${c.support || "?"}`)),
         row("spread vs threshold", `${(e.spread ?? 0).toFixed(3)} vs ${(e.threshold ?? 0).toFixed(3)}`,
             e.spread > e.threshold ? "var(--pv-red)" : "var(--pv-green)"),
         row("disagreement stated", e.disagreement ? "yes" : "no",
             e.disagreement ? "var(--pv-green)" : "var(--pv-text-3)"));
+
+    case "aggregation":
+      return h("div.work", {},
+        (e.classes || []).map((c) =>
+          row(c.name, `${pct(c.base_rate)} × weight ${(c.weight ?? 0).toFixed(2)}`)),
+        row("implied by weights", pct(e.implied)),
+        row("stated anchor", pct(e.stated)),
+        row("drift vs slack",
+            `${Math.abs((e.stated ?? 0) - (e.implied ?? 0)).toFixed(3)} vs ${(e.slack ?? 0).toFixed(3)}`,
+            Math.abs((e.stated ?? 0) - (e.implied ?? 0)) > (e.slack ?? 0)
+              ? "var(--pv-red)" : "var(--pv-green)"));
+
+    case "citations":
+      return h("div.work", {},
+        row("overall support", e.support || "—"),
+        (e.cited || []).map((c) =>
+          row(sourceLabel(c), isExternal(c.url) ? domainOf(c.url) : "no link",
+              "var(--pv-text-2)")));
 
     case "bias_coverage":
       return h("div.work", {},
@@ -697,8 +918,11 @@ function renderCheckEvidence(name, e) {
       return h("div.work", {},
         row("probability", pct(e.probability)),
         row("allowed band", `${pct(e.floor)} – ${pct(e.ceiling)}`),
-        row("confidence", e.confidence),
-        row("class spread vs agreement", `${(e.spread ?? 0).toFixed(3)} vs ${(e.agreement_threshold ?? 0).toFixed(3)}`));
+        row("class spread vs agreement", `${(e.spread ?? 0).toFixed(3)} vs ${(e.agreement_threshold ?? 0).toFixed(3)}`,
+            e.spread > e.agreement_threshold ? "var(--pv-yellow)" : "var(--pv-green)"),
+        row("justification", e.justification ? "written" : "none",
+            e.justification ? "var(--pv-green)" : "var(--pv-text-3)"),
+        e.justification ? h("div.dim", { style: "margin-top:5px" }, e.justification) : null);
 
     default:
       return null;
@@ -800,7 +1024,7 @@ function renderRail() {
         h("div.evhead", {},
           h("span.num-strong", {}, pct(r.probability)),
           h("span.chip", { class: r.probability < 0.5 ? "against" : "for" }, r.probability < 0.5 ? "no" : "yes"),
-          h("span.micro", {}, r.confidence)),
+          r.support ? h("span.micro", {}, r.support) : null),
         h("div", {}, r.question),
         h("div.micro", {}, r.stamp.slice(0, 10)),
         h("button.del", {
@@ -1000,7 +1224,10 @@ function renderResultCard(r) {
         h("span", { style: `color:${delta < 0 ? "var(--pv-red)" : delta > 0 ? "var(--pv-green)" : "var(--pv-text-2)"}` },
           `${delta < 0 ? "↓" : delta > 0 ? "↑" : "→"} ${Math.abs(Math.round(delta * 100))} pts`),
         h("span.micro", {}, `vs ${pct(r.anchor)} anchor`)) : null,
-      h("div.stat", {}, h("span.micro", {}, "Confidence"), h("span", {}, r.confidence)),
+      h("div.stat", {},
+        h("span.micro", {}, "Evidence"),
+        supportChip(r.support),
+        h("span.micro", {}, "from the graded sources")),
     ),
 
     r.violations && r.violations.length
@@ -1052,7 +1279,9 @@ function renderTrail(run) {
           group.items.map((ev) => {
             const renderer = EVENT_RENDERERS[ev.type];
             if (!renderer) return null;
-            const node = renderer(ev.payload);
+            // `ev` as well as the payload: a disclosure needs a key that survives
+            // re-render, and `seq` is the only stable identity an event has.
+            const node = renderer(ev.payload, ev);
             if (ev.seq > animatedUpTo) node.classList.add("fresh");
             return node;
           })));
