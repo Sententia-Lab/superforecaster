@@ -68,17 +68,26 @@ def test_submit_rate_limit_resets_after_24h():
 
 def test_submit_rate_limit_isolated_per_ip():
     db.submit_question(
-        text="Q1", resolution_criteria="X.", proposed_resolution_date=_future_date(), ip_hash="ip1"
+        text="Q1",
+        resolution_criteria="X.",
+        proposed_resolution_date=_future_date(),
+        ip_hash="ip1",
     )
     # Different IP — allowed
     db.submit_question(
-        text="Q2", resolution_criteria="Y.", proposed_resolution_date=_future_date(), ip_hash="ip2"
+        text="Q2",
+        resolution_criteria="Y.",
+        proposed_resolution_date=_future_date(),
+        ip_hash="ip2",
     )
 
 
 def test_edit_question_only_by_original_submitter():
     q = db.submit_question(
-        text="Q1", resolution_criteria="X.", proposed_resolution_date=_future_date(), ip_hash="ip1"
+        text="Q1",
+        resolution_criteria="X.",
+        proposed_resolution_date=_future_date(),
+        ip_hash="ip1",
     )
     db.edit_question(q.id, ip_hash="ip1", text="Q1-edited")
     fetched = db.get_question(q.id)
@@ -92,7 +101,10 @@ def test_edit_question_only_by_original_submitter():
 
 def test_admin_can_edit_any_question():
     q = db.submit_question(
-        text="Q1", resolution_criteria="X.", proposed_resolution_date=_future_date(), ip_hash="ip1"
+        text="Q1",
+        resolution_criteria="X.",
+        proposed_resolution_date=_future_date(),
+        ip_hash="ip1",
     )
     db.edit_question(q.id, ip_hash=None, text="admin-edit", is_admin=True)
     fetched = db.get_question(q.id)
@@ -102,7 +114,10 @@ def test_admin_can_edit_any_question():
 
 def test_edit_after_approval_blocked_for_user():
     q = db.submit_question(
-        text="Q1", resolution_criteria="X.", proposed_resolution_date=_future_date(), ip_hash="ip1"
+        text="Q1",
+        resolution_criteria="X.",
+        proposed_resolution_date=_future_date(),
+        ip_hash="ip1",
     )
     db.approve_question(q.id)
 
@@ -112,7 +127,10 @@ def test_edit_after_approval_blocked_for_user():
 
 def test_delete_soft_deletes_and_excludes_from_lists():
     q = db.submit_question(
-        text="Q1", resolution_criteria="X.", proposed_resolution_date=_future_date(), ip_hash="ip1"
+        text="Q1",
+        resolution_criteria="X.",
+        proposed_resolution_date=_future_date(),
+        ip_hash="ip1",
     )
     db.delete_question(q.id, ip_hash="ip1")
 
@@ -123,7 +141,10 @@ def test_delete_soft_deletes_and_excludes_from_lists():
 
 def test_delete_only_by_submitter():
     q = db.submit_question(
-        text="Q1", resolution_criteria="X.", proposed_resolution_date=_future_date(), ip_hash="ip1"
+        text="Q1",
+        resolution_criteria="X.",
+        proposed_resolution_date=_future_date(),
+        ip_hash="ip1",
     )
     with pytest.raises(db.PermissionError):
         db.delete_question(q.id, ip_hash="other-ip")
@@ -131,7 +152,10 @@ def test_delete_only_by_submitter():
 
 def test_cast_vote_upvote():
     q = db.submit_question(
-        text="Q1", resolution_criteria="X.", proposed_resolution_date=_future_date(), ip_hash="ip1"
+        text="Q1",
+        resolution_criteria="X.",
+        proposed_resolution_date=_future_date(),
+        ip_hash="ip1",
     )
     score = db.cast_vote(q.id, ip_hash="voter1", vote=1)
     assert score == 1
@@ -139,7 +163,10 @@ def test_cast_vote_upvote():
 
 def test_cast_vote_switches_from_upvote_to_downvote():
     q = db.submit_question(
-        text="Q1", resolution_criteria="X.", proposed_resolution_date=_future_date(), ip_hash="ip1"
+        text="Q1",
+        resolution_criteria="X.",
+        proposed_resolution_date=_future_date(),
+        ip_hash="ip1",
     )
     db.cast_vote(q.id, ip_hash="voter1", vote=1)
     new_score = db.cast_vote(q.id, ip_hash="voter1", vote=-1)
@@ -149,7 +176,10 @@ def test_cast_vote_switches_from_upvote_to_downvote():
 
 def test_remove_vote():
     q = db.submit_question(
-        text="Q1", resolution_criteria="X.", proposed_resolution_date=_future_date(), ip_hash="ip1"
+        text="Q1",
+        resolution_criteria="X.",
+        proposed_resolution_date=_future_date(),
+        ip_hash="ip1",
     )
     db.cast_vote(q.id, ip_hash="voter1", vote=1)
     new_score = db.remove_vote(q.id, ip_hash="voter1")
@@ -159,16 +189,34 @@ def test_remove_vote():
 
 def test_invalid_vote_value_raises():
     q = db.submit_question(
-        text="Q1", resolution_criteria="X.", proposed_resolution_date=_future_date(), ip_hash="ip1"
+        text="Q1",
+        resolution_criteria="X.",
+        proposed_resolution_date=_future_date(),
+        ip_hash="ip1",
     )
     with pytest.raises(ValueError):
         db.cast_vote(q.id, ip_hash="voter1", vote=2)
 
 
 def test_list_sorted_by_score_descending():
-    q1 = db.submit_question(text="Q1", resolution_criteria="X.", proposed_resolution_date=_future_date(), ip_hash="ip1")
-    q2 = db.submit_question(text="Q2", resolution_criteria="X.", proposed_resolution_date=_future_date(), ip_hash="ip2")
-    q3 = db.submit_question(text="Q3", resolution_criteria="X.", proposed_resolution_date=_future_date(), ip_hash="ip3")
+    q1 = db.submit_question(
+        text="Q1",
+        resolution_criteria="X.",
+        proposed_resolution_date=_future_date(),
+        ip_hash="ip1",
+    )
+    q2 = db.submit_question(
+        text="Q2",
+        resolution_criteria="X.",
+        proposed_resolution_date=_future_date(),
+        ip_hash="ip2",
+    )
+    q3 = db.submit_question(
+        text="Q3",
+        resolution_criteria="X.",
+        proposed_resolution_date=_future_date(),
+        ip_hash="ip3",
+    )
 
     db.cast_vote(q1.id, ip_hash="v1", vote=1)
     db.cast_vote(q1.id, ip_hash="v2", vote=1)
@@ -183,7 +231,12 @@ def test_list_sorted_by_score_descending():
 
 
 def test_user_vote_populated_when_ip_provided():
-    q = db.submit_question(text="Q1", resolution_criteria="X.", proposed_resolution_date=_future_date(), ip_hash="ip1")
+    q = db.submit_question(
+        text="Q1",
+        resolution_criteria="X.",
+        proposed_resolution_date=_future_date(),
+        ip_hash="ip1",
+    )
     db.cast_vote(q.id, ip_hash="voter1", vote=1)
 
     listed = db.list_questions(requester_ip_hash="voter1")
@@ -218,7 +271,9 @@ def test_approve_question_overrides_resolution_date_and_criteria():
         ip_hash="ip1",
     )
     new_date = _future_date(90)
-    approved = db.approve_question(q.id, resolution_date=new_date, resolution_criteria="precise criteria")
+    approved = db.approve_question(
+        q.id, resolution_date=new_date, resolution_criteria="precise criteria"
+    )
 
     assert approved.status == "approved"
     assert approved.resolution_criteria == "precise criteria"
@@ -228,7 +283,10 @@ def test_approve_question_overrides_resolution_date_and_criteria():
 
 def test_link_question_to_forecast_requires_approved_status():
     q = db.submit_question(
-        text="Q1", resolution_criteria="X.", proposed_resolution_date=_future_date(), ip_hash="ip1"
+        text="Q1",
+        resolution_criteria="X.",
+        proposed_resolution_date=_future_date(),
+        ip_hash="ip1",
     )
     with pytest.raises(db.StateError):
         db.link_question_to_forecast(q.id, "fake-forecast-id")

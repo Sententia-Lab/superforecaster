@@ -22,10 +22,30 @@ from superforecaster.models import ModelEntry
 
 # A fixture garden with three tiers of cutoff, so "newest eligible" has a real answer.
 FIXTURE = [
-    {"id": "p:new", "provider": "p", "training_cutoff": "2026-01-31", "available": True},
-    {"id": "p:mid", "provider": "p", "training_cutoff": "2025-07-31", "available": True},
-    {"id": "p:old", "provider": "p", "training_cutoff": "2024-01-31", "available": True},
-    {"id": "p:retired", "provider": "p", "training_cutoff": "2020-01-31", "available": False},
+    {
+        "id": "p:new",
+        "provider": "p",
+        "training_cutoff": "2026-01-31",
+        "available": True,
+    },
+    {
+        "id": "p:mid",
+        "provider": "p",
+        "training_cutoff": "2025-07-31",
+        "available": True,
+    },
+    {
+        "id": "p:old",
+        "provider": "p",
+        "training_cutoff": "2024-01-31",
+        "available": True,
+    },
+    {
+        "id": "p:retired",
+        "provider": "p",
+        "training_cutoff": "2020-01-31",
+        "available": False,
+    },
 ]
 
 
@@ -86,8 +106,12 @@ def test_accepts_a_datetime_as_well_as_a_date(garden):
 
 def test_boundary_is_inclusive(garden):
     """cutoff == as_of is eligible: training ended the day the question was asked."""
-    assert mg.pick_clean_model(date(2025, 7, 31), margin_days=0, path=garden).id == "p:mid"
-    assert mg.pick_clean_model(date(2025, 7, 30), margin_days=0, path=garden).id == "p:old"
+    assert (
+        mg.pick_clean_model(date(2025, 7, 31), margin_days=0, path=garden).id == "p:mid"
+    )
+    assert (
+        mg.pick_clean_model(date(2025, 7, 30), margin_days=0, path=garden).id == "p:old"
+    )
 
 
 # ---------- listing and reach ----------
@@ -117,14 +141,18 @@ def test_coverage_counts_questions_with_a_clean_model(garden):
 
 def test_resolve_id_is_bare_without_a_gateway_key(monkeypatch):
     monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
-    entry = ModelEntry(id="anthropic:x", provider="anthropic", training_cutoff=date(2025, 1, 1))
+    entry = ModelEntry(
+        id="anthropic:x", provider="anthropic", training_cutoff=date(2025, 1, 1)
+    )
     assert mg.resolve_id(entry) == "anthropic:x"
 
 
 def test_resolve_id_adds_the_gateway_prefix_when_routed_through_it(monkeypatch):
     """Must match config.resolve_agent_model()'s `gateway/...` form or the run 404s."""
     monkeypatch.setenv("PYDANTIC_AI_GATEWAY_API_KEY", "pylf_v1_us_test")
-    entry = ModelEntry(id="anthropic:x", provider="anthropic", training_cutoff=date(2025, 1, 1))
+    entry = ModelEntry(
+        id="anthropic:x", provider="anthropic", training_cutoff=date(2025, 1, 1)
+    )
     assert mg.resolve_id(entry) == "gateway/anthropic:x"
 
 

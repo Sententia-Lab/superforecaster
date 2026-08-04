@@ -72,7 +72,9 @@ def test_decompose_scorer_checks_expected_terms():
 
 
 def test_outside_view_scorer_compares_against_the_documented_rate():
-    o = outside(reference_classes=[ref("a", 0.20), ref("b", 0.24)], aggregate_base_rate=0.22)
+    o = outside(
+        reference_classes=[ref("a", 0.20), ref("b", 0.24)], aggregate_base_rate=0.22
+    )
     assert ce.score_outside_view(o, {"true_base_rate": 0.25, "tolerance": 0.05}).passed
     assert not ce.score_outside_view(
         o, {"true_base_rate": 0.60, "tolerance": 0.05}
@@ -80,7 +82,12 @@ def test_outside_view_scorer_compares_against_the_documented_rate():
 
 
 def test_outside_view_scorer_requires_sourced_classes():
-    o = outside(reference_classes=[ref("a", 0.2).model_copy(update={"source": ""}), ref("b", 0.24)])
+    o = outside(
+        reference_classes=[
+            ref("a", 0.2).model_copy(update={"source": ""}),
+            ref("b", 0.24),
+        ]
+    )
     assert not ce.score_outside_view(o, {}).assertions["every_class_sourced"]
 
 
@@ -91,9 +98,7 @@ def test_inside_view_scorer_wants_the_decisive_fact_used_and_the_noise_discarded
     i = inside(
         adjustments=[
             adjustment("up", 0.10, evidence="the board approved the merger"),
-            adjustment(
-                "down", 0.0, is_noise=True, evidence="the CEO wore a blue tie"
-            ),
+            adjustment("down", 0.0, is_noise=True, evidence="the CEO wore a blue tie"),
         ]
     )
     s = ce.score_inside_view(
@@ -145,7 +150,9 @@ def test_critic_scorer_wants_a_named_ambiguity_on_a_bad_case():
 # ---------- resolution ----------
 
 
-def resolution(appears_resolved: bool, evidence: str | None = "a source") -> ResolutionCheckResult:
+def resolution(
+    appears_resolved: bool, evidence: str | None = "a source"
+) -> ResolutionCheckResult:
     return ResolutionCheckResult(
         appears_resolved=appears_resolved,
         confidence="medium",
@@ -187,8 +194,12 @@ def decision(prior: float, posterior: float, confirming: bool = True) -> UpdateD
         evidence = []
     else:
         strong, weak = (0.9, 0.2) if confirming else (0.2, 0.9)
-        evidence = [EvidenceItem(fact="f", source="s", p_if_true=strong, p_if_false=weak)]
-    return UpdateDecision(evidence=evidence, prior=prior, posterior=posterior, reasoning="r")
+        evidence = [
+            EvidenceItem(fact="f", source="s", p_if_true=strong, p_if_false=weak)
+        ]
+    return UpdateDecision(
+        evidence=evidence, prior=prior, posterior=posterior, reasoning="r"
+    )
 
 
 def test_update_scorer_checks_direction():

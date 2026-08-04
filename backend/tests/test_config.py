@@ -1,6 +1,11 @@
 import pytest
 
-from config import get_research_limits, get_synthesis_limits, get_usage_limits, resolve_agent_model
+from config import (
+    get_research_limits,
+    get_synthesis_limits,
+    get_usage_limits,
+    resolve_agent_model,
+)
 
 
 def test_resolve_agent_model_prefers_explicit_override(monkeypatch):

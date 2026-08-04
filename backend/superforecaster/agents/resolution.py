@@ -52,7 +52,9 @@ PROCESS
 """
 
 
-def build_resolution_agent(model: str | None = None) -> Agent[ForecastDeps, ResolutionCheckResult]:
+def build_resolution_agent(
+    model: str | None = None,
+) -> Agent[ForecastDeps, ResolutionCheckResult]:
     return Agent[ForecastDeps, ResolutionCheckResult](
         model=model or resolve_agent_model(),
         name="resolution_agent",

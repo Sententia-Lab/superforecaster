@@ -36,6 +36,7 @@ def _set_admin_key(monkeypatch):
 @asynccontextmanager
 async def _noop_lifespan(app):
     from superforecaster import db
+
     db.init_db()
     yield
 
@@ -64,7 +65,12 @@ def _mock_forecast() -> Forecast:
         probability=0.55,
         confidence="medium",
         decompositions=[
-            SubPrediction(question=f"Sub {i}?", probability=0.5, rationale="r", confidence="medium")
+            SubPrediction(
+                question=f"Sub {i}?",
+                probability=0.5,
+                rationale="r",
+                confidence="medium",
+            )
             for i in range(3)
         ],
         research=ResearchSummary(
@@ -97,12 +103,17 @@ def test_create_forecast_requires_admin(client):
 def test_create_forecast(client, admin_headers):
     async def mock_run_forecast(input):
         # run_forecast_graph returns (forecast, surviving violations)
-        return _mock_forecast().model_copy(update={
-            "question": input.question,
-            "resolution_criteria": input.resolution_criteria,
-            "resolution_date": input.resolution_date,
-            "category": input.category,
-        }), []
+        return (
+            _mock_forecast().model_copy(
+                update={
+                    "question": input.question,
+                    "resolution_criteria": input.resolution_criteria,
+                    "resolution_date": input.resolution_date,
+                    "category": input.category,
+                }
+            ),
+            [],
+        )
 
     with patch("api.forecasts.run_forecast_graph", side_effect=mock_run_forecast):
         resp = client.post(
@@ -126,12 +137,17 @@ def test_create_forecast(client, admin_headers):
 def test_list_and_get_forecast(client, admin_headers):
     async def mock_run_forecast(input):
         # run_forecast_graph returns (forecast, surviving violations)
-        return _mock_forecast().model_copy(update={
-            "question": input.question,
-            "resolution_criteria": input.resolution_criteria,
-            "resolution_date": input.resolution_date,
-            "category": input.category,
-        }), []
+        return (
+            _mock_forecast().model_copy(
+                update={
+                    "question": input.question,
+                    "resolution_criteria": input.resolution_criteria,
+                    "resolution_date": input.resolution_date,
+                    "category": input.category,
+                }
+            ),
+            [],
+        )
 
     with patch("api.forecasts.run_forecast_graph", side_effect=mock_run_forecast):
         create = client.post(
@@ -159,12 +175,17 @@ def test_list_and_get_forecast(client, admin_headers):
 def test_resolve_forecast(client, admin_headers):
     async def mock_run_forecast(input):
         # run_forecast_graph returns (forecast, surviving violations)
-        return _mock_forecast().model_copy(update={
-            "question": input.question,
-            "resolution_criteria": input.resolution_criteria,
-            "resolution_date": input.resolution_date,
-            "category": input.category,
-        }), []
+        return (
+            _mock_forecast().model_copy(
+                update={
+                    "question": input.question,
+                    "resolution_criteria": input.resolution_criteria,
+                    "resolution_date": input.resolution_date,
+                    "category": input.category,
+                }
+            ),
+            [],
+        )
 
     with patch("api.forecasts.run_forecast_graph", side_effect=mock_run_forecast):
         create = client.post(
@@ -195,12 +216,17 @@ def test_resolve_forecast(client, admin_headers):
 def test_resolve_with_null_marks_ambiguous(client, admin_headers):
     async def mock_run_forecast(input):
         # run_forecast_graph returns (forecast, surviving violations)
-        return _mock_forecast().model_copy(update={
-            "question": input.question,
-            "resolution_criteria": input.resolution_criteria,
-            "resolution_date": input.resolution_date,
-            "category": input.category,
-        }), []
+        return (
+            _mock_forecast().model_copy(
+                update={
+                    "question": input.question,
+                    "resolution_criteria": input.resolution_criteria,
+                    "resolution_date": input.resolution_date,
+                    "category": input.category,
+                }
+            ),
+            [],
+        )
 
     with patch("api.forecasts.run_forecast_graph", side_effect=mock_run_forecast):
         create = client.post(
@@ -230,12 +256,17 @@ def test_resolve_with_null_marks_ambiguous(client, admin_headers):
 def test_manual_refresh_endpoint(client, admin_headers):
     async def mock_run_forecast(input):
         # run_forecast_graph returns (forecast, surviving violations)
-        return _mock_forecast().model_copy(update={
-            "question": input.question,
-            "resolution_criteria": input.resolution_criteria,
-            "resolution_date": input.resolution_date,
-            "category": input.category,
-        }), []
+        return (
+            _mock_forecast().model_copy(
+                update={
+                    "question": input.question,
+                    "resolution_criteria": input.resolution_criteria,
+                    "resolution_date": input.resolution_date,
+                    "category": input.category,
+                }
+            ),
+            [],
+        )
 
     with patch("api.forecasts.run_forecast_graph", side_effect=mock_run_forecast):
         create = client.post(

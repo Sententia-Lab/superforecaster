@@ -51,7 +51,9 @@ rather than inventing a rate.
 """
 
 
-def build_outside_view_agent(model: str | None = None) -> Agent[ForecastDeps, OutsideView]:
+def build_outside_view_agent(
+    model: str | None = None,
+) -> Agent[ForecastDeps, OutsideView]:
     return Agent[ForecastDeps, OutsideView](
         model=model or resolve_agent_model(),
         name="outside_view_agent",
@@ -79,7 +81,9 @@ async def run_outside_view(
     deps: ForecastDeps,
 ) -> OutsideView:
     """Find reference classes and base rates. Searches; budget-limited."""
-    researchable = [s.question for s in decomposition.sub_claims if s.knowability == "researchable"]
+    researchable = [
+        s.question for s in decomposition.sub_claims if s.knowability == "researchable"
+    ]
     focus = (
         "Prioritise base rates for these sub-claims, which were labelled researchable:\n"
         + "\n".join(f"  - {q}" for q in researchable)

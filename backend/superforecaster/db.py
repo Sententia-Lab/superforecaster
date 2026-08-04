@@ -24,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 # Python 3.12 deprecated the default datetime adapter; it also doesn't handle
 # timezone-aware datetimes correctly. Register our own that round-trip ISO 8601.
 
+
 def _adapt_datetime(dt: datetime) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
@@ -66,7 +67,9 @@ class NotFoundError(Exception):
     """Raised when a record lookup returns no rows."""
 
 
-class PermissionError(Exception):  # noqa: A001 — shadowing builtin intentionally for namespacing
+class PermissionError(
+    Exception
+):  # noqa: A001 — shadowing builtin intentionally for namespacing
     """Raised when an IP tries to modify a question they didn't submit."""
 
 
@@ -285,7 +288,15 @@ def add_forecast_update(
                 id, forecast_id, probability, confidence, reasoning, is_late, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (update_id, forecast_id, probability, confidence, reasoning, int(is_late), now),
+            (
+                update_id,
+                forecast_id,
+                probability,
+                confidence,
+                reasoning,
+                int(is_late),
+                now,
+            ),
         )
 
     return ForecastUpdateRecord(
@@ -302,7 +313,9 @@ def add_forecast_update(
 def get_forecast(forecast_id: str) -> ForecastRecord | None:
     """Load a forecast plus its full update history."""
     with connect() as conn:
-        f_row = conn.execute("SELECT * FROM forecasts WHERE id = ?", (forecast_id,)).fetchone()
+        f_row = conn.execute(
+            "SELECT * FROM forecasts WHERE id = ?", (forecast_id,)
+        ).fetchone()
         if f_row is None:
             return None
         u_rows = conn.execute(
@@ -492,7 +505,8 @@ def calibration_report() -> CalibrationReport:
         low = i / 10
         high = (i + 1) / 10
         bucket_rows = [
-            r for r in rows
+            r
+            for r in rows
             if (low <= r["scored_probability"] < high)
             or (i == 9 and r["scored_probability"] == 1.0)
         ]
@@ -501,8 +515,10 @@ def calibration_report() -> CalibrationReport:
         buckets.append(
             CalibrationBucket(
                 range=f"{int(low * 100)}-{int(high * 100)}%",
-                predicted_avg=sum(r["scored_probability"] for r in bucket_rows) / len(bucket_rows),
-                actual_frequency=sum(r["outcome"] for r in bucket_rows) / len(bucket_rows),
+                predicted_avg=sum(r["scored_probability"] for r in bucket_rows)
+                / len(bucket_rows),
+                actual_frequency=sum(r["outcome"] for r in bucket_rows)
+                / len(bucket_rows),
                 count=len(bucket_rows),
             )
         )
@@ -564,7 +580,11 @@ def edit_question(
     is_admin: bool = False,
 ) -> QuestionRecord:
     """Edit a question. If `is_admin=True`, IP and status checks are skipped."""
-    if text is None and resolution_criteria is None and proposed_resolution_date is None:
+    if (
+        text is None
+        and resolution_criteria is None
+        and proposed_resolution_date is None
+    ):
         raise ValueError("at least one field must be provided")
 
     now = _utcnow()
@@ -622,7 +642,9 @@ def delete_question(question_id: str, ip_hash: str, is_admin: bool = False) -> N
         conn.execute("UPDATE questions SET is_deleted = 1 WHERE id = ?", (question_id,))
 
 
-def get_question(question_id: str, requester_ip_hash: str | None = None) -> QuestionRecord | None:
+def get_question(
+    question_id: str, requester_ip_hash: str | None = None
+) -> QuestionRecord | None:
     with connect() as conn:
         row = conn.execute(
             "SELECT * FROM questions WHERE id = ? AND is_deleted = 0",
@@ -748,7 +770,9 @@ def reject_question(question_id: str) -> QuestionRecord:
             raise NotFoundError(f"question {question_id}")
         if row["status"] not in ("pending", "approved"):
             raise StateError(f"cannot reject question with status {row['status']}")
-        conn.execute("UPDATE questions SET status = 'rejected' WHERE id = ?", (question_id,))
+        conn.execute(
+            "UPDATE questions SET status = 'rejected' WHERE id = ?", (question_id,)
+        )
     record = get_question(question_id)
     assert record is not None
     return record
@@ -763,7 +787,9 @@ def link_question_to_forecast(question_id: str, forecast_id: str) -> QuestionRec
         if row is None or row["is_deleted"]:
             raise NotFoundError(f"question {question_id}")
         if row["status"] != "approved":
-            raise StateError(f"can only forecast approved questions, got {row['status']}")
+            raise StateError(
+                f"can only forecast approved questions, got {row['status']}"
+            )
         conn.execute(
             "UPDATE questions SET status = 'forecasted', forecast_id = ? WHERE id = ?",
             (forecast_id, question_id),
@@ -854,14 +880,19 @@ def last_refresh_run() -> dict | None:
         ).fetchone()
     if row is None:
         return None
-    return {"started_at": _ensure_aware(row["started_at"]), "summary": json.loads(row["summary_json"])}
+    return {
+        "started_at": _ensure_aware(row["started_at"]),
+        "summary": json.loads(row["summary_json"]),
+    }
 
 
 # ---------- Row → model converters ----------
 
 
 def _row_to_forecast(f_row: sqlite3.Row, u_rows: list[sqlite3.Row]) -> ForecastRecord:
-    decompositions = [SubPrediction(**d) for d in json.loads(f_row["decompositions_json"])]
+    decompositions = [
+        SubPrediction(**d) for d in json.loads(f_row["decompositions_json"])
+    ]
     research = ResearchSummary.model_validate_json(f_row["research_json"])
     updates = [
         ForecastUpdateRecord(
@@ -884,12 +915,18 @@ def _row_to_forecast(f_row: sqlite3.Row, u_rows: list[sqlite3.Row]) -> ForecastR
         submission_gap_days=f_row["submission_gap_days"],
         submission_deadline=_ensure_aware(f_row["submission_deadline"]),
         resolution_date=_ensure_aware(f_row["resolution_date"]),
-        resolved_at=_ensure_aware(f_row["resolved_at"]) if f_row["resolved_at"] else None,
+        resolved_at=(
+            _ensure_aware(f_row["resolved_at"]) if f_row["resolved_at"] else None
+        ),
         outcome=f_row["outcome"],
         is_ambiguous=bool(f_row["is_ambiguous"]),
         scored_probability=f_row["scored_probability"],
         brier_score=f_row["brier_score"],
-        last_refreshed_at=_ensure_aware(f_row["last_refreshed_at"]) if f_row["last_refreshed_at"] else None,
+        last_refreshed_at=(
+            _ensure_aware(f_row["last_refreshed_at"])
+            if f_row["last_refreshed_at"]
+            else None
+        ),
         flagged_for_resolution_review=bool(f_row["flagged_for_resolution_review"]),
         initial_reasoning=f_row["initial_reasoning"],
         decompositions=decompositions,

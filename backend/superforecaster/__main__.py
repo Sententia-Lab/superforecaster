@@ -25,7 +25,12 @@ from .agents.postmortem import run_postmortem
 from .agents.resolution import run_resolution_check
 from .agents.update import run_update
 from .deps import ForecastDeps
-from .graphs import forecast_mermaid, run_forecast_graph, run_update_graph, update_mermaid
+from .graphs import (
+    forecast_mermaid,
+    run_forecast_graph,
+    run_update_graph,
+    update_mermaid,
+)
 from .models import (
     Forecast,
     ForecastInput,
@@ -76,7 +81,9 @@ def _record_from_fixture(data: dict) -> ForecastRecord:
     Used by `refresh --fixture` and `resolve --fixture` so the agents can
     operate without writing to the DB.
     """
-    resolution_date = datetime.fromisoformat(data["resolution_date"].replace("Z", "+00:00"))
+    resolution_date = datetime.fromisoformat(
+        data["resolution_date"].replace("Z", "+00:00")
+    )
     submission_gap_days = data.get("submission_gap_days", 7)
     submission_deadline = resolution_date.replace(microsecond=0)  # placeholder
 
@@ -133,7 +140,9 @@ async def _cmd_forecast(args: argparse.Namespace) -> int:
         question = data["question"]
         criteria = data["resolution_criteria"]
         source = data["resolution_source"]
-        resolution_date = datetime.fromisoformat(data["resolution_date"].replace("Z", "+00:00"))
+        resolution_date = datetime.fromisoformat(
+            data["resolution_date"].replace("Z", "+00:00")
+        )
         category = data["category"]
     else:
         print("Forecast a new question.")
@@ -214,7 +223,9 @@ async def _cmd_resolve(args: argparse.Namespace) -> int:
 async def _cmd_critique(args: argparse.Namespace) -> int:
     """Principle 3 — is this question resolvable as written?"""
     resolution_date = (
-        datetime.fromisoformat(args.date).replace(tzinfo=timezone.utc) if args.date else None
+        datetime.fromisoformat(args.date).replace(tzinfo=timezone.utc)
+        if args.date
+        else None
     )
     result = await run_critique(
         question=args.question,
@@ -253,7 +264,9 @@ async def _cmd_models(args: argparse.Namespace) -> int:
             print("\nNo model is currently available — no clean backtest is possible.")
         else:
             print(f"\nEarliest available training cutoff: {reach.isoformat()}")
-            print("A question must be asked after that date (plus the margin) to be clean.")
+            print(
+                "A question must be asked after that date (plus the margin) to be clean."
+            )
         return 0
 
     if args.action == "pick":
@@ -296,9 +309,7 @@ async def _cmd_test(args: argparse.Namespace) -> int:
         )
         return 2
 
-    agents = (
-        component_evals.AGENTS if args.agent in (None, "all") else (args.agent,)
-    )
+    agents = component_evals.AGENTS if args.agent in (None, "all") else (args.agent,)
     unknown = [a for a in agents if a not in component_evals.SCORERS]
     if unknown:
         print(f"unknown agent(s): {', '.join(unknown)}", file=sys.stderr)
@@ -327,59 +338,92 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_forecast = sub.add_parser("forecast", help="Run the forecast agent")
-    p_forecast.add_argument("--fixture", nargs="?", const="", default=None,
-                            help="Load input from a fixture JSON file (default: bundled)")
-    p_forecast.add_argument("--no-save", action="store_true",
-                            help="Don't save the result to SQLite")
+    p_forecast.add_argument(
+        "--fixture",
+        nargs="?",
+        const="",
+        default=None,
+        help="Load input from a fixture JSON file (default: bundled)",
+    )
+    p_forecast.add_argument(
+        "--no-save", action="store_true", help="Don't save the result to SQLite"
+    )
     p_forecast.add_argument("--max-iterations", type=int, default=5)
     _add_verbose_flag(p_forecast)
     p_forecast.set_defaults(func=_cmd_forecast)
 
     p_refresh = sub.add_parser("refresh", help="Run the refresh agent")
     grp_r = p_refresh.add_mutually_exclusive_group(required=True)
-    grp_r.add_argument("--fixture", nargs="?", const="", default=None,
-                       help="Load forecast from a fixture file (in-memory, no DB write)")
+    grp_r.add_argument(
+        "--fixture",
+        nargs="?",
+        const="",
+        default=None,
+        help="Load forecast from a fixture file (in-memory, no DB write)",
+    )
     grp_r.add_argument("--id", help="Refresh a forecast by UUID from the DB")
     _add_verbose_flag(p_refresh)
     p_refresh.set_defaults(func=_cmd_refresh)
 
     p_resolve = sub.add_parser("resolve", help="Run the resolution agent")
     grp_v = p_resolve.add_mutually_exclusive_group(required=True)
-    grp_v.add_argument("--fixture", nargs="?", const="", default=None,
-                       help="Load forecast from a fixture file (in-memory, no DB write)")
-    grp_v.add_argument("--id", help="Check resolution for a forecast by UUID from the DB")
+    grp_v.add_argument(
+        "--fixture",
+        nargs="?",
+        const="",
+        default=None,
+        help="Load forecast from a fixture file (in-memory, no DB write)",
+    )
+    grp_v.add_argument(
+        "--id", help="Check resolution for a forecast by UUID from the DB"
+    )
     _add_verbose_flag(p_resolve)
     p_resolve.set_defaults(func=_cmd_resolve)
 
-    p_critique = sub.add_parser("critique", help="Check whether a question is resolvable")
+    p_critique = sub.add_parser(
+        "critique", help="Check whether a question is resolvable"
+    )
     p_critique.add_argument("--question", required=True)
     p_critique.add_argument("--criteria", required=True)
     p_critique.add_argument("--date", help="Proposed resolution date (YYYY-MM-DD)")
     _add_verbose_flag(p_critique)
     p_critique.set_defaults(func=_cmd_critique)
 
-    p_post = sub.add_parser("postmortem", help="Review a resolved forecast for process errors")
+    p_post = sub.add_parser(
+        "postmortem", help="Review a resolved forecast for process errors"
+    )
     p_post.add_argument("id", help="Forecast UUID")
     _add_verbose_flag(p_post)
     p_post.set_defaults(func=_cmd_postmortem)
 
     p_models = sub.add_parser("models", help="Inspect the model garden")
-    p_models.add_argument("action", nargs="?", default="list", choices=["list", "probe", "pick"])
+    p_models.add_argument(
+        "action", nargs="?", default="list", choices=["list", "probe", "pick"]
+    )
     p_models.add_argument("--as-of", help="Date to pick a clean model for (YYYY-MM-DD)")
     _add_verbose_flag(p_models)
     p_models.set_defaults(func=_cmd_models)
 
     p_diagram = sub.add_parser("diagram", help="Print the graph as mermaid")
-    p_diagram.add_argument("graph", nargs="?", default="forecast", choices=["forecast", "update"])
+    p_diagram.add_argument(
+        "graph", nargs="?", default="forecast", choices=["forecast", "update"]
+    )
     _add_verbose_flag(p_diagram)
     p_diagram.set_defaults(func=_cmd_diagram)
 
     p_test = sub.add_parser("test", help="Run the component eval harness")
-    p_test.add_argument("suite", nargs="?", default="component", choices=["component", "e2e"])
-    p_test.add_argument("agent", nargs="?", default="all",
-                        help="Agent name, or 'all' (default)")
-    p_test.add_argument("--mode", default="clean", choices=["clean", "production"],
-                        help="clean picks a model trained before the case's as_of")
+    p_test.add_argument(
+        "suite", nargs="?", default="component", choices=["component", "e2e"]
+    )
+    p_test.add_argument(
+        "agent", nargs="?", default="all", help="Agent name, or 'all' (default)"
+    )
+    p_test.add_argument(
+        "--mode",
+        default="clean",
+        choices=["clean", "production"],
+        help="clean picks a model trained before the case's as_of",
+    )
     _add_verbose_flag(p_test)
     p_test.set_defaults(func=_cmd_test)
 

@@ -45,7 +45,9 @@ class HistoricalAnalog(BaseModel):
 
     description: str = Field(description="Brief description of the analogous event")
     outcome: float = Field(ge=0.0, le=1.0, description="0.0 or 1.0")
-    relevance: str = Field(description="Why this analog applies to the current question")
+    relevance: str = Field(
+        description="Why this analog applies to the current question"
+    )
 
 
 class SubPrediction(BaseModel):
@@ -142,7 +144,9 @@ class ReferenceClass(BaseModel):
 
     name: str = Field(description="What population this rate is drawn from")
     base_rate: float = Field(ge=0.0, le=1.0)
-    sample_size: int = Field(ge=1, description="How many analogous cases back this rate")
+    sample_size: int = Field(
+        ge=1, description="How many analogous cases back this rate"
+    )
     source: str
     analogs: list[HistoricalAnalog] = Field(default_factory=list)
 
@@ -194,7 +198,9 @@ class InsideView(BaseModel):
     """Output of inside_view_agent. P5, P9, P14, P15."""
 
     adjustments: list[Adjustment] = Field(min_length=1, max_length=8)
-    steel_man: str = Field(description="P14 — strongest case for the opposite conclusion")
+    steel_man: str = Field(
+        description="P14 — strongest case for the opposite conclusion"
+    )
     what_would_change_my_mind: str = Field(description="P14")
     bias_checks: list[BiasCheck] = Field(min_length=5, max_length=5)
 

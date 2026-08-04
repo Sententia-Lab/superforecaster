@@ -116,7 +116,10 @@ def test_drop_leaked_drops_undated_results_when_clamped():
 
 def test_drop_leaked_records_every_result_it_considered():
     """Dropped results still appear in the audit trail, or filtering is invisible."""
-    raw = [result("keep", "2022-01-01T00:00:00Z"), result("drop", "2023-01-01T00:00:00Z")]
+    raw = [
+        result("keep", "2022-01-01T00:00:00Z"),
+        result("drop", "2023-01-01T00:00:00Z"),
+    ]
     kept, refs = tools._drop_leaked(raw, AS_OF)
     assert len(kept) == 1
     assert {r.url for r in refs} == {"keep", "drop"}

@@ -43,9 +43,11 @@ def caller_headers() -> dict[str, str]:
 
 from contextlib import asynccontextmanager  # noqa: E402
 
+
 @asynccontextmanager
 async def _noop_lifespan(app):
     from superforecaster import db
+
     db.init_db()
     yield
 
@@ -93,18 +95,26 @@ def test_vote_and_undo(client, caller_headers):
 
     create = client.post(
         "/questions",
-        json={"text": "Q", "resolution_criteria": "X.", "proposed_resolution_date": _future_iso()},
+        json={
+            "text": "Q",
+            "resolution_criteria": "X.",
+            "proposed_resolution_date": _future_iso(),
+        },
         headers=caller_headers,
     )
     qid = create.json()["id"]
 
-    vote = client.post(f"/questions/{qid}/vote", json={"vote": 1}, headers=voter_headers)
+    vote = client.post(
+        f"/questions/{qid}/vote", json={"vote": 1}, headers=voter_headers
+    )
     assert vote.status_code == 200
     assert vote.json()["net_score"] == 1
     assert vote.json()["user_vote"] == 1
 
     # Switch to downvote
-    downvote = client.post(f"/questions/{qid}/vote", json={"vote": -1}, headers=voter_headers)
+    downvote = client.post(
+        f"/questions/{qid}/vote", json={"vote": -1}, headers=voter_headers
+    )
     assert downvote.json()["net_score"] == -1
 
     # Undo
@@ -117,12 +127,18 @@ def test_vote_and_undo(client, caller_headers):
 def test_invalid_vote_value(client, caller_headers):
     create = client.post(
         "/questions",
-        json={"text": "Q", "resolution_criteria": "X.", "proposed_resolution_date": _future_iso()},
+        json={
+            "text": "Q",
+            "resolution_criteria": "X.",
+            "proposed_resolution_date": _future_iso(),
+        },
         headers=caller_headers,
     )
     qid = create.json()["id"]
     resp = client.post(
-        f"/questions/{qid}/vote", json={"vote": 5}, headers={"X-Forwarded-For": "9.9.9.9"}
+        f"/questions/{qid}/vote",
+        json={"vote": 5},
+        headers={"X-Forwarded-For": "9.9.9.9"},
     )
     assert resp.status_code == 400
 
@@ -130,7 +146,11 @@ def test_invalid_vote_value(client, caller_headers):
 def test_edit_question_only_by_submitter(client, caller_headers):
     create = client.post(
         "/questions",
-        json={"text": "Q", "resolution_criteria": "X.", "proposed_resolution_date": _future_iso()},
+        json={
+            "text": "Q",
+            "resolution_criteria": "X.",
+            "proposed_resolution_date": _future_iso(),
+        },
         headers=caller_headers,
     )
     qid = create.json()["id"]
@@ -156,7 +176,11 @@ def test_edit_question_only_by_submitter(client, caller_headers):
 def test_admin_can_edit_any_question(client, caller_headers, admin_headers):
     create = client.post(
         "/questions",
-        json={"text": "Q", "resolution_criteria": "X.", "proposed_resolution_date": _future_iso()},
+        json={
+            "text": "Q",
+            "resolution_criteria": "X.",
+            "proposed_resolution_date": _future_iso(),
+        },
         headers=caller_headers,
     )
     qid = create.json()["id"]
@@ -173,7 +197,11 @@ def test_admin_can_edit_any_question(client, caller_headers, admin_headers):
 def test_delete_question(client, caller_headers):
     create = client.post(
         "/questions",
-        json={"text": "Q", "resolution_criteria": "X.", "proposed_resolution_date": _future_iso()},
+        json={
+            "text": "Q",
+            "resolution_criteria": "X.",
+            "proposed_resolution_date": _future_iso(),
+        },
         headers=caller_headers,
     )
     qid = create.json()["id"]
@@ -247,7 +275,11 @@ def test_top_monthly_returns_at_most_5(client):
 def test_admin_required_for_approve(client, caller_headers, admin_headers):
     create = client.post(
         "/questions",
-        json={"text": "Q", "resolution_criteria": "X.", "proposed_resolution_date": _future_iso()},
+        json={
+            "text": "Q",
+            "resolution_criteria": "X.",
+            "proposed_resolution_date": _future_iso(),
+        },
         headers=caller_headers,
     )
     qid = create.json()["id"]
@@ -270,7 +302,9 @@ def test_admin_required_for_approve(client, caller_headers, admin_headers):
     assert ok.json()["status"] == "approved"
 
 
-def test_approve_can_override_resolution_criteria(client, caller_headers, admin_headers):
+def test_approve_can_override_resolution_criteria(
+    client, caller_headers, admin_headers
+):
     create = client.post(
         "/questions",
         json={

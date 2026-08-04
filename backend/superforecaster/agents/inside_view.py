@@ -58,7 +58,9 @@ Limited search budget. Prefer a few well-chosen searches over exhaustive looping
 """
 
 
-def build_inside_view_agent(model: str | None = None) -> Agent[ForecastDeps, InsideView]:
+def build_inside_view_agent(
+    model: str | None = None,
+) -> Agent[ForecastDeps, InsideView]:
     return Agent[ForecastDeps, InsideView](
         model=model or resolve_agent_model(),
         name="inside_view_agent",

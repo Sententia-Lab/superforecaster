@@ -57,7 +57,9 @@ def a_record(probability: float = 0.50) -> ForecastRecord:
     )
 
 
-def a_decision(prior: float, posterior: float, *, confirming: bool = True) -> UpdateDecision:
+def a_decision(
+    prior: float, posterior: float, *, confirming: bool = True
+) -> UpdateDecision:
     """An internally consistent decision — evidence points the way the number moved."""
     if prior == posterior:
         evidence = []
@@ -67,7 +69,9 @@ def a_decision(prior: float, posterior: float, *, confirming: bool = True) -> Up
         evidence = [EvidenceItem(fact="f", source="s", p_if_true=0.2, p_if_false=0.9)]
     if posterior < prior and confirming:
         evidence = [EvidenceItem(fact="f", source="s", p_if_true=0.2, p_if_false=0.9)]
-    return UpdateDecision(evidence=evidence, prior=prior, posterior=posterior, reasoning="r")
+    return UpdateDecision(
+        evidence=evidence, prior=prior, posterior=posterior, reasoning="r"
+    )
 
 
 @pytest.fixture
@@ -100,7 +104,9 @@ def stub(monkeypatch):
     monkeypatch.setattr(ug, "run_resolution_check", fake_resolution)
     monkeypatch.setattr(ug, "run_update", fake_update)
     monkeypatch.setattr(
-        ug.db, "mark_refreshed", lambda fid, flagged: state["marked"].append((fid, flagged))
+        ug.db,
+        "mark_refreshed",
+        lambda fid, flagged: state["marked"].append((fid, flagged)),
     )
     monkeypatch.setattr(
         ug.db,
