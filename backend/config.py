@@ -36,6 +36,24 @@ class Settings:
     agent_tool_calls_limit: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class CheckThresholds:
+    """Every tunable number used by `superforecaster.checks`.
+
+    These are guesses until a backtest says otherwise, so none of them are literals
+    in `checks.py`. Each maps to one `CHECK_*` env var.
+    """
+
+    reference_class_disagreement: float  # P7  — spread that demands an explanation
+    reference_class_agreement: float  # P16 — spread under which classes count as agreeing
+    calibration_floor: float  # P16 — lowest unearned probability
+    calibration_ceiling: float  # P16 — highest unearned probability
+    large_move: float  # P12 — jump that triggers VerifyLargeMove
+    derivation_slack: float  # P6  — stated vs implied probability tolerance
+    round_number_rate: float  # P8  — run-level rounding rate that gets flagged
+    min_probability_delta: float  # P10 — below this an update is noise
+
+
 def _parse_optional_int(raw: str | None, *, unlimited_values: frozenset[str] = frozenset({"none", "unlimited"})) -> int | None:
     if raw is None:
         return None
@@ -63,6 +81,28 @@ def get_settings() -> Settings:
         agent_request_limit=request_limit,
         agent_tool_calls_limit=tool_calls_limit,
     )
+
+
+def get_check_thresholds() -> CheckThresholds:
+    """Read the CHECK_* env vars, falling back to defaults.
+
+    Re-reads on every call, matching `get_settings()`, so tests can monkeypatch.
+    """
+    return CheckThresholds(
+        reference_class_disagreement=float(os.getenv("CHECK_RC_DISAGREEMENT", "0.20")),
+        reference_class_agreement=float(os.getenv("CHECK_RC_AGREEMENT", "0.10")),
+        calibration_floor=float(os.getenv("CHECK_CALIBRATION_FLOOR", "0.02")),
+        calibration_ceiling=float(os.getenv("CHECK_CALIBRATION_CEILING", "0.98")),
+        large_move=float(os.getenv("CHECK_LARGE_MOVE", "0.75")),
+        derivation_slack=float(os.getenv("CHECK_DERIVATION_SLACK", "0.05")),
+        round_number_rate=float(os.getenv("CHECK_ROUND_NUMBER_RATE", "0.40")),
+        min_probability_delta=float(os.getenv("MIN_PROBABILITY_DELTA", "0.03")),
+    )
+
+
+def get_model_garden_margin_days() -> int:
+    """Safety margin applied to published training cutoffs. See `model_garden`."""
+    return int(os.getenv("MODEL_GARDEN_MARGIN_DAYS", "90"))
 
 
 def get_usage_limits(*, max_iterations: int | None = None) -> UsageLimits:

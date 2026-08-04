@@ -183,11 +183,17 @@ async def run_agent(
     agent: Agent[Any, Any],
     prompt: str,
     *,
+    deps: Any = None,
     verbose: bool = False,
     max_iterations: int | None = None,
     usage_limits: UsageLimits | None = None,
     run_name: str = "agent run",
 ) -> Any:
+    """Run an agent with tracing, budget, and progress output.
+
+    `deps` is forwarded to `agent.run` so tools can read the contamination clamps
+    (`ForecastDeps.as_of`) and append to the leakage audit trail.
+    """
     configure_logfire(verbose=verbose)
     limits = usage_limits or get_usage_limits(max_iterations=max_iterations)
     full = not cloud_tracing_active()
@@ -217,6 +223,7 @@ async def run_agent(
     with logfire.span(run_name, prompt_preview=_preview(prompt, 500)):
         result = await agent.run(
             prompt,
+            deps=deps,
             usage_limits=limits,
             event_stream_handler=_make_event_handler(verbose=verbose) if trace_events else None,
         )

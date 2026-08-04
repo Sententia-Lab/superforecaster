@@ -1,4 +1,4 @@
-"""CLI entry point: `uv run python -m superforecaster {forecast|refresh|resolve}`.
+"""CLI entry point for the forecasting agents and the model garden.
 
 Three subcommands, one per agent. All print formatted JSON to stdout.
 
@@ -20,7 +20,12 @@ from pathlib import Path
 import config  # noqa: F401 — loads backend/.env
 
 from . import db
-from .agent import run_forecast
+from .agents.critic import run_critique
+from .agents.postmortem import run_postmortem
+from .agents.resolution import run_resolution_check
+from .agents.update import run_update
+from .deps import ForecastDeps
+from .graphs import forecast_mermaid, run_forecast_graph, run_update_graph, update_mermaid
 from .models import (
     Forecast,
     ForecastInput,
@@ -29,8 +34,8 @@ from .models import (
     ResearchSummary,
     SubPrediction,
 )
-from .refresh import refresh_forecast, run_refresh_agent
-from .resolution import check_resolution, run_resolution_agent
+from . import model_garden
+from .evals import components as component_evals
 
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
@@ -139,7 +144,7 @@ async def _cmd_forecast(args: argparse.Namespace) -> int:
         resolution_date = datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
         category = input("Category: ").strip()
 
-    forecast: Forecast = await run_forecast(
+    forecast, violations = await run_forecast_graph(
         ForecastInput(
             question=question,
             resolution_criteria=criteria,
@@ -149,6 +154,11 @@ async def _cmd_forecast(args: argparse.Namespace) -> int:
         ),
         verbose=args.verbose,
     )
+
+    if violations:
+        print("\n[methodology] this forecast did not satisfy:", file=sys.stderr)
+        for v in violations:
+            print(f"  P{v.principle} {v.name}: {v.detail}", file=sys.stderr)
 
     if not args.no_save:
         db.init_db()
@@ -165,14 +175,13 @@ async def _cmd_forecast(args: argparse.Namespace) -> int:
 async def _cmd_refresh(args: argparse.Namespace) -> int:
     if args.id is not None:
         db.init_db()
-        result = await refresh_forecast(args.id)
-        _print_json(result)
+        _print_json(await run_update_graph(args.id, verbose=args.verbose))
         return 0
 
     data = _load_fixture(args.fixture, "existing_forecast.json")
     record = _record_from_fixture(data)
-    result = await run_refresh_agent(record, verbose=args.verbose)
-    _print_json(result)
+    deps = ForecastDeps(verbose=args.verbose)
+    _print_json(await run_update(record, deps))
     return 0
 
 
@@ -180,16 +189,124 @@ async def _cmd_refresh(args: argparse.Namespace) -> int:
 
 
 async def _cmd_resolve(args: argparse.Namespace) -> int:
-    if args.id is not None:
+    data = (
+        None
+        if args.id is not None
+        else _load_fixture(args.fixture, "existing_forecast.json")
+    )
+    if data is None:
         db.init_db()
-        result = await check_resolution(args.id)
-        _print_json(result)
+        record = db.get_forecast(args.id)
+        if record is None:
+            print(f"forecast {args.id} not found", file=sys.stderr)
+            return 1
+    else:
+        record = _record_from_fixture(data)
+
+    deps = ForecastDeps(verbose=args.verbose)
+    _print_json(await run_resolution_check(record, deps))
+    return 0
+
+
+# ---------- critique subcommand ----------
+
+
+async def _cmd_critique(args: argparse.Namespace) -> int:
+    """Principle 3 — is this question resolvable as written?"""
+    resolution_date = (
+        datetime.fromisoformat(args.date).replace(tzinfo=timezone.utc) if args.date else None
+    )
+    result = await run_critique(
+        question=args.question,
+        resolution_criteria=args.criteria,
+        resolution_date=resolution_date,
+        deps=ForecastDeps(verbose=args.verbose),
+    )
+    _print_json(result)
+    return 0
+
+
+# ---------- postmortem subcommand ----------
+
+
+async def _cmd_postmortem(args: argparse.Namespace) -> int:
+    """Principle 13 — separate process errors from outcome noise."""
+    db.init_db()
+    record = db.get_forecast(args.id)
+    if record is None:
+        print(f"forecast {args.id} not found", file=sys.stderr)
+        return 1
+    _print_json(await run_postmortem(record, ForecastDeps(verbose=args.verbose)))
+    return 0
+
+
+# ---------- models subcommand ----------
+
+
+async def _cmd_models(args: argparse.Namespace) -> int:
+    """Inspect the model garden — clamp 2 of the contamination clamps."""
+    if args.action == "probe":
+        entries = await model_garden.probe_all()
+        print(model_garden.render_garden(entries))
+        reach = model_garden.earliest_cutoff()
+        if reach is None:
+            print("\nNo model is currently available — no clean backtest is possible.")
+        else:
+            print(f"\nEarliest available training cutoff: {reach.isoformat()}")
+            print("A question must be asked after that date (plus the margin) to be clean.")
         return 0
 
-    data = _load_fixture(args.fixture, "existing_forecast.json")
-    record = _record_from_fixture(data)
-    result = await run_resolution_agent(record, verbose=args.verbose)
-    _print_json(result)
+    if args.action == "pick":
+        as_of = datetime.fromisoformat(args.as_of).replace(tzinfo=timezone.utc)
+        entry = model_garden.pick_clean_model(as_of)
+        if entry is None:
+            print(
+                f"No clean model for a question asked {args.as_of} — "
+                "every available model was trained after it.",
+                file=sys.stderr,
+            )
+            return 1
+        _print_json(entry)
+        return 0
+
+    print(model_garden.render_garden(model_garden.list_models(available_only=False)))
+    return 0
+
+
+# ---------- diagram subcommand ----------
+
+
+async def _cmd_diagram(args: argparse.Namespace) -> int:
+    """Render the real graph wiring, so docs cannot drift from code."""
+    print(update_mermaid() if args.graph == "update" else forecast_mermaid())
+    return 0
+
+
+# ---------- test subcommand ----------
+
+
+async def _cmd_test(args: argparse.Namespace) -> int:
+    """Component tests. The end-to-end backtest lives in spec4.md and is not built."""
+    if args.suite != "component":
+        print(
+            "Only `test component` exists today. The end-to-end backtest over resolved\n"
+            "questions is specified in spec/change_specs/spec4.md and is deferred until\n"
+            "a corpus of recently-resolved questions is chosen.",
+            file=sys.stderr,
+        )
+        return 2
+
+    agents = (
+        component_evals.AGENTS if args.agent in (None, "all") else (args.agent,)
+    )
+    unknown = [a for a in agents if a not in component_evals.SCORERS]
+    if unknown:
+        print(f"unknown agent(s): {', '.join(unknown)}", file=sys.stderr)
+        return 2
+
+    for agent in agents:
+        report = await component_evals.run_component(agent, mode=args.mode)
+        print(component_evals.render_report(report))
     return 0
 
 
@@ -233,6 +350,38 @@ def _build_parser() -> argparse.ArgumentParser:
     grp_v.add_argument("--id", help="Check resolution for a forecast by UUID from the DB")
     _add_verbose_flag(p_resolve)
     p_resolve.set_defaults(func=_cmd_resolve)
+
+    p_critique = sub.add_parser("critique", help="Check whether a question is resolvable")
+    p_critique.add_argument("--question", required=True)
+    p_critique.add_argument("--criteria", required=True)
+    p_critique.add_argument("--date", help="Proposed resolution date (YYYY-MM-DD)")
+    _add_verbose_flag(p_critique)
+    p_critique.set_defaults(func=_cmd_critique)
+
+    p_post = sub.add_parser("postmortem", help="Review a resolved forecast for process errors")
+    p_post.add_argument("id", help="Forecast UUID")
+    _add_verbose_flag(p_post)
+    p_post.set_defaults(func=_cmd_postmortem)
+
+    p_models = sub.add_parser("models", help="Inspect the model garden")
+    p_models.add_argument("action", nargs="?", default="list", choices=["list", "probe", "pick"])
+    p_models.add_argument("--as-of", help="Date to pick a clean model for (YYYY-MM-DD)")
+    _add_verbose_flag(p_models)
+    p_models.set_defaults(func=_cmd_models)
+
+    p_diagram = sub.add_parser("diagram", help="Print the graph as mermaid")
+    p_diagram.add_argument("graph", nargs="?", default="forecast", choices=["forecast", "update"])
+    _add_verbose_flag(p_diagram)
+    p_diagram.set_defaults(func=_cmd_diagram)
+
+    p_test = sub.add_parser("test", help="Run the component eval harness")
+    p_test.add_argument("suite", nargs="?", default="component", choices=["component", "e2e"])
+    p_test.add_argument("agent", nargs="?", default="all",
+                        help="Agent name, or 'all' (default)")
+    p_test.add_argument("--mode", default="clean", choices=["clean", "production"],
+                        help="clean picks a model trained before the case's as_of")
+    _add_verbose_flag(p_test)
+    p_test.set_defaults(func=_cmd_test)
 
     return parser
 

@@ -3,7 +3,7 @@
 ## Spec-Driven Development
 
 This project uses spec-driven development. Before implementing anything:
-1. Read `spec/SPEC.md` to understand the current phase and requirements.
+1. Read the newest spec in `spec/change_specs/` — `SPEC_IN_PROGRESS.md` is the active one — to understand the current phase and requirements.
 2. Read `spec/CURRENT_STATE.md` to understand what already exists.
 3. Read `spec/TECHNICAL_DIRECTION.md` to understand architecture decisions before making new ones.
 
@@ -22,7 +22,7 @@ Specifically, update it when:
 - A new dependency is added to `pyproject.toml`
 - A new environment variable is required
 - A deployment asset is added or changed (database, API server, frontend build)
-- A spec phase from `spec/SPEC.md` is completed
+- A spec phase from the active spec in `spec/change_specs/` is completed
 
 **What to update:**
 - Repository layout (if structure changed)
