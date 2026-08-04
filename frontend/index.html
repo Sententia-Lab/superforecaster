@@ -247,6 +247,10 @@ p  { margin:0 0 10px; }
   border-left:2px solid var(--pv-border-2); padding:6px 0 6px 10px; margin-top:8px;
 }
 .refcard:first-child { margin-top:2px; }
+/* Principle chips on a stage header. Wrap rather than overflow — four principles at
+   full title is wider than the header on a narrow window. */
+.pchips { display:flex; flex-wrap:wrap; gap:4px; min-width:0; }
+.pchips .chip { cursor:help; }
 .evrow {
   display:flex; gap:10px; align-items:baseline; justify-content:space-between;
   font-size:var(--pv-fs-xs); padding:2px 0; font-variant-numeric:tabular-nums;

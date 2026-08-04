@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
-from config import get_settings
+from config import get_settings, resolve_agent_model
 
 from . import checkpoints, checks, db
 from .agents.synthesize import retry_brief
@@ -198,7 +198,9 @@ class Run:
             project_decompose(self, state.decomposition)
         elif stage == "outside" and state.outside is not None:
             assert state.decomposition is not None
-            project_outside(self, state.decomposition, state.outside)
+            project_outside(
+                self, state.decomposition, state.outside, state.sources_seen
+            )
         elif stage == "inside" and state.inside is not None:
             project_inside(self, state.inside)
         elif stage == "synth" and state.forecast is not None:
@@ -458,6 +460,28 @@ def _failure_hint(exc: Exception) -> str:
             "The research budget ran out mid-node. Resume with a higher search depth, "
             "or raise RESEARCH_TOOL_CALLS_PER_ITERATION."
         )
+
+    if type(exc).__name__ == "ModelHTTPError":
+        status = getattr(exc, "status_code", None)
+        model = getattr(exc, "model_name", "") or resolve_agent_model()
+        if status == 404:
+            # Not a bad model id, usually. The gateway routes per-model, so a model
+            # that exists upstream still 404s when this account has no route for it.
+            return (
+                f"The provider has no route for '{model}'. This is a gateway or "
+                f"account configuration problem rather than a bad run — the model id "
+                f"can be valid and still 404 if your gateway has no route enabled for "
+                f"it. Set AGENT_MODEL to a model your account can reach, then resume."
+            )
+        if status in (401, 403):
+            return (
+                "The provider rejected the credentials. Check "
+                "PYDANTIC_AI_GATEWAY_API_KEY or ANTHROPIC_API_KEY, then resume."
+            )
+        if status == 429:
+            return "Rate limited by the provider. Wait, then resume."
+        if status is not None and status >= 500:
+            return "The provider had a server error. Resuming re-runs only this step."
     return ""
 
 
@@ -536,14 +560,34 @@ def project_decompose(run: Run, d: Decomposition) -> None:
     run.emit("note", {"label": "chain_note", "text": d.chain_note})
 
 
-def _class_payload(rc: Any) -> dict[str, Any]:
+def _class_payload(rc: Any, seen: dict[str, Any]) -> dict[str, Any]:
+    """One reference class, with each cited source resolved against what was fetched.
+
+    `seen` maps URL -> SourceRef. The join is what makes "which search found this base
+    rate" answerable: a class cites a URL, and the retrieved record for that URL knows
+    the query that returned it and the title the result gave itself. Neither is
+    something the agent could assert — it is recorded by the tool.
+    """
+    sources = []
+    for s in rc.sources:
+        ref = seen.get(s.url or "")
+        sources.append(
+            {
+                **s.model_dump(),
+                "title": getattr(ref, "title", "") if ref else "",
+                "query": getattr(ref, "query", "") if ref else "",
+                "retrieved": ref is not None,
+            }
+        )
+    queries = sorted({d["query"] for d in sources if d["query"]})
     return {
         "name": rc.name,
         "rate": rc.base_rate,
         "n": rc.sample_size,
         "weight": rc.weight,
         "support": checks.claim_support(rc.sources),
-        "sources": [s.model_dump() for s in rc.sources],
+        "sources": sources,
+        "queries": queries,
         "analogs": [
             {"description": a.description, "outcome": a.outcome, "relevance": a.relevance}
             for a in rc.analogs
@@ -551,7 +595,9 @@ def _class_payload(rc: Any) -> dict[str, Any]:
     }
 
 
-def group_by_sub_claim(d: Decomposition, o: OutsideView) -> list[dict[str, Any]]:
+def group_by_sub_claim(
+    d: Decomposition, o: OutsideView, seen: Iterable[Any] = ()
+) -> list[dict[str, Any]]:
     """The outside view arranged under the sub-claims it was sent to research.
 
     A flat list of reference classes cannot answer the question a reader actually has —
@@ -567,6 +613,7 @@ def group_by_sub_claim(d: Decomposition, o: OutsideView) -> list[dict[str, Any]]
     Classes claiming no sub-claim land in a final group with `id: None`: legitimate for a
     lens on the whole question, and worth seeing when it is really an unattributed rate.
     """
+    by_url = {ref.url: ref for ref in seen if getattr(ref, "url", "")}
     groups = [
         {
             "id": s.id,
@@ -574,7 +621,9 @@ def group_by_sub_claim(d: Decomposition, o: OutsideView) -> list[dict[str, Any]]
             "knowability": s.knowability,
             "rationale": s.rationale,
             "rate": checks.sub_claim_rate(s.id, o),
-            "classes": [_class_payload(rc) for rc in checks.classes_for(s.id, o)],
+            "classes": [
+                _class_payload(rc, by_url) for rc in checks.classes_for(s.id, o)
+            ],
         }
         for s in d.sub_claims
     ]
@@ -593,13 +642,15 @@ def group_by_sub_claim(d: Decomposition, o: OutsideView) -> list[dict[str, Any]]
                 "knowability": "researchable",
                 "rationale": "",
                 "rate": None,
-                "classes": [_class_payload(rc) for rc in loose],
+                "classes": [_class_payload(rc, by_url) for rc in loose],
             }
         )
     return groups
 
 
-def project_outside(run: Run, d: Decomposition, o: OutsideView) -> None:
+def project_outside(
+    run: Run, d: Decomposition, o: OutsideView, seen: Iterable[Any] = ()
+) -> None:
     """P4 + P7 — what was researched for each sub-claim, and the anchor.
 
     Grouped rather than flat: see `group_by_sub_claim`. Everything here still lands in
@@ -610,7 +661,7 @@ def project_outside(run: Run, d: Decomposition, o: OutsideView) -> None:
     is the half of P7 the schema cannot enforce, and putting it in the UI is the point
     of having demanded it.
     """
-    for group in group_by_sub_claim(d, o):
+    for group in group_by_sub_claim(d, o, seen):
         run.emit("claim", group)
 
     pct = round(o.aggregate_base_rate * 100)

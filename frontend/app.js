@@ -22,14 +22,14 @@ const POLL_MS = 4000;
 const MAX_SEARCH_DEPTH = 50;
 
 const STAGE_META = {
-  decompose: { num: "1", label: "Decompose", principles: "P1 · P2" },
-  outside: { num: "2", label: "Find base rates", principles: "P4 · P7" },
-  inside: { num: "3", label: "Adjust — inside view", principles: "P5 · P9 · P14 · P15" },
-  synth: { num: "4", label: "Synthesize", principles: "P6 · P8 · P16" },
-  critique: { num: "5", label: "Critique", principles: "checks.py" },
+  decompose: { num: "1", label: "Decompose", principles: [1, 2] },
+  outside: { num: "2", label: "Find base rates", principles: [4, 7] },
+  inside: { num: "3", label: "Adjust — inside view", principles: [5, 9, 14, 15] },
+  synth: { num: "4", label: "Synthesize", principles: [6, 8, 16] },
+  critique: { num: "5", label: "Critique", principles: [] },
   // Not a graph node — a seam in the trail, so the stages above it are visibly the
   // ones that already ran rather than looking like part of this attempt.
-  resume: { num: "↻", label: "Resumed", principles: "" },
+  resume: { num: "↻", label: "Resumed", principles: [] },
 };
 const STAGE_ORDER = ["decompose", "outside", "inside", "synth", "critique"];
 
@@ -53,6 +53,39 @@ const PRINCIPLES = {
   bias_coverage: "P15 — Address all five named biases explicitly: confirmation, availability, narrative, scope insensitivity, and anchoring.",
   derivation: "P6 — The final probability must equal the base rate plus the stated adjustments. This is what stops a compelling story pulling the estimate away from the evidence.",
   calibration_hygiene: "P16 — A well-calibrated 60% beats a miscalibrated 90%. An extreme probability is allowed, but it has to be argued for rather than asserted.",
+};
+
+/**
+ * Short title per principle number, for the chips on stage headers.
+ *
+ * A bare "P7" is an index into a document the reader doesn't have open. The number
+ * stays (it's how the code and specs refer to them) but never travels alone.
+ * `spec/superforecasting_methodology.md` is the source of truth for the wording.
+ */
+const PRINCIPLE_TITLES = {
+  1: ["Fermi-ize", "Break the question into 3–5 sub-claims you could argue about separately."],
+  2: ["Knowable vs judgment", "Say which sub-claims have a lookupable base rate and which need an estimate."],
+  3: ["Resolution criteria", "The question must be adjudicable as written."],
+  4: ["Outside view first", "Find the base rate before reasoning about what makes this case special."],
+  5: ["Inside view second", "Case specifics adjust the base rate; they never replace it."],
+  6: ["Regression to the mean", "The final number must follow from the base rate plus the stated adjustments."],
+  7: ["Dragonfly eye", "Use several reference classes. Disagreement between them is information, not noise."],
+  8: ["Granularity", "Use the number the arithmetic gives you — 0.63, not a comfortable 0.60."],
+  9: ["Signal vs noise", "If the opposite evidence would change nothing, it is noise and must move the number by zero."],
+  10: ["Frequent small updates", "Revise incrementally as evidence arrives; large swings usually mean overconfidence."],
+  11: ["Bayesian updating", "The probability must move the direction the stated likelihood ratios imply."],
+  12: ["Under/over-reaction", "A big jump gets verified rather than forbidden; evidence that moves nothing is under-reaction."],
+  13: ["Post-mortem", "Review resolved forecasts for what the reasoning got wrong."],
+  14: ["Disconfirming evidence", "Look for what would prove you wrong before you settle, not after."],
+  15: ["Bias checklist", "Address confirmation, availability, narrative, scope insensitivity, and anchoring."],
+  16: ["Calibration over boldness", "A well-calibrated 60% beats a miscalibrated 90%. Extremes are argued for, not asserted."],
+};
+
+/** `P7 dragonfly eye`, with the full line on hover. Never a bare number. */
+const principleChip = (n) => {
+  const entry = PRINCIPLE_TITLES[n];
+  if (!entry) return h("span.chip", {}, `P${n}`);
+  return h("span.chip", { title: `P${n} — ${entry[0]}. ${entry[1]}` }, `P${n} ${entry[0]}`);
 };
 
 const CATEGORIES = ["general", "finance", "economics", "politics", "ai", "energy",
@@ -117,6 +150,9 @@ const link = (url, text) =>
  * a link instead, show the domain rather than 90 characters of redirect payload.
  */
 const sourceLabel = (s) => {
+  // The fetched page title wins: it's recorded by the tool, not asserted by the model.
+  const title = (s.title || "").trim();
+  if (title && !title.startsWith("/")) return title;
   const name = (s.source || "").trim();
   const looksLikeLink = isExternal(name) || name.startsWith("/") || name.includes("?url=");
   if (name && !looksLikeLink) return name;
@@ -666,6 +702,7 @@ const EVENT_RENDERERS = {
   // which a flat list of reference classes cannot answer.
   claim: (p, ev) => {
     const n = (p.classes || []).length;
+    const queries = [...new Set((p.classes || []).flatMap((c) => c.queries || []))];
     return h("div.ev.claim", {},
       h("div.evhead", {},
         h("span.num-strong", { style: p.rate === null ? "color:var(--pv-text-3)" : "" },
@@ -675,6 +712,12 @@ const EVENT_RENDERERS = {
         h("span.chip", { class: p.knowability === "researchable" ? "for" : "" },
           p.knowability)),
       h("div", {}, p.question),
+      // The searches that produced this sub-claim's base rates, up front. Derived by
+      // joining each cited URL to the SourceRef the tool recorded for it — not the
+      // model's account of what it searched for.
+      queries.length
+        ? h("div.micro", {}, `searched: ${queries.join(" · ")}`)
+        : null,
       n === 0
         ? h("div.micro", {},
             p.knowability === "researchable"
@@ -792,6 +835,9 @@ function renderClass(c, key) {
       supportChip(c.support)),
     h("div", {}, c.name),
     h("div.minibar", {}, h("i", { style: `width:${Math.min(100, c.rate * 100)}%` })),
+    (c.queries || []).length
+      ? h("div.micro", {}, `searched: ${c.queries.join(" · ")}`)
+      : null,
     renderSources(`src-${key}`, c.sources),
     (c.analogs || []).length
       ? disclosure(`analogs-${key}`,
@@ -818,7 +864,9 @@ function renderSources(key, sources) {
         supportChip(s.confidence),
         h("div", {},
           h("div", {}, link(s.url, sourceLabel(s))),
-          s.note ? h("div.dim", {}, s.note) : null))));
+          s.note ? h("div.dim", {}, s.note) : null,
+          s.query ? h("div.micro", {}, `found by: ${s.query}`) : null,
+          s.retrieved === false ? h("span.chip.against", {}, "not retrieved") : null))));
 }
 
 /** What the principle behind a check actually says, collapsed until asked for. */
@@ -1032,6 +1080,8 @@ function renderRail() {
           onClick: (e) => { e.stopPropagation(); onDeleteSaved(r.id); },
         }, "×"))),
 
+    renderBacklog(),
+
     h("div.micro", { style: "margin-top:22px" }, "Autosaved to this browser"),
   );
 }
@@ -1042,7 +1092,6 @@ function renderMain() {
     state.phase === "draft" ? renderDraft() : null,
     state.phase === "parsing" ? renderParsing() : null,
     state.phase === "review" ? renderReview() : null,
-    renderBacklog(),
   );
 }
 
@@ -1140,25 +1189,36 @@ function renderReview() {
   );
 }
 
+/**
+ * The queue, in the rail beside Running and Saved.
+ *
+ * It lives here rather than in the main column because it is a list you pick from, the
+ * same shape as the two lists above it — and because running from it should not mean
+ * leaving whatever the main column is showing.
+ */
 function renderBacklog() {
-  return h("section.panel", {},
-    h("div.evhead", {},
-      h("h2", {}, `Backlog · ${state.backlog.length}`),
-      h("div.spacer", {}),
-      h("span.micro", {}, slotsFree() > 0 ? `${slotsFree()} of ${MAX_SLOTS} run slots free` : "All run slots busy — these wait")),
+  const free = slotsFree();
+  return h("div", { style: "margin-top:22px" },
+    h("div.micro", {}, `Backlog · ${state.backlog.length}`),
     state.backlog.length === 0
-      ? h("div.empty", {}, "Backlog is empty. Anything you add above waits here until you have a slot free.")
-      : null,
+      ? h("div.empty", {}, "Nothing queued. Questions you add wait here for a free run slot.")
+      : h("div.micro", { style: "margin:4px 0 8px" },
+          free > 0 ? `${free} of ${MAX_SLOTS} slots free` : "All slots busy — these wait"),
     state.backlog.map((b) =>
-      h("div.card", { style: "margin-bottom:8px" },
+      h("div.rowcard", {},
         h("div.evhead", {},
-          h("span.chip", {}, "queued"),
           h("span.chip", {}, b.category),
           h("span.micro", {}, `resolves ${(b.resolution_date || "").slice(0, 10)}`)),
         h("div", {}, b.question),
-        h("div", { style: "display:flex;gap:8px;margin-top:9px" },
-          h("button.btn.tiny.primary", { disabled: slotsFree() <= 0, onClick: () => onRunFromBacklog(b.id) }, "Run"),
-          h("button.btn.tiny.ghost", { onClick: () => onDropBacklog(b.id) }, "Remove")))),
+        h("div", { style: "display:flex;gap:6px;margin-top:8px" },
+          h("button.btn.tiny.primary", {
+            disabled: free <= 0,
+            title: free <= 0 ? "Every run slot is busy" : "Start this forecast",
+            onClick: (e) => { e.stopPropagation(); onRunFromBacklog(b.id); },
+          }, "Run forecast"),
+          h("button.btn.tiny.ghost", {
+            onClick: (e) => { e.stopPropagation(); onDropBacklog(b.id); },
+          }, "Remove")))),
   );
 }
 
@@ -1257,6 +1317,26 @@ function renderWaterfall(rows) {
         h("div.num-strong", { style: "text-align:right" }, pct(w.running))))));
 }
 
+/** Event types that are the research *log* rather than a finding. */
+const LOG_TYPES = new Set(["thought", "query", "source"]);
+
+/**
+ * Split a stage's events into alternating runs of log-noise and findings.
+ *
+ * Preserves arrival order — the log stays where it happened rather than being hoisted
+ * into one bucket, so a reader expanding it still sees which findings it preceded.
+ */
+function runsOf(items) {
+  const out = [];
+  for (const ev of items) {
+    const log = LOG_TYPES.has(ev.type);
+    const last = out[out.length - 1];
+    if (last && last.log === log) last.items.push(ev);
+    else out.push({ log, items: [ev] });
+  }
+  return out;
+}
+
 function renderTrail(run) {
   // Only events that have never been drawn get the entrance animation. Without this
   // every re-render replays the fade-in on the whole trail at once, which is what the
@@ -1272,18 +1352,29 @@ function renderTrail(run) {
         h("header", { onClick: () => { state.collapsed[group.key] = !collapsed; scheduleRender(); } },
           h("div.num", {}, meta.num),
           h("div", {}, group.attempt > 1 ? `${meta.label} · attempt ${group.attempt}` : meta.label),
-          h("div.micro", {}, meta.principles),
+          h("div.pchips", {}, (meta.principles || []).map(principleChip)),
           h("div.spacer", {}),
           busy ? h("span.micro.pulse", {}, "working") : h("span.micro", {}, `${group.items.length}`)),
         collapsed ? null : h("div.items", {},
-          group.items.map((ev) => {
-            const renderer = EVENT_RENDERERS[ev.type];
-            if (!renderer) return null;
-            // `ev` as well as the payload: a disclosure needs a key that survives
-            // re-render, and `seq` is the only stable identity an event has.
-            const node = renderer(ev.payload, ev);
-            if (ev.seq > animatedUpTo) node.classList.add("fresh");
-            return node;
+          runsOf(group.items).map((run_) => {
+            const draw = (ev) => {
+              const renderer = EVENT_RENDERERS[ev.type];
+              if (!renderer) return null;
+              // `ev` as well as the payload: a disclosure needs a key that survives
+              // re-render, and `seq` is the only stable identity an event has.
+              const node = renderer(ev.payload, ev);
+              if (ev.seq > animatedUpTo) node.classList.add("fresh");
+              return node;
+            };
+            if (!run_.log) return run_.items.map(draw);
+            // The raw research trail — every query issued and every URL the tool
+            // returned, in arrival order. It is the audit record, not the finding, and
+            // at full length it buries the base rates it produced. The attributed
+            // version lives on each claim ("searched: …", per-source "found by: …").
+            const n = run_.items.length;
+            return disclosure(`log-${group.key}-${run_.items[0].seq}`,
+              h("span.micro", {}, `${n} search step${n === 1 ? "" : "s"}`),
+              () => run_.items.map(draw));
           })));
     }),
   );

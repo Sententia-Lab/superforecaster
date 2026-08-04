@@ -84,6 +84,10 @@ class FindBaseRates(BaseNode[ForecastState, ForecastDeps, Forecast]):
         ctx.state.outside = await run_outside_view(
             ctx.state.input, ctx.state.decomposition, ctx.deps
         )
+        # Snapshot after every node that searches, not only in `Critique`: the outside
+        # stage projects its base rates immediately, and it resolves each cited URL
+        # against what was actually retrieved to say which search found it.
+        ctx.state.sources_seen = list(ctx.deps.sources_seen)
         return AdjustInsideView()
 
 
@@ -99,6 +103,7 @@ class AdjustInsideView(BaseNode[ForecastState, ForecastDeps, Forecast]):
         ctx.state.inside = await run_inside_view(
             ctx.state.input, ctx.state.decomposition, ctx.state.outside, ctx.deps
         )
+        ctx.state.sources_seen = list(ctx.deps.sources_seen)
         return Synthesize()
 
 

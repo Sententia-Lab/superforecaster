@@ -1321,6 +1321,12 @@ prompts remain unexercised (see below).
 emits thinking or text before its structured output, so a stage can legitimately show tool
 calls and no narration. `source.credibility` is always `null` — nothing scores a domain.
 
+**Search attribution is a URL join, not a model claim.** `SourceRef` records the result
+`title` and the `query` that returned it; `runs._class_payload` joins each cited
+`GradedSource.url` against `state.sources_seen`, so "which search found this base rate"
+is derived from what the tool did rather than from the agent's account of it. A cited
+URL with no matching retrieval is marked `retrieved: false` in the payload.
+
 **Sources are agent-typed strings, not retrieved objects.** The search tools return one prose
 blob (`_format_results` flattens Tavily's title/url/date/snippet into text), so `GradedSource`
 is filled in by the model from what it read rather than joined to a real `SourceRef`.

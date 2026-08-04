@@ -447,6 +447,13 @@ class SourceRef(BaseModel):
     """
 
     url: str
+    title: str = ""
+    """What the search result called itself. The UI used to fall back to the domain
+    because this did not exist, which turned an unparseable URL into 90 characters of
+    redirect payload displayed as if it were a headline."""
+    query: str = ""
+    """The search that returned this result. Makes "which search found this base rate"
+    answerable: a claim cites a URL, and the URL knows the query it came from."""
     published_date: Optional[datetime] = None
     tool: str
     as_of: Optional[datetime] = None
