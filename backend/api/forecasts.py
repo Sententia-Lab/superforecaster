@@ -78,7 +78,6 @@ def add_update(
         return db.add_forecast_update(
             forecast_id=forecast_id,
             probability=body.probability,
-            confidence=body.confidence,
             reasoning=body.reasoning,
         )
     except db.NotFoundError as exc:

@@ -84,6 +84,10 @@ class FindBaseRates(BaseNode[ForecastState, ForecastDeps, Forecast]):
         ctx.state.outside = await run_outside_view(
             ctx.state.input, ctx.state.decomposition, ctx.deps
         )
+        # Snapshot after every node that searches, not only in `Critique`: the outside
+        # stage projects its base rates immediately, and it resolves each cited URL
+        # against what was actually retrieved to say which search found it.
+        ctx.state.sources_seen = list(ctx.deps.sources_seen)
         return AdjustInsideView()
 
 
@@ -95,9 +99,11 @@ class AdjustInsideView(BaseNode[ForecastState, ForecastDeps, Forecast]):
         self, ctx: GraphRunContext[ForecastState, ForecastDeps]
     ) -> Synthesize:
         assert ctx.state.outside is not None
+        assert ctx.state.decomposition is not None
         ctx.state.inside = await run_inside_view(
-            ctx.state.input, ctx.state.outside, ctx.deps
+            ctx.state.input, ctx.state.decomposition, ctx.state.outside, ctx.deps
         )
+        ctx.state.sources_seen = list(ctx.deps.sources_seen)
         return Synthesize()
 
 
@@ -140,11 +146,13 @@ class Critique(BaseNode[ForecastState, ForecastDeps, Forecast]):
         assert ctx.state.outside is not None
         assert ctx.state.inside is not None
 
+        ctx.state.sources_seen = list(ctx.deps.sources_seen)
         ctx.state.violations = checks.run_forecast_checks(
             ctx.state.forecast,
             ctx.state.decomposition,
             ctx.state.outside,
             ctx.state.inside,
+            sources_seen=ctx.state.sources_seen,
         )
 
         blocking = checks.blocking(ctx.state.violations)
@@ -250,6 +258,14 @@ async def _run_with_hooks(
     """
     async with _graph_run(state, deps, persistence, resume) as graph_run:
         live_state = graph_run.state
+        if resume:
+            # The restored snapshot carries the OLD budget, and the research agents read
+            # it off graph state (`ctx.state.input`) rather than the caller's. Without
+            # this, resuming with a higher search depth re-runs into the same
+            # UsageLimitExceeded — while the UI reports the depth the caller asked for.
+            live_state.input = live_state.input.model_copy(
+                update={"max_iterations": state.input.max_iterations}
+            )
         node = graph_run.next_node
         while not isinstance(node, End):
             stage = STAGE_KEYS[type(node).__name__]

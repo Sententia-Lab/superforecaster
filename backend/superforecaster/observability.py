@@ -154,10 +154,15 @@ def _source_payload(ref: Any) -> dict[str, Any]:
     """
     url = getattr(ref, "url", "") or ""
     published = getattr(ref, "published_date", None)
+    domain = urlparse(url).netloc
     return {
         "url": url,
-        "domain": urlparse(url).netloc,
-        "title": getattr(ref, "title", "") or urlparse(url).netloc or url,
+        "domain": domain,
+        # Falls back to the domain, then to the raw string. `SourceRef.title` used not
+        # to exist, so this always reached the last branch — which printed an
+        # unparseable URL in full as though it were a headline.
+        "title": getattr(ref, "title", "") or domain or url,
+        "query": getattr(ref, "query", ""),
         "published_date": published.isoformat() if published else None,
         "tool": getattr(ref, "tool", ""),
         "credibility": None,

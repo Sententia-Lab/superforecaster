@@ -31,7 +31,7 @@ Sources: `spec/implemented/SPEC_04_26_2026.md` (v3), `spec/implemented/spec3.md`
 | [10](#adr-10--a-single-agent-in-one-structured-call) | A single agent in one structured call | **Superseded by 11** |
 | [11](#adr-11--one-agent-per-methodology-step) | One agent per methodology step | Accepted |
 | [12](#adr-12--pydantic-graphs-for-orchestration) | Pydantic graphs for orchestration | Accepted |
-| [13](#adr-13--methodology-checks-are-pure-functions) | Methodology checks are pure functions | Accepted |
+| [13](#adr-13--methodology-checks-are-pure-functions) | Methodology checks are pure functions | Accepted, amended by 29 |
 | [14](#adr-14--every-threshold-is-configuration) | Every threshold is configuration | Accepted |
 | [15](#adr-15--no-per-forecast-granularity-check) | No per-forecast granularity check | Accepted |
 | [16](#adr-16--a-large-move-is-verified-not-capped) | A large move is verified, not capped | Accepted |
@@ -47,6 +47,7 @@ Sources: `spec/implemented/SPEC_04_26_2026.md` (v3), `spec/implemented/spec3.md`
 | [26](#adr-26--runs-are-memory-resident-the-trail-is-kept-client-side) | Runs are memory-resident; the trail is kept client-side | Accepted |
 | [27](#adr-27--the-ui-projects-typed-state-it-never-asks-for-narration) | The UI projects typed state; it never asks for narration | Accepted |
 | [28](#adr-28--a-failed-run-resumes-from-its-last-completed-node) | A failed run resumes from its last completed node | Accepted |
+| [29](#adr-29--an-extreme-probability-is-justified-not-forbidden) | An extreme probability is justified, not forbidden | Accepted |
 
 ---
 
@@ -278,6 +279,27 @@ correction rather than a re-roll.
 
 **Rules out.** LLM-as-judge for these principles — slower, costs money, non-deterministic, and
 no more correct than a comparison operator.
+
+**Amended (2026-08-04) — a check may be advisory when its verdict is a judgment call rather
+than arithmetic.** The original decision drew the line at "is it a pure function", which let a
+heuristic and a piece of arithmetic sit in the same blocking retry loop. They do not behave the
+same way under pressure.
+
+`check_derivation` and `check_bayes_direction` are arithmetic: the numbers either reconcile or
+they do not, and a retry that satisfies them has genuinely fixed something. The old
+`check_calibration_hygiene` was a threshold on `Forecast.confidence` — a field the model wrote
+itself — so a retry could satisfy it by *lowering* its own confidence label and retreating the
+probability to the band edge. Nothing about the evidence changed. A gate that can be cleared by
+relabelling is not enforcing a principle, it is teaching the model to relabel.
+
+So a check may set `blocking=False`: it still runs, still reports, still travels out with the
+result, but does not drive the retry loop. See ADR 29 for P16, the first one to use it.
+
+This is a narrowing, not a reversal. ADR 13 stands unchanged for P1, P2, P6, P7, P9, P11, P12,
+P14, and P15. The same change that made P16 advisory **added** three blocking checks —
+`check_aggregation`, `check_citations`, and `check_linkage` — all of them set membership or
+arithmetic. The checks layer gained enforceable ground while shedding a heuristic, which is the
+distinction this ADR actually cares about.
 
 ---
 
@@ -678,3 +700,50 @@ decision. Resume is a button.
 where the literal was 2). At the old rate the default `max_iterations=5` capped a researching
 agent at ten tool calls, which a normal run reaches — per ADR 14, a number that tight has no
 business being a literal.
+
+---
+
+## ADR 29 — An extreme probability is justified, not forbidden
+
+**Status:** Accepted (2026-08-04)
+
+**Decision.** P16 (calibration hygiene) no longer blocks. `check_calibration_hygiene` sets
+`blocking=False` and keys off a new `Forecast.extreme_justification` field: a probability
+outside `[calibration_floor, calibration_ceiling]` is allowed, but the agent has to write down
+which reference class carries the extreme, why the spread between classes does not undercut it,
+and what would have to be true for it to be wrong. The check flags the extremes nobody argued
+for, and the ones hugging the band edge while the reference classes disagree.
+
+**Rationale.** A live run produced `probability 0.005 outside [0.02, 0.98] with
+confidence='medium' and a reference-class spread of 0.30`. Attempt 2 "fixed" it by moving to
+exactly `0.02` and *lowering* confidence to `low`, leaving the spread at 0.30. It passed,
+because the band test was `floor <= p <= ceiling` and landing on the boundary skipped the
+earned-extreme arm entirely.
+
+Two things were wrong, and only one was the off-by-one.
+
+The gate read `Forecast.confidence`, which the model wrote itself. The synthesis agent has
+`tools=[]` and receives the frozen `OutsideView` on retry, so it *cannot* earn an extreme with
+new evidence — the only moves available are relabelling and retreating. A gate whose two exits
+are both cosmetic does not enforce calibration; it selects for cosmetics.
+
+And a hard cap on boldness fails correct answers, exactly as ADR 15 found for P8 and ADR 16 for
+large moves. Some questions really do resolve at 0.5%. The right response to a bold number is
+to make the agent argue for it, not to forbid it — ADR 16's sentence, applied to a probability
+instead of a jump.
+
+**What replaced the confidence field.** Nothing, at the forecast level: it was deleted. It was
+self-reported, undefined in `spec/superforecasting_methodology.md`, and read by exactly one
+consumer — the gate this ADR removes. Confidence is now a property of the edge between a source
+and a claim (`GradedSource.confidence`), aggregated to a forecast-level figure that is derived
+rather than asserted. The model has no field in which to state its own confidence, which is the
+point.
+
+**What the checks layer gained in the same change.** `check_aggregation` (the stated
+`aggregate_base_rate` must match the weighted mean its own reference-class weights imply),
+`check_citations` (every cited URL must appear in `deps.sources_seen`), and `check_linkage`
+(sub-claim references must resolve). All three block, and all three are arithmetic or set
+membership. See the ADR 13 amendment.
+
+**Rules out.** Reading a self-reported confidence label in any check. If a field exists only so
+a validator can threshold it, the model will learn to write whatever clears the threshold.

@@ -10,7 +10,12 @@ is a correction rather than a re-roll.
 
 from __future__ import annotations
 
-from config import get_synthesis_limits, resolve_agent_model
+from config import (
+    CheckThresholds,
+    get_check_thresholds,
+    get_synthesis_limits,
+    resolve_agent_model,
+)
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
@@ -45,14 +50,19 @@ information. Equally, do not manufacture false precision: 0.60 is correct when t
 where the arithmetic lands.
 
 CALIBRATION OVER BOLDNESS (principle 16)
-A well-calibrated 60% beats a miscalibrated 90%. Stay inside [0.02, 0.98] unless you
-are genuinely confident AND the reference classes agree — near-certainty has to be
-earned by the outside view, not asserted by the narrative.
+A well-calibrated 60% beats a miscalibrated 90%. Near-certainty has to be earned by the
+outside view, not asserted by the narrative. Your band is stated below, with the
+arithmetic — it comes from configuration, so use the numbers you are given rather than
+any you remember.
 
-Set `confidence` from the quality of the evidence, not the strength of your opinion:
-    high    multiple agreeing reference classes, solid sample sizes, clear evidence
-    medium  usable base rate, some real uncertainty
-    low     thin or conflicting evidence, loose reference class fit
+This is firm guidance, not a wall: go outside the band when the evidence genuinely
+supports it. But then you must fill in `extreme_justification` — which reference class
+carries the extreme, why the spread between the classes does not undercut it, and what
+would have to be true for this to be wrong.
+
+If you cannot write that justification, the number is telling you it is wrong. Move it,
+rather than leaving the field empty. Leave `extreme_justification` empty when your
+probability is inside the band.
 
 REASONING
 Trace it in order: base rate -> adjustments -> final. Name the adjustments that moved
@@ -119,6 +129,20 @@ def _arithmetic_block(outside: OutsideView, implied: float) -> str:
     )
 
 
+def _calibration_block(t: CheckThresholds | None = None) -> str:
+    """The P16 band, injected at run time rather than stated in `INSTRUCTIONS`.
+
+    The thresholds are configuration (ADR 14) and the agent is a module-level singleton,
+    so a band written into the system prompt would keep claiming [0.02, 0.98] after an
+    operator moved it. Same reason `_arithmetic_block` is built per run.
+    """
+    th = t if t is not None else get_check_thresholds()
+    return (
+        f"CALIBRATION BAND — [{th.calibration_floor:.2f}, {th.calibration_ceiling:.2f}].\n"
+        f"Outside it, `extreme_justification` is required; inside it, leave that field empty."
+    )
+
+
 def retry_brief(
     outside: OutsideView,
     inside: InsideView,
@@ -138,6 +162,7 @@ def retry_brief(
         "unchanged": ["decomposition", "outside view", "inside view"],
         "violations": [v.model_dump() for v in violations],
         "arithmetic": _arithmetic_block(outside, implied),
+        "calibration": _calibration_block(),
         "correction": _violation_block(violations).strip(),
     }
 
@@ -166,7 +191,9 @@ OUTSIDE VIEW:
 INSIDE VIEW:
 {inside.model_dump_json(indent=2)}
 
-{_arithmetic_block(outside, implied)}{_violation_block(violations)}
+{_arithmetic_block(outside, implied)}
+
+{_calibration_block()}{_violation_block(violations)}
 
 Fill question, resolution_criteria, resolution_date, and category from the input
 exactly. Carry the sub-claims into `decompositions`."""

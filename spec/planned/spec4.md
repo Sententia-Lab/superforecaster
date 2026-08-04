@@ -145,6 +145,12 @@ process_score(scores: list[QuestionScore]) -> float
     low, because a methodology violation is a property of the reasoning and cannot be
     faked by knowing the answer.
 
+    NOTE (2026-08-04): "blocking" narrowed under ADR 29. P16 became advisory, so a bold
+    unargued probability no longer moves this number — report advisory violations
+    separately rather than letting them vanish. Three blocking checks were added in the
+    same change (aggregation, citations, linkage), so scores are not comparable across
+    that boundary in either direction.
+
 round_number_rate(scores: list[QuestionScore]) -> float
     P8, at run level. Fraction of forecasts landing on an exact multiple of 0.05.
 

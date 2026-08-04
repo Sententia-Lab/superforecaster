@@ -80,4 +80,21 @@ Return a Decomposition."""
         result = await run_agent(
             bound, prompt, deps=deps, verbose=deps.verbose, run_name="decompose"
         )
-    return result.output
+    return _with_ids(result.output)
+
+
+def _with_ids(d: Decomposition) -> Decomposition:
+    """Stamp `sc1`…`scN` onto the sub-claims.
+
+    Assigned here rather than asked for in the prompt: later steps point back at these
+    ids, so they have to be unique and complete, and a model asked for keys will
+    eventually hand back two `sc2`s or skip one.
+    """
+    return d.model_copy(
+        update={
+            "sub_claims": [
+                s.model_copy(update={"id": f"sc{i}"})
+                for i, s in enumerate(d.sub_claims, 1)
+            ]
+        }
+    )

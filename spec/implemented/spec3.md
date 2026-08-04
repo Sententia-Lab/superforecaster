@@ -924,13 +924,13 @@ not *quality*-tested.
 
 | # | Principle | Lives in | Day one | Later (component data) |
 |---|---|---|---|---|
-| 1 | Fermi-ize | `agents/decompose.py` | schema `min_length=3` + `check_decomposition` | `decompose` — sub-claims are the right ones |
+| 1 | Fermi-ize | `agents/decompose.py` | schema `min_length=3` + `check_decomposition` + `check_linkage` | `decompose` — sub-claims are the right ones |
 | 2 | Knowable vs unknowable | `SubClaim.knowability` | `check_decomposition` rejects all-`judgment` | `decompose` — labels are correct |
 | 3 | Resolution criteria | `agents/critic.py` | nothing — schema only | `critic` — precision/recall on 16 labeled criteria |
-| 4 | Outside view first | graph edge `FindBaseRates -> AdjustInsideView` | `test_graph_forecast` node order — structural, not promptable | — |
+| 4 | Outside view first | graph edge `FindBaseRates -> AdjustInsideView`, `checks.check_citations` | `test_graph_forecast` node order — structural, not promptable | — |
 | 5 | Inside view second | `Adjustment.magnitude` is a delta from the base rate | `check_derivation` | `inside_view` |
 | 6 | Regression to the mean | `checks.check_derivation` | unit test: base 0.20, adjustments summing 0.10, final 0.75 → violation | — |
-| 7 | Dragonfly eye | schema `min_length=2` + `checks.check_dragonfly` | unit test + schema | `outside_view` — rates match documented truth |
+| 7 | Dragonfly eye | schema `min_length=2` + `checks.check_dragonfly` + `checks.check_aggregation` | unit test + schema | `outside_view` — rates match documented truth |
 | 8 | Granularity | `scoring.round_number_rate` (run-level) | every e2e scorecard | — |
 | 9 | Signal vs noise | `Adjustment.flip_test`, `is_noise` | `check_signal_vs_noise` | `inside_view` — planted irrelevant fact is marked noise |
 | 10 | Frequent small updates | `MIN_PROBABILITY_DELTA` gate in `GuardUpdate` | `test_graph_update` | `update` |
@@ -939,7 +939,7 @@ not *quality*-tested.
 | 13 | Post-mortem | `agents/postmortem.py` | nothing — schema only | `postmortem` — verdict matches label on 10 resolved forecasts |
 | 14 | Disconfirming evidence | `tools.find_disconfirming_evidence`, `InsideView.steel_man` | `check_disconfirming` | `inside_view` |
 | 15 | Bias checklist | `InsideView.bias_checks` min_length=5 | `check_bias_coverage` + schema | `inside_view` — assessments are substantive |
-| 16 | Calibration over boldness | `checks.check_calibration_hygiene` | unit test + e2e `mean_brier` vs `baseline_mean_brier` | — |
+| 16 | Calibration over boldness | `checks.check_calibration_hygiene` (**advisory**, ADR 29) + `Forecast.extreme_justification` | unit test + e2e `mean_brier` vs `baseline_mean_brier` | — |
 
 Principles 3 and 13 are the two with no real day-one coverage — both are standalone agents outside
 the main graph, so the e2e backtest never exercises them. Their component files are the highest

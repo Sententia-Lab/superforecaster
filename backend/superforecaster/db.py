@@ -134,7 +134,6 @@ def init_db() -> None:
                 id TEXT PRIMARY KEY,
                 forecast_id TEXT NOT NULL REFERENCES forecasts(id) ON DELETE CASCADE,
                 probability REAL NOT NULL,
-                confidence TEXT NOT NULL,
                 reasoning TEXT NOT NULL,
                 is_late INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP NOT NULL
@@ -262,14 +261,13 @@ def save_forecast(
         conn.execute(
             """
             INSERT INTO forecast_updates (
-                id, forecast_id, probability, confidence, reasoning, is_late, created_at
-            ) VALUES (?, ?, ?, ?, ?, 0, ?)
+                id, forecast_id, probability, reasoning, is_late, created_at
+            ) VALUES (?, ?, ?, ?, 0, ?)
             """,
             (
                 str(uuid.uuid4()),
                 fid,
                 forecast.probability,
-                forecast.confidence,
                 forecast.reasoning,
                 now,
             ),
@@ -280,7 +278,6 @@ def save_forecast(
 def add_forecast_update(
     forecast_id: str,
     probability: float,
-    confidence: str,
     reasoning: str,
 ) -> ForecastUpdateRecord:
     """Insert a new probability update.
@@ -307,14 +304,13 @@ def add_forecast_update(
         conn.execute(
             """
             INSERT INTO forecast_updates (
-                id, forecast_id, probability, confidence, reasoning, is_late, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                id, forecast_id, probability, reasoning, is_late, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 update_id,
                 forecast_id,
                 probability,
-                confidence,
                 reasoning,
                 int(is_late),
                 now,
@@ -325,7 +321,6 @@ def add_forecast_update(
         id=update_id,
         forecast_id=forecast_id,
         probability=probability,
-        confidence=confidence,  # type: ignore[arg-type]
         reasoning=reasoning,
         is_late=is_late,
         created_at=now,
@@ -1028,7 +1023,6 @@ def _row_to_forecast(f_row: sqlite3.Row, u_rows: list[sqlite3.Row]) -> ForecastR
             id=u["id"],
             forecast_id=u["forecast_id"],
             probability=u["probability"],
-            confidence=u["confidence"],
             reasoning=u["reasoning"],
             is_late=bool(u["is_late"]),
             created_at=_ensure_aware(u["created_at"]),

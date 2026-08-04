@@ -12,7 +12,7 @@ from config import get_research_limits, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
-from ..models import ForecastInput, InsideView, OutsideView
+from ..models import Decomposition, ForecastInput, InsideView, OutsideView
 from ..observability import run_agent
 from ..tools import find_disconfirming_evidence, search_web, search_wikipedia
 from . import as_of_note, format_question, with_model
@@ -53,6 +53,24 @@ Address all five, each with something actually said — not "considered and reje
     scope_insensitivity  would I give the same number for a 10x bigger version?
     anchoring            am I stuck near the first number I saw?
 
+GRADE YOUR SOURCES
+For each adjustment, list what backs it in `sources`. Grade each one for how strongly
+it supports *this specific* adjustment, not how reputable it is in general:
+    high    directly on point, and from something that would know
+    medium  relevant but indirect, dated, or partial
+    low     suggestive only — a single report, an analogy, a claim by an interested party
+Say why in `note`. Set `source` to a human label — the publication, dataset, or filing
+("PitchBook M&A Report 2024"), never a bare URL. Put the link in `url`, and only when
+you actually retrieved that page: a check verifies cited URLs against what your searches
+returned, and inventing one is a violation. Copy the link exactly as the search results
+gave it, in full — a partial or redirect fragment is dropped and the citation loses its
+link.
+
+Leave `sources` empty when an adjustment is a judgment call with nothing to look up.
+That is an honest answer and grades as weak support. Padding the list with weak
+citations does not help you — the grade for a claim is its *strongest* source, so an
+extra thin one neither raises nor lowers it.
+
 BUDGET
 Limited search budget. Prefer a few well-chosen searches over exhaustive looping.
 """
@@ -84,18 +102,23 @@ def get_inside_view_agent() -> Agent[ForecastDeps, InsideView]:
 
 async def run_inside_view(
     input: ForecastInput,
+    decomposition: Decomposition,
     outside: OutsideView,
     deps: ForecastDeps,
 ) -> InsideView:
     """Produce signed adjustments away from the base rate. Searches; budget-limited."""
     classes = "\n".join(
-        f"  - {rc.name}: {rc.base_rate:.3f} (n={rc.sample_size}, {rc.source})"
+        f"  - {rc.name}: {rc.base_rate:.3f} (n={rc.sample_size}, weight={rc.weight:.2f}, "
+        f"{'; '.join(f'{s.source} [{s.confidence}]' for s in rc.sources)})"
         for rc in outside.reference_classes
     )
     disagreement = (
         f"\nThe reference classes disagree. Noted reason: {outside.disagreement}"
         if outside.disagreement.strip()
         else "\nThe reference classes broadly agree."
+    )
+    sub_claims = "\n".join(
+        f"  - {s.id}: {s.question} [{s.knowability}]" for s in decomposition.sub_claims
     )
 
     prompt = f"""Adjust from the base rate using case-specific evidence.
@@ -106,6 +129,13 @@ BASE RATE TO ADJUST FROM: {outside.aggregate_base_rate:.3f}
 
 REFERENCE CLASSES:
 {classes}{disagreement}
+
+SUB-CLAIMS FROM THE DECOMPOSITION:
+{sub_claims}
+
+Set `sub_claim_ids` on each adjustment to the ids above it bears on, so a reader can
+see which part of the question your evidence moves. Leave it empty for an adjustment
+that applies to the question as a whole.
 
 SEARCH BUDGET: at most {input.max_iterations} rounds. Stop when it is used.
 

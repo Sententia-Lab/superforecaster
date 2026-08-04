@@ -11,27 +11,36 @@
     {
       "question": "Will Musk publicly clash with cabinet members in a way that forces departure?",
       "probability": 0.45,
-      "rationale": "Reports of friction with senior officials but no clean break yet",
-      "confidence": "low"
+      "rationale": "Reports of friction with senior officials but no clean break yet"
     },
     {
       "question": "Will Tesla shareholder pressure force Musk to step back from government role?",
-      "probability": 0.30,
-      "rationale": "Stock pressure exists but Musk historically resists",
-      "confidence": "low"
+      "probability": 0.3,
+      "rationale": "Stock pressure exists but Musk historically resists"
     },
     {
       "question": "Will the White House formally announce a leadership change at DOGE?",
       "probability": 0.35,
-      "rationale": "No formal announcement yet; depends on political dynamics",
-      "confidence": "low"
+      "rationale": "No formal announcement yet; depends on political dynamics"
     }
   ],
   "research": {
     "historical_analogs": [
-      {"description": "Steve Bannon departure from Trump 1.0 admin (Aug 2017)", "outcome": 1.0, "relevance": "High-profile outsider with clashing personality left within a year"},
-      {"description": "Anthony Scaramucci 10-day tenure (2017)", "outcome": 1.0, "relevance": "Outside-norm appointee removed quickly"},
-      {"description": "Reince Priebus removal (2017)", "outcome": 1.0, "relevance": "Internal-faction conflict led to exit"}
+      {
+        "description": "Steve Bannon departure from Trump 1.0 admin (Aug 2017)",
+        "outcome": 1.0,
+        "relevance": "High-profile outsider with clashing personality left within a year"
+      },
+      {
+        "description": "Anthony Scaramucci 10-day tenure (2017)",
+        "outcome": 1.0,
+        "relevance": "Outside-norm appointee removed quickly"
+      },
+      {
+        "description": "Reince Priebus removal (2017)",
+        "outcome": 1.0,
+        "relevance": "Internal-faction conflict led to exit"
+      }
     ],
     "empirical_base_rate": 0.55,
     "base_rate_note": "High-profile outsider advisors have meaningful turnover risk in this administration's history",
@@ -41,15 +50,26 @@
       "Political costs of Musk's public statements"
     ],
     "evidence": {
-      "supporting": ["Reports of cabinet member tensions", "Tesla board and shareholder concerns", "Musk's public criticisms of policy choices"],
-      "contradicting": ["Strong personal relationship with President", "DOGE accomplishments providing political cover", "No formal replacement candidate"]
+      "supporting": [
+        "Reports of cabinet member tensions",
+        "Tesla board and shareholder concerns",
+        "Musk's public criticisms of policy choices"
+      ],
+      "contradicting": [
+        "Strong personal relationship with President",
+        "DOGE accomplishments providing political cover",
+        "No formal replacement candidate"
+      ]
     },
-    "uncertainties": ["Internal administration dynamics", "Musk's personal time allocation decisions", "External business pressures"]
+    "uncertainties": [
+      "Internal administration dynamics",
+      "Musk's personal time allocation decisions",
+      "External business pressures"
+    ]
   },
   "updates": [
     {
       "probability": 0.38,
-      "confidence": "low",
       "reasoning": "High uncertainty. Musk's relationship with the administration appears strong but his time commitments and public controversies create meaningful probability of departure.",
       "created_at": "2026-01-10T09:00:00Z"
     }

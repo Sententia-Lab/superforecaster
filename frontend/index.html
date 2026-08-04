@@ -207,7 +207,7 @@ p  { margin:0 0 10px; }
 .ev.fresh { animation:pv-in .18s ease-out; }
 .ev.thought { color:var(--pv-text); line-height:1.6; }
 .ev.note { border-left:2px solid var(--pv-border-2); padding-left:10px; }
-.ev.sub, .ev.ref, .ev.adj, .ev.analog, .ev.bias, .ev.source, .ev.check, .ev.draft {
+.ev.sub, .ev.claim, .ev.adj, .ev.bias, .ev.source, .ev.check, .ev.draft {
   border:1px solid var(--pv-border); border-radius:var(--pv-radius-chip);
   padding:8px 10px; background:var(--pv-surface);
 }
@@ -227,14 +227,30 @@ p  { margin:0 0 10px; }
   background:var(--pv-surface); border-radius:var(--pv-radius-chip);
   border:1px solid var(--pv-border);
 }
-.ev.check > summary {
-  display:flex; align-items:baseline; gap:8px; cursor:pointer; list-style:none;
-}
-.ev.check > summary::-webkit-details-marker { display:none; }
-.ev.check .showwork { margin-left:auto; opacity:0; }
-.ev.check:hover .showwork { opacity:1; }
-.ev.check[open] .showwork { display:none; }
 .work { margin-top:7px; border-top:1px solid var(--pv-border); padding-top:7px; }
+/* A disclosure the render loop cannot close. `render()` rebuilds the tree on every
+   event, so `<details open>` is lost mid-run; this reads its state from `state.collapsed`. */
+.disclose-t {
+  display:flex; align-items:baseline; gap:6px; margin-top:6px; padding:0;
+  background:none; border:0; cursor:pointer; color:var(--pv-text-3); font:inherit;
+}
+.disclose-t:hover { color:var(--pv-text-2); }
+.disclose-t .caret { font-size:9px; line-height:1; }
+.srcrow {
+  display:flex; gap:8px; align-items:baseline; padding:3px 0;
+  font-size:var(--pv-fs-xs);
+}
+.srcrow > span.chip { flex:none; }
+/* One reference class inside the sub-claim it answers. Indented so the nesting the
+   data has always had is finally visible. */
+.refcard {
+  border-left:2px solid var(--pv-border-2); padding:6px 0 6px 10px; margin-top:8px;
+}
+.refcard:first-child { margin-top:2px; }
+/* Principle chips on a stage header. Wrap rather than overflow — four principles at
+   full title is wider than the header on a narrow window. */
+.pchips { display:flex; flex-wrap:wrap; gap:4px; min-width:0; }
+.pchips .chip { cursor:help; }
 .evrow {
   display:flex; gap:10px; align-items:baseline; justify-content:space-between;
   font-size:var(--pv-fs-xs); padding:2px 0; font-variant-numeric:tabular-nums;

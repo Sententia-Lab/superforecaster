@@ -82,9 +82,10 @@ def test_outside_view_scorer_compares_against_the_documented_rate():
 
 
 def test_outside_view_scorer_requires_sourced_classes():
+    blank = ref("a", 0.2).sources[0].model_copy(update={"source": "  "})
     o = outside(
         reference_classes=[
-            ref("a", 0.2).model_copy(update={"source": ""}),
+            ref("a", 0.2).model_copy(update={"sources": [blank]}),
             ref("b", 0.24),
         ]
     )

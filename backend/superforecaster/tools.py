@@ -118,7 +118,7 @@ def _parse_published(raw: str | None) -> datetime | None:
 
 
 def _drop_leaked(
-    results: list[dict], as_of: datetime | None
+    results: list[dict], as_of: datetime | None, query: str = ""
 ) -> tuple[list[dict], list[SourceRef]]:
     """Second guard on top of Tavily's own `end_date` filter.
 
@@ -134,6 +134,8 @@ def _drop_leaked(
         refs = [
             SourceRef(
                 url=r.get("url", ""),
+                title=r.get("title", "") or "",
+                query=query,
                 published_date=_parse_published(r.get("published_date")),
                 tool="search_web",
             )
@@ -149,6 +151,8 @@ def _drop_leaked(
         refs.append(
             SourceRef(
                 url=r.get("url", ""),
+                title=r.get("title", "") or "",
+                query=query,
                 published_date=published,
                 tool="search_web",
                 as_of=cutoff,
@@ -196,7 +200,7 @@ async def search_web(ctx: RunContext[ForecastDeps], query: str) -> str:
     except httpx.HTTPError as e:
         return f"Web search error: {e}"
 
-    results, refs = _drop_leaked(raw, as_of)
+    results, refs = _drop_leaked(raw, as_of, query)
     ctx.deps.sources_seen.extend(refs)
 
     if not results:
@@ -257,6 +261,8 @@ async def search_wikipedia(ctx: RunContext[ForecastDeps], topic: str) -> str:
     ctx.deps.sources_seen.append(
         SourceRef(
             url=f"https://en.wikipedia.org/wiki/{top_title.replace(' ', '_')}",
+            title=top_title,
+            query=topic,
             published_date=revision_date,
             tool="search_wikipedia",
             as_of=_as_utc(as_of) if as_of else None,

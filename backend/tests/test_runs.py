@@ -163,12 +163,42 @@ def test_decomposition_projects_sub_claims_then_the_chain_note():
     assert run.events[-1].payload["label"] == "chain_note"
 
 
-def test_outside_view_projects_classes_and_an_anchor_note():
-    run = a_run()
-    runs.project_outside(run, an_outside_view())
+def test_outside_view_groups_its_classes_under_the_sub_claims():
+    """One `claim` per sub-claim, not a flat list of reference classes.
 
-    assert types_of(run.events) == ["ref", "ref", "note"]
+    A reader's question is "which part of this did you look up, and what did you find" —
+    a flat list cannot answer it.
+    """
+    run = a_run()
+    d = a_decomposition()
+    runs.project_outside(run, d, an_outside_view())
+
+    claims = [e for e in run.events if e.type == "claim"]
+    assert len(claims) == len(d.sub_claims) + 1  # +1 for the unattributed classes
     assert run.events[-1].payload["label"] == "aggregate_base_rate — 22%"
+
+
+def test_a_sub_claim_nobody_researched_carries_no_rate():
+    """None, not a fabricated number — for a judgment sub-claim that is the right answer."""
+    run = a_run()
+    runs.project_outside(run, a_decomposition(), an_outside_view())
+
+    by_id = {e.payload["id"]: e.payload for e in run.events if e.type == "claim"}
+    assert by_id["sc1"]["rate"] is None
+    assert by_id["sc1"]["classes"] == []
+
+
+def test_a_researched_sub_claim_carries_the_weighted_rate_of_its_classes():
+    run = a_run()
+    d = a_decomposition()
+    o = an_outside_view()
+    o.reference_classes[0].sub_claim_ids = ["sc1"]
+    o.reference_classes[1].sub_claim_ids = ["sc1"]
+    runs.project_outside(run, d, o)
+
+    sc1 = next(e.payload for e in run.events if e.payload.get("id") == "sc1")
+    assert sc1["rate"] == pytest.approx(0.22)
+    assert len(sc1["classes"]) == 2
 
 
 def test_the_anchor_note_carries_the_disagreement_when_there_is_one():
@@ -177,7 +207,7 @@ def test_the_anchor_note_carries_the_disagreement_when_there_is_one():
     outside = an_outside_view().model_copy(
         update={"disagreement": "the narrow class binds"}
     )
-    runs.project_outside(run, outside)
+    runs.project_outside(run, a_decomposition(), outside)
 
     assert run.events[-1].payload["text"] == "the narrow class binds"
 
@@ -199,7 +229,7 @@ def test_a_noise_adjustment_is_projected_as_moving_nothing():
     assert run.events[0].payload["noise"] is True
 
 
-def test_critique_projects_all_seven_checks_including_passes():
+def test_critique_projects_every_check_including_passes():
     run = a_run()
     state = ForecastState(input=forecast_input())
     state.decomposition = a_decomposition()

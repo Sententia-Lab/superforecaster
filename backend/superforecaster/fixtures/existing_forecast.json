@@ -11,28 +11,41 @@
     {
       "question": "Will the Fed cut at the next 2 meetings out of 3?",
       "probability": 0.65,
-      "rationale": "FedWatch implied probabilities suggest two cuts likely",
-      "confidence": "medium"
+      "rationale": "FedWatch implied probabilities suggest two cuts likely"
     },
     {
       "question": "Will core CPI fall below 3% by Q3 2026?",
       "probability": 0.55,
-      "rationale": "Trend suggests yes, but sticky services inflation is a risk",
-      "confidence": "low"
+      "rationale": "Trend suggests yes, but sticky services inflation is a risk"
     },
     {
       "question": "Will unemployment exceed 4.5%, forcing the Fed's hand?",
       "probability": 0.45,
-      "rationale": "Labor market slowing but not yet at recession levels",
-      "confidence": "medium"
+      "rationale": "Labor market slowing but not yet at recession levels"
     }
   ],
   "research": {
     "historical_analogs": [
-      {"description": "2019 Fed cutting cycle (insurance cuts mid-cycle)", "outcome": 1.0, "relevance": "Soft landing scenario; Fed cut 3 times preventatively"},
-      {"description": "2007 Fed cutting cycle", "outcome": 1.0, "relevance": "Multiple cuts as financial conditions tightened"},
-      {"description": "1998 Fed cutting cycle", "outcome": 1.0, "relevance": "LTCM crisis; 3 cuts in quick succession"},
-      {"description": "1995 Fed pause then cuts", "outcome": 1.0, "relevance": "Successful soft landing"}
+      {
+        "description": "2019 Fed cutting cycle (insurance cuts mid-cycle)",
+        "outcome": 1.0,
+        "relevance": "Soft landing scenario; Fed cut 3 times preventatively"
+      },
+      {
+        "description": "2007 Fed cutting cycle",
+        "outcome": 1.0,
+        "relevance": "Multiple cuts as financial conditions tightened"
+      },
+      {
+        "description": "1998 Fed cutting cycle",
+        "outcome": 1.0,
+        "relevance": "LTCM crisis; 3 cuts in quick succession"
+      },
+      {
+        "description": "1995 Fed pause then cuts",
+        "outcome": 1.0,
+        "relevance": "Successful soft landing"
+      }
     ],
     "empirical_base_rate": 0.75,
     "base_rate_note": "Historical Fed mid-cycle adjustments often yield 2+ cuts; sample limited",
@@ -42,21 +55,31 @@
       "Financial conditions tightening"
     ],
     "evidence": {
-      "supporting": ["FOMC dot plot signals cuts in 2026", "CPI trending down", "Yield curve normalizing"],
-      "contradicting": ["Sticky services inflation", "Strong consumer spending", "Geopolitical risk-on"]
+      "supporting": [
+        "FOMC dot plot signals cuts in 2026",
+        "CPI trending down",
+        "Yield curve normalizing"
+      ],
+      "contradicting": [
+        "Sticky services inflation",
+        "Strong consumer spending",
+        "Geopolitical risk-on"
+      ]
     },
-    "uncertainties": ["Tariff impact on inflation", "Labor market downside surprise", "Election-year political pressure"]
+    "uncertainties": [
+      "Tariff impact on inflation",
+      "Labor market downside surprise",
+      "Election-year political pressure"
+    ]
   },
   "updates": [
     {
       "probability": 0.71,
-      "confidence": "medium",
       "reasoning": "Initial forecast based on FedWatch and historical cutting cycles.",
       "created_at": "2026-01-20T09:00:00Z"
     },
     {
       "probability": 0.64,
-      "confidence": "medium",
       "reasoning": "January CPI came in at 3.1%, above the 2.9% consensus. Reduces probability the Fed will move quickly. Still likely they cut at least once; second cut now less certain.",
       "created_at": "2026-02-14T09:00:00Z"
     }

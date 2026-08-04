@@ -44,7 +44,13 @@ def forecast_input() -> ForecastInput:
 
 
 def a_decomposition() -> Decomposition:
-    return Decomposition(sub_claims=[sub(), sub(), sub()], chain_note="multiply")
+    """Ids included — `run_decompose` stamps them, and these tests bypass it."""
+    return Decomposition(
+        sub_claims=[
+            sub().model_copy(update={"id": f"sc{i}"}) for i in (1, 2, 3)
+        ],
+        chain_note="multiply",
+    )
 
 
 def an_outside_view() -> OutsideView:
@@ -71,8 +77,9 @@ def a_forecast(probability: float = 0.28) -> Forecast:
         resolution_date=datetime(2027, 1, 1, tzinfo=timezone.utc),
         category="business",
         probability=probability,
-        confidence="medium",
-        decompositions=[sub(), sub(), sub()],
+        # Ids carried through from the decomposition — synthesis is asked to do exactly
+        # this, and `check_linkage` fails the forecast when it does not.
+        decompositions=a_decomposition().sub_claims,
         research=ResearchSummary(),
         reasoning="base rate then adjustments",
     )
@@ -95,7 +102,7 @@ def stub_agents(monkeypatch):
         calls["outside"] += 1
         return an_outside_view()
 
-    async def fake_inside(input, outside, deps):
+    async def fake_inside(input, decomposition, outside, deps):
         calls["inside"] += 1
         return an_inside_view()
 
@@ -118,6 +125,28 @@ async def visited_nodes(state: ForecastState, deps: ForecastDeps) -> list[str]:
         async for node in run:
             seen.append(type(node).__name__)
     return seen
+
+
+# ---------- sub-claim identity ----------
+
+
+async def test_run_decompose_stamps_stable_ids(monkeypatch):
+    """Ids come from `run_decompose`, not the model.
+
+    Reference classes and adjustments point back at these, so they have to be unique and
+    complete — a model asked for its own keys eventually hands back a duplicate.
+    """
+    from superforecaster.agents import decompose as dc
+
+    async def fake_agent_run(*args, **kwargs):
+        class R:
+            output = a_decomposition()
+
+        return R()
+
+    monkeypatch.setattr(dc, "run_agent", fake_agent_run)
+    d = await dc.run_decompose(forecast_input(), ForecastDeps())
+    assert [s.id for s in d.sub_claims] == ["sc1", "sc2", "sc3"]
 
 
 # ---------- node order ----------

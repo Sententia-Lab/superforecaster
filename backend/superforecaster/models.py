@@ -14,10 +14,35 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from typing import Any, Literal, Optional
+from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+MAX_SEARCH_DEPTH = 50
+"""Ceiling on `max_iterations`, and the one number the UI must not guess.
+
+A budget overrun is the usual reason to resume, and the error text tells the reader to
+come back with a higher depth — so this has to be high enough to accept what that
+invites. It was 20 while the resume prompt suggested doubling, which turned a reasonable
+"try 25" into a 422 the UI rendered as `[object Object]`.
+"""
+
+SourceConfidence = Literal["low", "medium", "high"]
+"""How strongly one source supports one claim. See `GradedSource`.
+
+This is the only confidence concept on the forecast path. A forecast-level label used
+to exist and was removed: it was self-reported, nothing verified it, and
+`check_calibration_hygiene` gated on it — so a retry could pass by relabelling rather
+than by finding better evidence.
+"""
 
 Confidence = Literal["low", "medium", "high"]
+"""The resolution checker's certainty that a question *has resolved*.
+
+A different axis from `SourceConfidence` — it grades an observation about the world,
+not the support behind a claim. Kept separate so the two cannot drift into each other.
+"""
+
 QuestionStatus = Literal["pending", "approved", "rejected", "forecasted"]
 Knowability = Literal["researchable", "judgment"]
 Direction = Literal["up", "down", "neutral"]
@@ -50,6 +75,54 @@ class HistoricalAnalog(BaseModel):
     )
 
 
+class GradedSource(BaseModel):
+    """One source, and how strongly it supports the claim it is attached to.
+
+    The grade belongs to the *edge* between a source and a claim, not to either alone:
+    a strong dataset can be weak support for a question it only glances at. `note` is
+    where that judgment gets stated, since nothing downstream can recompute it.
+
+    `url` is optional because not every source has one (a paywalled dataset, a figure
+    quoted in a filing). When present, `checks.check_citations` verifies the agent
+    actually fetched it.
+    """
+
+    source: str = Field(
+        description="Human label for the source — the publication, dataset, or filing. "
+        "A title, not a URL."
+    )
+    url: Optional[str] = Field(
+        default=None, description="Only if the agent actually retrieved this URL"
+    )
+    confidence: SourceConfidence = Field(
+        description="How strongly THIS source supports THIS claim"
+    )
+    note: str = Field(description="Why that grade — strength, and fit to this claim")
+
+    @field_validator("url")
+    @classmethod
+    def _absolute_http_url(cls, v: str | None) -> str | None:
+        """Drop anything that is not an absolute http(s) URL.
+
+        Search results reach the model as prose, so what comes back here is whatever it
+        copied out — sometimes a redirect fragment like `/goto?url=CAES...` rather than a
+        link. Rendered as an href that is *relative*, so it resolves against our own
+        origin and produces a dead link that looks like a citation.
+
+        Dropped rather than raising: a mangled link is not worth failing a whole forecast
+        over, and `check_citations` still has the real URLs in `sources_seen` to judge.
+        """
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        parsed = urlparse(v)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            return None
+        return v
+
+
 class SubPrediction(BaseModel):
     """One component of a Fermi-ized decomposition. P1 + P2.
 
@@ -57,10 +130,15 @@ class SubPrediction(BaseModel):
     still deserialize from `decompositions_json`.
     """
 
+    id: str = Field(
+        default="",
+        description="Stable key ('sc1'). Assigned by `run_decompose`, not the model — "
+        "a model-supplied id can duplicate or skip, and reference classes and "
+        "adjustments point back at this.",
+    )
     question: str = Field(description="Specific, testable sub-question")
     probability: float = Field(ge=0.0, le=1.0)
     rationale: str
-    confidence: Confidence
     knowability: Knowability = Field(
         default="judgment",
         description="researchable = a base rate can be looked up; "
@@ -97,10 +175,16 @@ class Forecast(BaseModel):
     resolution_date: datetime
     category: str
     probability: float = Field(ge=0.0, le=1.0)
-    confidence: Confidence
     decompositions: list[SubPrediction] = Field(min_length=3, max_length=5)
     research: ResearchSummary
     reasoning: str
+    extreme_justification: str = Field(
+        default="",
+        description="P16 — required when the probability sits outside the calibration "
+        "band. Which reference class carries the extreme, why the spread does not "
+        "undercut it, and what would have to be true for it to be wrong. Empty inside "
+        "the band.",
+    )
 
 
 class ForecastInput(BaseModel):
@@ -140,14 +224,33 @@ class Decomposition(BaseModel):
 
 
 class ReferenceClass(BaseModel):
-    """One outside-view lens. P4 + P7."""
+    """One outside-view lens. P4 + P7.
+
+    `weight` is recorded rather than left implicit because `aggregate_base_rate` is a
+    weighted blend the agent used to perform in its head — which made the anchor of the
+    whole P6 chain unverifiable. With weights on the record, `checks.check_aggregation`
+    can confirm the anchor is what the classes actually say.
+    """
 
     name: str = Field(description="What population this rate is drawn from")
     base_rate: float = Field(ge=0.0, le=1.0)
     sample_size: int = Field(
         ge=1, description="How many analogous cases back this rate"
     )
-    source: str
+    weight: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="How well this class fits THIS question, relative to the others. "
+        "Not sample size — a large but ill-fitting class should weigh less.",
+    )
+    sources: list[GradedSource] = Field(
+        min_length=1, description="A rate you reasoned your way to is not a base rate"
+    )
+    sub_claim_ids: list[str] = Field(
+        default_factory=list,
+        description="Which decomposed sub-claims this class informs. Empty means the "
+        "question as a whole.",
+    )
     analogs: list[HistoricalAnalog] = Field(default_factory=list)
 
 
@@ -184,6 +287,16 @@ class Adjustment(BaseModel):
     is_noise: bool = Field(
         default=False,
         description="True when the flip test shows this evidence is not decision-relevant",
+    )
+    sources: list[GradedSource] = Field(
+        default_factory=list,
+        description="May be empty — a judgment call with no lookup behind it. That is "
+        "an honest signal, and it grades as low support rather than none.",
+    )
+    sub_claim_ids: list[str] = Field(
+        default_factory=list,
+        description="Which decomposed sub-claims this adjustment bears on. Empty means "
+        "the question as a whole.",
     )
 
 
@@ -267,7 +380,6 @@ class ForecastRefreshResult(BaseModel):
 
     should_update: bool
     new_probability: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    new_confidence: Optional[Confidence] = None
     reasoning: str
     evidence_found: list[str] = Field(default_factory=list)
 
@@ -335,6 +447,13 @@ class SourceRef(BaseModel):
     """
 
     url: str
+    title: str = ""
+    """What the search result called itself. The UI used to fall back to the domain
+    because this did not exist, which turned an unparseable URL into 90 characters of
+    redirect payload displayed as if it were a headline."""
+    query: str = ""
+    """The search that returned this result. Makes "which search found this base rate"
+    answerable: a claim cites a URL, and the URL knows the query it came from."""
     published_date: Optional[datetime] = None
     tool: str
     as_of: Optional[datetime] = None
@@ -355,7 +474,6 @@ class ForecastUpdateRecord(BaseModel):
     id: str
     forecast_id: str
     probability: float
-    confidence: Confidence
     reasoning: str
     is_late: bool
     created_at: datetime
@@ -446,7 +564,6 @@ class CreateForecastRequest(BaseModel):
 
 class AddUpdateRequest(BaseModel):
     probability: float = Field(ge=0.0, le=1.0)
-    confidence: Confidence
     reasoning: str
 
 
@@ -571,6 +688,9 @@ class RunSummary(BaseModel):
     error: Optional[str] = None
     created_at: datetime
     ended_at: Optional[datetime] = None
+    max_iterations: int = 5
+    """The depth this run is using. Present so the resume prompt can offer a real
+    number — it used to read this field, find nothing, and suggest 10 every time."""
 
 
 class RunSnapshot(BaseModel):
@@ -599,7 +719,14 @@ class ResumeRunRequest(BaseModel):
     the same place.
     """
 
-    max_iterations: Optional[int] = Field(default=None, ge=1, le=20)
+    max_iterations: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=MAX_SEARCH_DEPTH,
+        description="Search depth for the retried node. The failure that sends people "
+        "here is a budget overrun, and the error text invites raising this — so the cap "
+        "has to be high enough to accept what it invites.",
+    )
 
 
 # ---------- Model garden ----------
