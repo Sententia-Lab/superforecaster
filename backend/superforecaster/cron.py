@@ -18,53 +18,39 @@ from config import get_settings
 
 from . import db
 from .models import RefreshSummary, QuestionRecord
-from .refresh import refresh_forecast
-from .resolution import check_resolution
+from .graphs import run_update_graph
 
 
 # ---------- Daily refresh (Spec 5) ----------
 
 
 async def run_daily_refresh() -> RefreshSummary:
-    """Two-sweep daily refresh: resolution check, then probability update.
+    """Run the update graph over every active forecast.
 
-    Sweep 1 — resolution: for every active forecast, ask the resolution
-    agent if it's resolved. Forecasts that get flagged are skipped in
-    sweep 2.
-
-    Sweep 2 — probability: for every active, non-flagged forecast, ask
-    the refresh agent if the probability should change. Threshold-gated.
+    Previously two sweeps with a `flagged_ids` set carried between them. The graph
+    now enforces that ordering internally — `CheckResolved` short-circuits to `End`
+    on a resolved forecast, so the probability update is unreachable for it — which
+    means this is a single loop and the invariant lives in one place.
     """
     summary = RefreshSummary()
     forecast_ids = db.list_active_forecast_ids()
     summary.total_checked = len(forecast_ids)
 
-    # Sweep 1: resolution
-    flagged_ids: set[str] = set()
     for fid in forecast_ids:
         try:
-            result = await check_resolution(fid)
-            if result.appears_resolved:
-                flagged_ids.add(fid)
-                summary.total_flagged_for_review += 1
+            outcome = await run_update_graph(fid)
         except Exception as exc:  # noqa: BLE001
-            summary.errors.append(f"resolution {fid}: {exc}")
-            logfire.error(f"resolution sweep error on {fid}: {exc}")
-
-    # Sweep 2: probability update (skip flagged)
-    for fid in forecast_ids:
-        if fid in flagged_ids:
-            summary.total_skipped += 1
+            summary.errors.append(f"update {fid}: {exc}")
+            logfire.error(f"update graph error on {fid}: {exc}")
             continue
-        try:
-            action = await refresh_forecast(fid)
-            if action.updated:
-                summary.total_updated += 1
-            else:
-                summary.total_skipped += 1
-        except Exception as exc:  # noqa: BLE001
-            summary.errors.append(f"refresh {fid}: {exc}")
-            logfire.error(f"refresh sweep error on {fid}: {exc}")
+
+        if outcome.flagged_resolved:
+            summary.total_flagged_for_review += 1
+            summary.total_skipped += 1
+        elif outcome.updated:
+            summary.total_updated += 1
+        else:
+            summary.total_skipped += 1
 
     db.record_refresh_run(summary.model_dump_json())
     return summary

@@ -7,10 +7,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from config import get_settings
 
 from superforecaster import db
-from superforecaster.agent import run_forecast
+from superforecaster.agents.critic import run_critique
+from superforecaster.graphs import run_forecast_graph
 from superforecaster.models import (
     ApproveQuestionRequest,
     CreateQuestionRequest,
+    CriteriaCritique,
+    CritiqueQuestionRequest,
     EditQuestionRequest,
     ForecastInput,
     QuestionRecord,
@@ -22,6 +25,21 @@ from .deps import get_client_ip_hash, require_admin
 
 
 router = APIRouter(prefix="/questions", tags=["questions"])
+
+
+@router.post("/critique")
+async def critique_question(body: CritiqueQuestionRequest) -> CriteriaCritique:
+    """Review a draft question for resolvability. Principle 3.
+
+    Public and stateless — this runs while someone is still typing, which is the only
+    point at which fixing ambiguous criteria is cheap. Ambiguity that survives to
+    resolution day silently corrupts the score.
+    """
+    return await run_critique(
+        question=body.question,
+        resolution_criteria=body.resolution_criteria,
+        resolution_date=body.resolution_date,
+    )
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -176,7 +194,7 @@ async def forecast_from_question(
             detail=f"question must be approved (currently {record.status})",
         )
 
-    forecast = await run_forecast(
+    forecast, _violations = await run_forecast_graph(
         ForecastInput(
             question=record.text,
             resolution_criteria=record.resolution_criteria,

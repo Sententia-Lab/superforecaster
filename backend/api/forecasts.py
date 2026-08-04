@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from superforecaster import db
-from superforecaster.agent import run_forecast
+from superforecaster.graphs import run_forecast_graph, run_update_graph
 from superforecaster.models import (
     AddUpdateRequest,
     CreateForecastRequest,
@@ -15,7 +15,6 @@ from superforecaster.models import (
     RefreshActionResponse,
     ResolveRequest,
 )
-from superforecaster.refresh import refresh_forecast as do_refresh
 
 from .deps import require_admin
 
@@ -27,8 +26,12 @@ router = APIRouter(prefix="/forecasts", tags=["forecasts"])
 async def create_forecast(
     body: CreateForecastRequest, _: None = Depends(require_admin)
 ) -> ForecastRecord:
-    """Run the forecast agent and persist the result. Admin only."""
-    forecast = await run_forecast(
+    """Run the forecast graph and persist the result. Admin only.
+
+    Runs live: no `as_of` or `model` clamp. Those exist for backtesting, where the
+    question predates the model; a forecast made now should use everything available.
+    """
+    forecast, _violations = await run_forecast_graph(
         ForecastInput(
             question=body.question,
             resolution_criteria=body.resolution_criteria,
@@ -101,5 +104,10 @@ def resolve(
 async def refresh(
     forecast_id: str, _: None = Depends(require_admin)
 ) -> RefreshActionResponse:
-    """Manually trigger one refresh cycle for a single forecast."""
-    return await do_refresh(forecast_id)
+    """Manually trigger one update cycle for a single forecast.
+
+    Same graph the cron job runs — resolution check first, then the probability
+    update. The response shape predates the graph and is kept for the frontend.
+    """
+    outcome = await run_update_graph(forecast_id)
+    return RefreshActionResponse(updated=outcome.updated, reason=outcome.reason)

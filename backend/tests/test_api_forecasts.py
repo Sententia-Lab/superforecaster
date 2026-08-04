@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from api.main import app
 from superforecaster.models import (
+    UpdateOutcome,
     Forecast,
     HistoricalAnalog,
     RefreshActionResponse,
@@ -95,14 +96,15 @@ def test_create_forecast_requires_admin(client):
 
 def test_create_forecast(client, admin_headers):
     async def mock_run_forecast(input):
+        # run_forecast_graph returns (forecast, surviving violations)
         return _mock_forecast().model_copy(update={
             "question": input.question,
             "resolution_criteria": input.resolution_criteria,
             "resolution_date": input.resolution_date,
             "category": input.category,
-        })
+        }), []
 
-    with patch("api.forecasts.run_forecast", side_effect=mock_run_forecast):
+    with patch("api.forecasts.run_forecast_graph", side_effect=mock_run_forecast):
         resp = client.post(
             "/forecasts",
             json={
@@ -123,14 +125,15 @@ def test_create_forecast(client, admin_headers):
 
 def test_list_and_get_forecast(client, admin_headers):
     async def mock_run_forecast(input):
+        # run_forecast_graph returns (forecast, surviving violations)
         return _mock_forecast().model_copy(update={
             "question": input.question,
             "resolution_criteria": input.resolution_criteria,
             "resolution_date": input.resolution_date,
             "category": input.category,
-        })
+        }), []
 
-    with patch("api.forecasts.run_forecast", side_effect=mock_run_forecast):
+    with patch("api.forecasts.run_forecast_graph", side_effect=mock_run_forecast):
         create = client.post(
             "/forecasts",
             json={
@@ -155,14 +158,15 @@ def test_list_and_get_forecast(client, admin_headers):
 
 def test_resolve_forecast(client, admin_headers):
     async def mock_run_forecast(input):
+        # run_forecast_graph returns (forecast, surviving violations)
         return _mock_forecast().model_copy(update={
             "question": input.question,
             "resolution_criteria": input.resolution_criteria,
             "resolution_date": input.resolution_date,
             "category": input.category,
-        })
+        }), []
 
-    with patch("api.forecasts.run_forecast", side_effect=mock_run_forecast):
+    with patch("api.forecasts.run_forecast_graph", side_effect=mock_run_forecast):
         create = client.post(
             "/forecasts",
             json={
@@ -190,14 +194,15 @@ def test_resolve_forecast(client, admin_headers):
 
 def test_resolve_with_null_marks_ambiguous(client, admin_headers):
     async def mock_run_forecast(input):
+        # run_forecast_graph returns (forecast, surviving violations)
         return _mock_forecast().model_copy(update={
             "question": input.question,
             "resolution_criteria": input.resolution_criteria,
             "resolution_date": input.resolution_date,
             "category": input.category,
-        })
+        }), []
 
-    with patch("api.forecasts.run_forecast", side_effect=mock_run_forecast):
+    with patch("api.forecasts.run_forecast_graph", side_effect=mock_run_forecast):
         create = client.post(
             "/forecasts",
             json={
@@ -224,14 +229,15 @@ def test_resolve_with_null_marks_ambiguous(client, admin_headers):
 
 def test_manual_refresh_endpoint(client, admin_headers):
     async def mock_run_forecast(input):
+        # run_forecast_graph returns (forecast, surviving violations)
         return _mock_forecast().model_copy(update={
             "question": input.question,
             "resolution_criteria": input.resolution_criteria,
             "resolution_date": input.resolution_date,
             "category": input.category,
-        })
+        }), []
 
-    with patch("api.forecasts.run_forecast", side_effect=mock_run_forecast):
+    with patch("api.forecasts.run_forecast_graph", side_effect=mock_run_forecast):
         create = client.post(
             "/forecasts",
             json={
@@ -246,9 +252,9 @@ def test_manual_refresh_endpoint(client, admin_headers):
     fid = create.json()["id"]
 
     async def mock_refresh(forecast_id):
-        return RefreshActionResponse(updated=False, reason="no change")
+        return UpdateOutcome(updated=False, reason="no change")
 
-    with patch("api.forecasts.do_refresh", side_effect=mock_refresh):
+    with patch("api.forecasts.run_update_graph", side_effect=mock_refresh):
         resp = client.post(f"/forecasts/{fid}/refresh", headers=admin_headers)
     assert resp.status_code == 200
     assert resp.json()["updated"] is False

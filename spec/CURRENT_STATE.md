@@ -10,16 +10,21 @@ What exists in the codebase today, what works, and what's still missing.
 .
 ├── backend/                          # All Python code
 │   ├── config.py                     # Loads backend/.env; typed settings via get_settings()
-│   ├── superforecaster/              # Core package (flat — no sub-packages)
+│   ├── superforecaster/              # Core package
 │   │   ├── __init__.py               # Imports config (loads backend/.env)
 │   │   ├── models.py                 # All Pydantic models
-│   │   ├── tools.py                  # search_web, search_wikipedia
-│   │   ├── agent.py                  # forecast_agent (lazy)
-│   │   ├── refresh.py                # refresh_agent (lazy)
-│   │   ├── resolution.py             # resolution_agent (lazy)
+│   │   ├── tools.py                  # Date-clamped search tools  (clamp 1)
+│   │   ├── checks.py                 # Pure methodology validators
+│   │   ├── deps.py                   # ForecastDeps — the two clamps + leak audit
+│   │   ├── model_garden.py           # Model registry by training cutoff  (clamp 2)
+│   │   ├── model_garden.json         # Registry data
 │   │   ├── db.py                     # SQLite layer + scoring math
 │   │   ├── cron.py                   # Schedulers + orchestrators
-│   │   ├── __main__.py               # CLI: forecast | refresh | resolve
+│   │   ├── observability.py          # Logfire config + run_agent wrapper
+│   │   ├── __main__.py               # CLI
+│   │   ├── agents/                   # 8 modules, one per methodology step
+│   │   ├── graphs/                   # state.py, forecast.py, update.py
+│   │   ├── evals/                    # components.py + components/*.json (empty)
 │   │   └── fixtures/
 │   ├── api/                          # FastAPI layer (flat)
 │   │   ├── main.py                   # App + lifespan + CORS
@@ -28,7 +33,7 @@ What exists in the codebase today, what works, and what's still missing.
 │   │   ├── questions.py
 │   │   ├── calibration.py
 │   │   └── admin.py
-│   ├── tests/                        # 62 pytest tests
+│   ├── tests/                        # 221 pytest tests
 │   ├── pyproject.toml
 │   ├── uv.lock
 │   └── Dockerfile
@@ -63,16 +68,19 @@ What exists in the codebase today, what works, and what's still missing.
 │   ├── tsconfig.json
 │   └── Dockerfile                    # Multi-stage Node.js standalone build
 ├── spec/
-│   ├── SPEC.md
 │   ├── TECHNICAL_DIRECTION.md
 │   ├── CURRENT_STATE.md              # this file
-│   └── superforecasting_methodology.md
+│   ├── superforecasting_methodology.md
+│   └── change_specs/
+│       ├── SPEC_04_26_2026.md        # v3 — the five shipped specs
+│       ├── SPEC_IN_PROGRESS.md       # v4 — agent decomposition + graphs (active)
+│       └── spec4.md                  # end-to-end backtest (paused, needs a corpus)
 ├── docker-compose.yml                # api + frontend services
 ├── backend/.env.example
 ├── frontend/.env.example
 ├── .env.example                      # Pointer to split env files
 ├── .gitignore
-├── CLAUDE.mm
+├── CLAUDE.md
 ├── LICENSE
 └── README.md
 ```
@@ -83,58 +91,155 @@ What exists in the codebase today, what works, and what's still missing.
 
 All Pydantic v2 models in one file:
 
-- **Agent IO**: `Forecast`, `ForecastInput`, `ForecastResearchNotes`, `ForecastRefreshResult`, `ResolutionCheckResult`
-- **Decomposition / research**: `SubPrediction`, `HistoricalAnalog`, `ResearchSummary`
+- **Graph step outputs**: `Decomposition`, `OutsideView`, `ReferenceClass`, `InsideView`, `Adjustment`, `BiasCheck`
+- **Agent IO**: `Forecast`, `ForecastInput`, `UpdateDecision`, `UpdateOutcome`, `EvidenceItem`, `ResolutionCheckResult`, `CriteriaCritique`, `PostMortem`
+- **Methodology checks**: `CheckViolation`
+- **Decomposition / research**: `SubPrediction` (carries `knowability`), `HistoricalAnalog`, `ResearchSummary`
+- **Contamination clamps**: `SourceRef` (leakage audit), `ModelEntry` (model garden)
+- **Evals**: `GoldenQuestion`, `QuestionScore`, `Scorecard`, `ComponentCase`, `ComponentScore`, `ComponentReport`
 - **DB records**: `ForecastRecord`, `ForecastUpdateRecord`, `QuestionRecord`
-- **API request bodies**: `CreateForecastRequest`, `AddUpdateRequest`, `ResolveRequest`, `CreateQuestionRequest`, `EditQuestionRequest`, `VoteRequest`, `ApproveQuestionRequest`
+- **API request bodies**: `CreateForecastRequest`, `AddUpdateRequest`, `ResolveRequest`, `CreateQuestionRequest`, `EditQuestionRequest`, `CritiqueQuestionRequest`, `VoteRequest`, `ApproveQuestionRequest`
 - **API responses**: `VoteResponse`, `RefreshActionResponse`, `RefreshSummary`, `CalibrationReport`, `CalibrationBucket`
 
-`ResearchSummary` includes the empirical base rate built from `historical_analogs` (per Spec 1's replanning requirement).
+Several constraints carry methodology weight rather than just validating shape:
+`OutsideView.reference_classes` has `min_length=2` (principle 7), `InsideView.bias_checks`
+is exactly 5 (principle 15), and `SubPrediction.knowability` defaults to `"judgment"` so
+forecasts persisted before principle 2 existed still deserialize.
+
+`GoldenQuestion`, `QuestionScore`, and `Scorecard` ship unused — they are the contract for
+the end-to-end backtest deferred to `spec/change_specs/spec4.md`.
 
 ---
 
 ## Tools (`superforecaster/tools.py`)
 
+Every tool takes `RunContext[ForecastDeps]` and reads `ctx.deps.as_of`. When it is set,
+the tool must not return anything published after that date — this is clamp 1 of the two
+contamination clamps. When it is `None` (production) the tools behave as before.
 
-| Tool                      | Source        | Behavior                                                                                            |
-| ------------------------- | ------------- | --------------------------------------------------------------------------------------------------- |
-| `search_web(query)`       | Tavily API    | Async; returns formatted top-5 results, or graceful fallback message when `TAVILY_API_KEY` is unset |
-| `search_wikipedia(topic)` | Wikipedia API | Async; uses search + extract endpoints; no key required                                             |
+| Tool | Source | Behavior |
+| --- | --- | --- |
+| `search_web(ctx, query)` | Tavily API | Adds `end_date` + `topic="news"` when `as_of` is set; `_drop_leaked` then removes anything newer or undated |
+| `search_wikipedia(ctx, topic)` | Wikipedia API | Fetches the article revision as it stood on `as_of` via `prop=revisions&rvstart=...&rvdir=older`; no key required |
+| `find_disconfirming_evidence(ctx, claim)` | Tavily API | Principle 14 as a tool — runs three rewrites aimed at the opposite conclusion |
 
+Pure helpers extracted so they can be asserted without a network call: `_tavily_body`,
+`_wikipedia_params`, `_drop_leaked`, `_parse_published`, `_extract_page_text`.
 
-Imported by all three agent modules.
+Every URL an agent sees is recorded on `ForecastDeps.sources_seen`;
+`ForecastDeps.leaked_sources` surfaces any dated after `as_of` and should always be empty.
 
 ---
 
-## Agents
+## Methodology Checks (`superforecaster/checks.py`)
 
-All three agents are constructed lazily via `get_*_agent()` factories so the modules can be imported without API keys set. Each is a separate `pydantic_ai.Agent` instance with its own `output_type`.
+Pure functions over Pydantic models returning `CheckViolation | None`. No LLM, no network.
+Thresholds come from `config.CheckThresholds` — there are no numeric literals in the module.
 
-### Forecast pipeline (`agent.py`)
+| Function | Principle | Catches |
+| --- | --- | --- |
+| `check_decomposition` | 1, 2 | no chain note, missing rationale, nothing labelled researchable |
+| `check_dragonfly` | 7 | reference classes disagreeing materially with no explanation |
+| `check_derivation` | 6 | final probability drifting from base rate + stated adjustments |
+| `check_signal_vs_noise` | 9 | missing flip test, or evidence called noise that still moved the number |
+| `check_disconfirming` | 14 | empty steel-man, or every adjustment pointing one way |
+| `check_bias_coverage` | 15 | duplicate or unassessed biases |
+| `check_calibration_hygiene` | 16 | unearned near-certainty |
+| `check_bayes_direction` | 11 | probability moving against the agent's own likelihood ratios |
+| `check_update_magnitude` | 10, 12 | under-reaction — real evidence, no movement |
+| `is_large_move` | 12 | routing signal (not a violation) for the verification pass |
+| `evidence_weight` | 11 | `SUM log(p_if_true / p_if_false)` — the total weight of evidence |
 
-Two-phase pipeline guarantees a synthesis attempt even when research exhausts its budget:
+Suites: `run_forecast_checks`, `run_update_checks`, `blocking`.
 
-1. **`forecast_research_agent`** — tools enabled (`search_web`, `search_wikipedia`); `output_type=ForecastResearchNotes`; budget `get_research_limits(max_iterations)` (default 5 → 11 requests, 10 tool calls).
-2. **`forecast_synthesis_agent`** — no tools; `output_type=Forecast`; budget `get_synthesis_limits()` (4 requests, 0 tool calls).
+There is deliberately **no** per-forecast granularity check. A forecast can legitimately
+land on 0.60; principle 8 is a property of a distribution and belongs in a run-level
+statistic, not a per-answer gate.
 
-If phase 1 raises `UsageLimitExceeded`, captured run messages are passed to synthesis as partial context. Public entry point: `async run_forecast(input: ForecastInput) -> Forecast`.
+---
 
-`get_forecast_agent()` / `build_forecast_agent()` remain as aliases for the synthesis agent (backward compatibility).
+## Model Garden (`superforecaster/model_garden.py`)
 
-### `refresh_agent` (`refresh.py`)
+Clamp 2: a model whose training cutoff predates the question cannot know the answer.
+Cutoffs come from Anthropic's published docs — the *training data* cutoff, stored as the
+last day of the stated month (both the conservative choice).
 
-- `output_type=ForecastRefreshResult`
-- System prompt: only update on substantive new evidence, never on absence of news
-- Public entry point: `async refresh_forecast(forecast_id) -> RefreshActionResponse`
-- Threshold-gated: writes new update only if delta >= `MIN_PROBABILITY_DELTA` (default 0.03)
-- Skips already-resolved, ambiguous, or resolution-flagged forecasts
+`pick_clean_model(as_of, margin_days=90)` returns the newest eligible entry, or `None`.
+It never falls back to a contaminated model; the caller must skip.
 
-### `resolution_agent` (`resolution.py`)
+Also: `load_garden`, `list_models`, `resolve_id` (adds the gateway prefix when routed
+through the Pydantic AI Gateway), `earliest_cutoff`, `coverage`, `probe`, `probe_all`,
+`render_garden`.
 
-- `output_type=ResolutionCheckResult`
-- System prompt: conservative — only `appears_resolved=True` on unambiguous evidence
-- Public entry point: `async check_resolution(forecast_id) -> ResolutionCheckResult`
-- Never auto-resolves — flags `flagged_for_resolution_review=True` for admin confirmation
+**Measured reach (2026-08-03):** earliest available training cutoff is **Jul 2025**
+(Sonnet 4.5 / Haiku 4.5), so a question needs `asked_at >= 2025-10-29` to be clean-scorable.
+The 66 legacy questions in `test_forecasting_baseline/` span Sep 2020 – Sep 2024 and give
+`0/66` clean coverage, which is why the end-to-end backtest is deferred to `spec4.md`.
+
+---
+
+## Agents (`superforecaster/agents/`)
+
+One module per methodology step. Each has the same four parts — `INSTRUCTIONS`,
+`build_*_agent`, `get_*_agent` (lazy singleton, import-safe without API keys), and a
+`run_*` entry point that graph nodes, tests, and evals all call.
+
+| Module | Principles | `output_type` | Tools |
+| --- | --- | --- | --- |
+| `decompose.py` | 1, 2 | `Decomposition` | — |
+| `outside_view.py` | 4, 7 | `OutsideView` | search_web, search_wikipedia |
+| `inside_view.py` | 5, 9, 14, 15 | `InsideView` | search_web, search_wikipedia, find_disconfirming_evidence |
+| `synthesize.py` | 6, 8, 16 | `Forecast` | — |
+| `resolution.py` | — | `ResolutionCheckResult` | search_web, search_wikipedia |
+| `update.py` | 10, 11, 12 | `UpdateDecision` | search_web, find_disconfirming_evidence |
+| `critic.py` | 3 | `CriteriaCritique` | search_web |
+| `postmortem.py` | 13 | `PostMortem` | search_web |
+
+`critic.py` and `postmortem.py` are standalone — outside both graphs. `agents/__init__.py`
+holds `with_model` (applies `deps.model` via `agent.override` for one run, so the model
+garden can swap models per question), `format_question`, and `as_of_note`.
+
+---
+
+## Graphs (`superforecaster/graphs/`)
+
+Orchestration only. Agents know nothing about each other.
+
+**`forecast.py`** — `Decompose → FindBaseRates → AdjustInsideView → Synthesize → Critique`,
+with `Critique` routing back to `Synthesize` once when a blocking violation is found.
+`Critique` is pure — it runs `checks.run_forecast_checks` and makes a routing decision.
+Entry point: `async run_forecast_graph(input, *, as_of, model, verbose) -> (Forecast, list[CheckViolation])`.
+Surviving violations travel out with the result rather than being swallowed.
+
+**`update.py`** — `CheckResolved` ends immediately when a forecast has already resolved,
+so the probability update is unreachable for it. Otherwise `ApplyBayes → GuardUpdate`,
+with `GuardUpdate` routing through `VerifyLargeMove` once when the jump exceeds
+`CHECK_LARGE_MOVE` (default 0.75). A large move is corroborated, not capped.
+Entry point: `async run_update_graph(forecast_id, *, verbose) -> UpdateOutcome`.
+Replaces both `refresh_forecast(id)` and `check_resolution(id)`.
+
+`forecast_mermaid()` / `update_mermaid()` render the real wiring, so the diagrams in the
+specs cannot drift from the code.
+
+**`state.py`** — `ForecastState`, `UpdateState`, and a re-export of `ForecastDeps`.
+`ForecastDeps` itself lives in `superforecaster/deps.py` because `tools` needs it and
+`graphs` imports `agents` which imports `tools`.
+
+---
+
+## Evals (`superforecaster/evals/`)
+
+`components.py` holds the per-agent test harness and all eight scorers. Each scorer
+returns named assertions rather than a bare pass/fail. Two encode a judgment worth
+knowing about: `score_resolution` treats a false positive as fatal (closing a live
+forecast is irreversible), and `score_postmortem` rewards calling a sound-but-missed
+forecast `sound_process` — a scorer that penalised that would teach outcome bias.
+
+`components/*.json` ship as `[]`. The scorers are the durable part; the cases are
+researched content and filling them is data entry against scorers that already exist.
+
+The end-to-end backtest (`runner.py`, `scoring.py`, golden question set) is **not built** —
+see `spec/change_specs/spec4.md`.
 
 ---
 
@@ -188,19 +293,22 @@ APScheduler `AsyncIOScheduler`, started in FastAPI lifespan.
 
 ## CLI (`superforecaster/__main__.py`)
 
-`uv run python -m superforecaster {forecast|refresh|resolve}` from `backend/`.
+`uv run python -m superforecaster <command>` from `backend/`.
 
+| Command | Behavior |
+| --- | --- |
+| `forecast` | Prompts for question, criteria, source, date, category; runs the forecast graph; saves to DB. Prints any surviving methodology violations to stderr |
+| `forecast --fixture [path]` | Same from a fixture file; `--no-save` skips the DB write |
+| `refresh --id <uuid>` | Runs the full update graph on a DB forecast |
+| `refresh --fixture` | Runs the update agent alone on a fixture record; no DB write |
+| `resolve --id <uuid>` \| `--fixture` | Runs the resolution agent only |
+| `critique --question ... --criteria ... [--date]` | Principle 3 — is this question resolvable as written? |
+| `postmortem <uuid>` | Principle 13 — separate process errors from outcome noise |
+| `models [list\|probe\|pick --as-of DATE]` | Inspect the model garden; `probe` marks what is still served and reports the reach |
+| `diagram [forecast\|update]` | Print the real graph wiring as mermaid |
+| `test component [agent\|all]` | Run the component eval harness (reports `0 cases` until data is added) |
 
-| Command                        | Mode           | Behavior                                                                                      |
-| ------------------------------ | -------------- | --------------------------------------------------------------------------------------------- |
-| `forecast`                     | interactive    | Prompts for question, criteria, source, date, category; runs agent; saves to DB               |
-| `forecast --fixture`           | fixture        | Loads `forecast_question.json`; runs; saves to DB unless `--no-save`                          |
-| `forecast --fixture path.json` | custom fixture | Loads given path                                                                              |
-| `refresh --fixture`            | in-memory      | Loads `existing_forecast.json` into a `ForecastRecord`; runs `run_refresh_agent`; no DB write |
-| `refresh --id <uuid>`          | DB             | Loads forecast from DB; runs full `refresh_forecast` (writes update if applicable)            |
-| `resolve --fixture`            | in-memory      | Loads fixture; runs `run_resolution_agent`                                                    |
-| `resolve --id <uuid>`          | DB             | Loads from DB; runs `check_resolution` (sets flag if applicable)                              |
-
+`test e2e` exits 2 with a pointer to `spec/change_specs/spec4.md` — the backtest is not built.
 
 All commands print formatted JSON to stdout.
 
@@ -288,15 +396,22 @@ Next.js 15 + MUI v6 + TypeScript, deployable to Vercel or via Docker.
 
 **Backend:**
 
-- All 62 tests pass: `cd backend && uv run pytest`
-- All three agent modules import without API keys (lazy construction)
+- All 221 tests pass with no network access: `cd backend && uv run pytest`
+- All eight agent modules import and build without API keys (lazy construction)
+- The forecast graph visits its nodes in methodology order, verified by test — principle 4 is enforced structurally, not by prompt
+- `Critique` routes back to `Synthesize` exactly once on a blocking violation, then ends regardless
+- `CheckResolved` short-circuits to `End` on a resolved forecast, so the probability update is unreachable for it
+- `GuardUpdate` routes through `VerifyLargeMove` exactly once on a large jump, never twice
+- Every `checks.py` validator has a passing and a failing case; thresholds are env-tunable and tested as such
+- `_tavily_body` / `_wikipedia_params` carry their date parameters when `as_of` is set and omit them when it is not
+- `pick_clean_model` returns `None` rather than a contaminated fallback when nothing qualifies
+- All eight component scorers are tested, including the two that encode judgment (false-positive weighting, outcome-bias resistance)
 - DB schema initializes on first connect; migrations are idempotent
 - Time-weighted Brier score matches the spec example exactly
 - Submission rate-limit, vote toggle, soft-delete, IP-gated edits all enforced
 - Monthly digest correctly promotes top pending → approved, skips already-approved
-- Daily refresh's two-sweep ordering is verified by test (resolution flags block probability sweep)
-- FastAPI app loads with 27 routes; admin auth and CORS configured
-- CLI builds without errors; `--help` works
+- FastAPI app loads with 28 routes (incl. `POST /questions/critique`); admin auth and CORS configured
+- CLI builds; `--help`, `models list`, `diagram`, and `test component all` all run
 
 **Frontend:**
 
@@ -314,7 +429,13 @@ Next.js 15 + MUI v6 + TypeScript, deployable to Vercel or via Docker.
 
 ## Known Gaps / Not Yet Smoke-Tested
 
-**Live agent runs:** The agents (forecast, refresh, resolution) have working code paths but have not been exercised end-to-end against the live Pydantic AI Gateway in this build session. Tests use mocks or in-memory fixtures. The user has working API keys in `.env`.
+**Live agent runs:** All eight agents have working code paths but have not been exercised against a live model in this build session. Tests use stubs and in-memory fixtures throughout — a green `pytest` proves the plumbing is correct, not that the prompts are any good.
+
+**No end-to-end backtest.** There is still no measured accuracy number. The harness is designed and both contamination clamps are built, but the corpus is missing: the 66 legacy questions give `0/66` clean coverage against a garden whose earliest cutoff is Jul 2025. Deferred to `spec/change_specs/spec4.md`.
+
+**Component golden data is empty.** All eight scorers ship; all eight `components/*.json` are `[]`. Until they are filled, principles 3 and 13 have no real coverage — both are standalone agents the graph never exercises.
+
+**`models probe` has not been run against the live API.** The garden's `available` flags are all `false`, so `pick_clean_model` returns `None` for everything until someone runs it.
 
 **Live frontend ↔ backend integration:** Both halves build and pass their own tests, but a manual end-to-end smoke test (submit a question via the UI, vote on it, run a forecast, verify it appears on `/predictions`) hasn't been performed in this session.
 
@@ -353,17 +474,32 @@ Backend settings live in `backend/.env` (see `backend/.env.example`). Frontend s
 | `PYDANTIC_AI_GATEWAY_API_KEY` | Logfire Gateway (`pylf_v...`) | — (required unless `ANTHROPIC_API_KEY` set) |
 | `ANTHROPIC_API_KEY`             | Direct Anthropic API          | — (alternative to gateway)                 |
 | `AGENT_MODEL`                   | Override model for all agents | `gateway/anthropic:claude-sonnet-4-6` or `anthropic:claude-sonnet-4-6` |
-| `AGENT_REQUEST_LIMIT`           | Max LLM requests per agent run (refresh/resolution) | `40` |
-| `AGENT_TOOL_CALLS_LIMIT`        | Max tool calls per agent run (refresh/resolution)   | `20` |
-
-Forecast research budget: `max_iterations × 2 + 1` requests, `max_iterations × 2` tool calls (CLI default `max_iterations=5`). Synthesis: 4 requests, 0 tool calls — always runs after research.
+| `AGENT_REQUEST_LIMIT`           | Max LLM requests per agent run | `40` |
+| `AGENT_TOOL_CALLS_LIMIT`        | Max tool calls per agent run   | `20` |
 | `TAVILY_API_KEY`              | Web search                    | — (optional; tools degrade gracefully) |
 | `LOGFIRE_TOKEN`               | Observability                 | — (optional)                           |
 | `DATABASE_PATH`               | SQLite file                   | `./superforecaster.db`                 |
-| `REFRESH_CRON_SCHEDULE`       | Daily refresh schedule        | `0 6 * * `*                            |
+| `REFRESH_CRON_SCHEDULE`       | Daily update schedule         | `0 6 * * *`                            |
 | `DIGEST_CRON_SCHEDULE`        | Monthly digest schedule       | `0 9 28-31 * *`                        |
-| `MIN_PROBABILITY_DELTA`       | Refresh write threshold       | `0.03`                                 |
-| `SEARCH_LOOKBACK_HOURS`       | Refresh news window           | `48`                                   |
+| `MIN_PROBABILITY_DELTA`       | Update write threshold        | `0.03`                                 |
+| `SEARCH_LOOKBACK_HOURS`       | Update news window            | `48`                                   |
+
+Research budget per searching agent: `max_iterations × 2 + 1` requests, `max_iterations × 2`
+tool calls (CLI default `max_iterations=5`). Synthesis: 4 requests, 0 tool calls.
+
+Methodology check thresholds — all optional, all read fresh on every call so tests can
+monkeypatch them:
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `CHECK_RC_DISAGREEMENT` | P7 — reference-class spread that demands an explanation | `0.20` |
+| `CHECK_RC_AGREEMENT` | P16 — spread under which classes count as agreeing | `0.10` |
+| `CHECK_CALIBRATION_FLOOR` | P16 — lowest unearned probability | `0.02` |
+| `CHECK_CALIBRATION_CEILING` | P16 — highest unearned probability | `0.98` |
+| `CHECK_LARGE_MOVE` | P12 — jump that triggers `VerifyLargeMove` | `0.75` |
+| `CHECK_DERIVATION_SLACK` | P6 — stated vs implied probability tolerance | `0.05` |
+| `CHECK_ROUND_NUMBER_RATE` | P8 — run-level rounding rate that gets flagged | `0.40` |
+| `MODEL_GARDEN_MARGIN_DAYS` | Safety margin on published training cutoffs | `90` |
 
 Frontend:
 

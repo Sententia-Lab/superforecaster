@@ -1,0 +1,82 @@
+[
+  {
+    "id": "anthropic:claude-opus-5",
+    "provider": "anthropic",
+    "training_cutoff": "2026-05-31",
+    "released": null,
+    "available": false,
+    "notes": "Docs: training data cutoff May 2026, reliable knowledge cutoff May 2026."
+  },
+  {
+    "id": "anthropic:claude-fable-5",
+    "provider": "anthropic",
+    "training_cutoff": "2026-01-31",
+    "released": "2026-06-09",
+    "available": false,
+    "notes": "Docs: training data cutoff Jan 2026. GA 2026-06-09. Requires 30-day data retention."
+  },
+  {
+    "id": "anthropic:claude-sonnet-5",
+    "provider": "anthropic",
+    "training_cutoff": "2026-01-31",
+    "released": null,
+    "available": false,
+    "notes": "Docs: training data cutoff Jan 2026, reliable knowledge cutoff Jan 2026."
+  },
+  {
+    "id": "anthropic:claude-opus-4-8",
+    "provider": "anthropic",
+    "training_cutoff": "2026-01-31",
+    "released": null,
+    "available": false,
+    "notes": "Docs: training data cutoff Jan 2026, reliable knowledge cutoff Jan 2026."
+  },
+  {
+    "id": "anthropic:claude-opus-4-7",
+    "provider": "anthropic",
+    "training_cutoff": "2026-01-31",
+    "released": null,
+    "available": false,
+    "notes": "Docs: training data cutoff Jan 2026, reliable knowledge cutoff Jan 2026."
+  },
+  {
+    "id": "anthropic:claude-sonnet-4-6",
+    "provider": "anthropic",
+    "training_cutoff": "2026-01-31",
+    "released": null,
+    "available": false,
+    "notes": "Docs: training data cutoff Jan 2026, but reliable knowledge cutoff only Aug 2025."
+  },
+  {
+    "id": "anthropic:claude-opus-4-6",
+    "provider": "anthropic",
+    "training_cutoff": "2025-08-31",
+    "released": null,
+    "available": false,
+    "notes": "Docs: training data cutoff Aug 2025, reliable knowledge cutoff May 2025."
+  },
+  {
+    "id": "anthropic:claude-opus-4-5-20251101",
+    "provider": "anthropic",
+    "training_cutoff": "2025-08-31",
+    "released": "2025-11-01",
+    "available": false,
+    "notes": "Docs: training data cutoff Aug 2025, reliable knowledge cutoff May 2025."
+  },
+  {
+    "id": "anthropic:claude-haiku-4-5-20251001",
+    "provider": "anthropic",
+    "training_cutoff": "2025-07-31",
+    "released": "2025-10-01",
+    "available": false,
+    "notes": "Docs: training data cutoff Jul 2025, reliable knowledge cutoff Feb 2025."
+  },
+  {
+    "id": "anthropic:claude-sonnet-4-5-20250929",
+    "provider": "anthropic",
+    "training_cutoff": "2025-07-31",
+    "released": "2025-09-29",
+    "available": false,
+    "notes": "Docs: training data cutoff Jul 2025, reliable knowledge cutoff Jan 2025. Earliest cutoff in the garden - the floor on how far back a clean backtest can reach."
+  }
+]
