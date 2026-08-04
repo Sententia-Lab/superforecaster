@@ -1,6 +1,7 @@
 """Shared pytest fixtures.
 
-Each test gets a fresh, isolated SQLite database via DATABASE_PATH env override.
+Each test gets a fresh, isolated SQLite database via DATABASE_PATH env override,
+and a dummy model string so agents can be constructed without any API key.
 """
 
 from __future__ import annotations
@@ -20,6 +21,22 @@ def _isolated_db(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_PATH", str(db_file))
     db.init_db()
     yield db_file
+
+
+@pytest.fixture(autouse=True)
+def _stub_agent_model(monkeypatch):
+    """Let agents build without a real API key.
+
+    `resolve_agent_model()` raises when no key is set, so any test that constructs
+    an Agent fails on a machine with no `backend/.env`. Tests never reach a provider
+    — they use `TestModel`/`FunctionModel` via `agent.override` — but the model
+    string still has to name a real provider for the Agent to build, so this is a
+    valid string plus a fake key rather than a placeholder.
+
+    `test_config.py` sets or deletes both vars itself where it matters.
+    """
+    monkeypatch.setenv("AGENT_MODEL", "anthropic:claude-sonnet-4-6")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
 
 
 @pytest.fixture

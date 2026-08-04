@@ -27,13 +27,15 @@ The methodology is codified in `spec/superforecasting_methodology.md`. Every maj
 
 ## Architecture Decisions
 
-### Single AI Agent, Multi-Step Reasoning
+### One Agent Per Methodology Step
 
-**Decision:** One Pydantic AI agent that runs decomposition, research, and synthesis in a single structured call.
+**Decision:** One Pydantic AI agent per step of the superforecasting methodology, each with its own `output_type` and system prompt. Five are orchestrated by a graph; three stand alone.
 
-**Rationale:** The v2 implementation split these into separate prompts whose outputs were ignored. A single structured call with `output_type=Forecast` forces the model to commit to a complete, coherent forecast in one pass. This is simpler, faster, and produces better-integrated reasoning.
+**Rationale:** A step you cannot run in isolation is a step you cannot test. The earlier single-call design made every principle a claim about a prompt rather than a property of an output — there was no way to ask "does it find base rates" without running the whole pipeline against a live LLM and reading the prose.
 
-**What this rules out:** Separate specialized sub-agents (Decomposer, Researcher, Synthesizer). We may revisit this as complexity grows, but the overhead of chaining agents is not justified yet.
+Splitting gives every step a named entry point (`run_decompose`, `run_outside_view`, …) a test can call with fixed inputs. It also narrows each `output_type` enough that Pydantic validation does real work: `OutsideView` with `reference_classes: Field(min_length=2)` structurally guarantees principle 7 in a way no prompt can.
+
+**What this replaces:** This reverses the earlier "Single AI Agent, Multi-Step Reasoning" decision. That decision was made when the problem was v2 ignoring its own prompt outputs — a real problem, correctly diagnosed. The problem now is that nothing is measurable, and the single-call shape is what makes it unmeasurable.
 
 ---
 
@@ -95,29 +97,80 @@ The methodology is codified in `spec/superforecasting_methodology.md`. Every maj
 
 ---
 
-### Three Agents, One Tool Set
+### Eight Agents, One Tool Set
 
-**Decision:** Three separate Pydantic AI `Agent` instances, each with a distinct task, output type, and system prompt. All three share the same tool functions (`search_web`, `search_wikipedia`) imported from `tools.py`.
+**Decision:** Eight `Agent` instances, one per methodology step, sharing the tool functions in `tools.py`. Agents know nothing about each other; sequencing lives in `graphs/`.
 
 ```
-superforecaster/tools.py      → search_web(), search_wikipedia()  (shared)
-superforecaster/agent.py      → forecast_agent    output_type=Forecast
-superforecaster/refresh.py    → refresh_agent     output_type=ForecastRefreshResult
-superforecaster/resolution.py → resolution_agent  output_type=ResolutionCheckResult
+superforecaster/tools.py          → search_web(), search_wikipedia(),
+                                    find_disconfirming_evidence()      (shared)
+superforecaster/agents/
+  decompose.py     P1, P2       → Decomposition
+  outside_view.py  P4, P7       → OutsideView
+  inside_view.py   P5,9,14,15   → InsideView
+  synthesize.py    P6, P8, P16  → Forecast
+  resolution.py                 → ResolutionCheckResult
+  update.py        P10,11,12    → UpdateDecision
+  critic.py        P3           → CriteriaCritique      (standalone)
+  postmortem.py    P13          → PostMortem            (standalone)
 ```
 
-**Rationale:** `output_type` is set at `Agent` construction time in Pydantic AI — a single instance cannot produce two different structured types. More importantly, the three tasks are genuinely different in nature and stakes:
+**Rationale:** `output_type` is fixed at construction, so one instance cannot produce two structured types. Beyond that mechanical reason, each step has a different job and different stakes, and separating them is what makes each testable in isolation.
 
-- **forecast_agent**: produces an initial structured belief from scratch — decomposition, base rate research, synthesis
-- **refresh_agent**: interrogates whether an existing probability should change given new evidence — a narrower, update-focused task
-- **resolution_agent**: determines whether the underlying event has already occurred — a binary classification task against the stated resolution criteria
+Resolution detection stays separate from probability updating because their **consequences are asymmetric**. A wrong probability update is low-risk: the time-weighted Brier score absorbs it across the horizon. A wrong resolution call permanently closes the forecast. That asymmetry justifies an agent that only asks "has this resolved?" with nothing else competing for its attention — and the prompt is written to bias toward the cheap error.
 
-Resolution detection is separated from probability refreshing because their **consequences are asymmetric**. A wrong probability update is low-risk: the time-weighted Brier score absorbs it across the full horizon. A wrong resolution call permanently closes the forecast. That asymmetry justifies dedicated focus — an agent that only asks "has this resolved?" with no other job competing for its attention.
+`critic.py` and `postmortem.py` sit outside both graphs deliberately. The criteria critic runs while a question is still being drafted, which is the only point at which fixing ambiguous criteria is cheap. The post-mortem runs after resolution.
 
-**Daily run order:**
+---
+
+### Pydantic Graphs for Orchestration
+
+**Decision:** Use `pydantic_graph` for the forecast pipeline and the daily update cycle. Orchestration lives in `superforecaster/graphs/`.
+
 ```
-1. resolution_agent  → flags appears_resolved → admin reviews before any close
-2. refresh_agent     → probability update on non-flagged active forecasts
+forecast:  Decompose → FindBaseRates → AdjustInsideView → Synthesize → Critique
+                                                              ↑            ↓
+                                                              └────────────┘
+                                                       (blocking violation, once)
+
+update:    CheckResolved ──resolved──→ End(flagged)
+                 └─not resolved──→ ApplyBayes → GuardUpdate ⇄ VerifyLargeMove → End
+```
+
+**Rationale:** Both pipelines have real control flow, not just a sequence. More importantly, the ordering becomes structural. Principle 4 says "outside view first" — as a prompt instruction that is a hope; as the edge `FindBaseRates → AdjustInsideView` it cannot be violated, because the inside-view agent takes the base rate as an argument.
+
+The same applies to the daily cycle. "Resolution blocks the probability update" used to be a `flagged_ids` set passed between two `for` loops. It is now an unreachable node.
+
+`Graph.mermaid_code()` renders the real wiring, so the diagrams in the specs cannot drift from the code.
+
+**What this rules out:** Hand-rolled orchestration.
+
+---
+
+### Methodology Checks Are Pure Functions, Not Prompts
+
+**Decision:** The checkable principles live in `superforecaster/checks.py` as pure functions over Pydantic models, returning `CheckViolation | None`. Every threshold is an env-tunable value in `config.CheckThresholds`.
+
+**Rationale:** A principle stated in a prompt cannot be tested. A function over structured output can be unit tested in microseconds. `check_bayes_direction` verifies the probability moved the same direction as the agent's own stated likelihood ratios — arithmetic, which either holds or does not.
+
+They are also a runtime feedback loop, not just a test fixture: the `Critique` node runs them and routes failures back to synthesis with the specific violation attached, so the retry is a correction rather than a re-roll.
+
+**What this rules out:** LLM-as-judge for these principles. A judge model is slower, costs money, is non-deterministic, and is no more correct than a comparison operator.
+
+---
+
+### Two Clamps for Contamination-Free Backtesting
+
+**Decision:** Scoring the agent against resolved questions clamps both the tools and the model. Tools return nothing published after the question's `asked_at`; the model must have a training cutoff earlier than `asked_at`. `model_garden.pick_clean_model` returns `None` rather than falling back.
+
+**Rationale:** Contamination has two doors. Clamping only the tools leaves the model reciting an outcome it memorised in training — it already knows how 2022 went. Clamping only the model leaves it reading a 2024 article about a 2022 question. Both have to shut or the score is fiction.
+
+**What this rules out:** Treating the existing 66-question set as a benchmark. Measured against the garden it gives `0/66` clean coverage — the earliest served training cutoff is Jul 2025 and the newest of those questions was asked Sep 2024. A backtest needs questions asked after roughly Oct 2025, which is why the end-to-end harness is deferred to `spec/change_specs/spec4.md` pending a suitable corpus. The clamps themselves ship, and the garden's reach grows on its own as models age.
+
+**Daily run order** (now a graph, not a convention):
+```
+CheckResolved → flags appears_resolved → admin reviews before any close
+              → if not flagged, ApplyBayes updates the probability
 ```
 
 ---
@@ -137,12 +190,15 @@ Resolution detection is separated from probability refreshing because their **co
 **Target layout:**
 ```
 backend/                    # All Python code
-  superforecaster/          # Core package (flat — no sub-packages)
+  superforecaster/          # Core package
     models.py               # All Pydantic models
-    tools.py                # search_web, search_wikipedia (shared by all agents)
-    agent.py                # forecast_agent    — output_type=Forecast
-    refresh.py              # refresh_agent     — output_type=ForecastRefreshResult
-    resolution.py           # resolution_agent  — output_type=ResolutionCheckResult
+    tools.py                # search_web, search_wikipedia, find_disconfirming_evidence
+    checks.py               # Pure methodology validators
+    deps.py                 # ForecastDeps — the two contamination clamps
+    model_garden.py         # Model registry keyed by training cutoff
+    agents/                 # One module per methodology step (8)
+    graphs/                 # Orchestration only — forecast.py, update.py, state.py
+    evals/                  # Component test harness + per-agent golden data
     db.py                   # All DB operations
     cron.py                 # Scheduled jobs
     __main__.py             # CLI
@@ -173,7 +229,9 @@ docker-compose.yml          # Repo root — orchestrates both services
 .env.example                # Repo root — all env vars for both services
 ```
 
-**Rationale:** Separating `backend/` and `frontend/` at the top level makes the repo self-explanatory — Python and Node.js code never share a directory. Each has its own `Dockerfile` colocated with the code it builds. `docker-compose.yml` stays at root because it is the one file that knows about both services. Within each service, the flat-file principle applies: modules are files, not nested packages.
+**Rationale:** Separating `backend/` and `frontend/` at the top level makes the repo self-explanatory — Python and Node.js code never share a directory. Each has its own `Dockerfile` colocated with the code it builds. `docker-compose.yml` stays at root because it is the one file that knows about both services.
+
+Within the package, modules are files rather than nested packages, with two exceptions: `agents/` and `graphs/`. Eight agents as eight flat files would bury the shared modules they sit beside, and the split is the point of the architecture — orchestration in one directory, agents in another, each ignorant of the other. `evals/` follows because it carries data files alongside its code.
 
 ---
 
@@ -189,7 +247,7 @@ docker-compose.yml          # Repo root — orchestrates both services
 - User-initiated re-runs of the agent
 - Automatic updates on any other schedule
 
-The architecture should make it easy to add event-driven triggers later — the `refresh_forecast(id)` function should be callable from any trigger, not just the cron job. But we will not build the event layer until the daily batch is running and validated.
+The architecture should make it easy to add event-driven triggers later — `run_update_graph(id)` is callable from any trigger, not just the cron job. But we will not build the event layer until the daily batch is running and validated.
 
 ---
 

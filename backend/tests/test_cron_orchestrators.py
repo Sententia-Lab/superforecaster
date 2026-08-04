@@ -12,6 +12,7 @@ import pytest
 
 from superforecaster import cron, db
 from superforecaster.models import (
+    UpdateOutcome,
     Forecast,
     ForecastRefreshResult,
     HistoricalAnalog,
@@ -99,166 +100,65 @@ def test_preview_digest_does_not_mutate():
 
 
 # ---------- Daily refresh ----------
+#
+# `run_daily_refresh` is now a single loop over `run_update_graph`, so these tests
+# cover the sweep bookkeeping only. The rules that used to live here — resolution
+# blocking the probability update, the delta threshold, the write gate — are graph
+# routing now and are tested in `test_graph_update.py`, where they belong.
 
 
 @pytest.mark.asyncio
-async def test_run_daily_refresh_calls_resolution_then_refresh():
-    """When resolution flags a forecast, refresh should skip it."""
-    f1 = _make_forecast(probability=0.5)
-    f2 = _make_forecast(probability=0.5)
-    f1_id = db.save_forecast(f1, resolution_source="x")
-    f2_id = db.save_forecast(f2, resolution_source="x")
+async def test_run_daily_refresh_counts_each_outcome_kind():
+    """Flagged, updated, and no-change forecasts land in the right counters."""
+    ids = [db.save_forecast(_make_forecast(probability=0.5), resolution_source="x") for _ in range(3)]
+    flagged_id, updated_id, quiet_id = ids
 
-    # Mock: f1 flagged for resolution, f2 not
-    async def mock_check_resolution(fid):
-        if fid == f1_id:
-            db.mark_refreshed(fid, flagged=True)
-            return ResolutionCheckResult(
-                appears_resolved=True,
-                suggested_outcome=1.0,
-                confidence="high",
-                resolution_evidence="news source",
-                reasoning="Event resolved.",
-            )
-        else:
-            db.mark_refreshed(fid, flagged=False)
-            return ResolutionCheckResult(
-                appears_resolved=False,
-                confidence="medium",
-                reasoning="No evidence yet.",
-            )
+    async def fake_update_graph(fid, *, verbose=False):
+        if fid == flagged_id:
+            return UpdateOutcome(flagged_resolved=True, updated=False, reason="resolved")
+        if fid == updated_id:
+            return UpdateOutcome(updated=True, new_probability=0.62, reason="moved")
+        return UpdateOutcome(updated=False, reason="no change")
 
-    async def mock_refresh_forecast(fid):
-        # If resolution flagged this, refresh should not be called
-        record = db.get_forecast(fid)
-        assert record is not None
-        if record.flagged_for_resolution_review:
-            return RefreshActionResponse(updated=False, reason="flagged")
-        return RefreshActionResponse(updated=False, reason="no change")
-
-    with patch.object(cron, "check_resolution", side_effect=mock_check_resolution), \
-         patch.object(cron, "refresh_forecast", side_effect=mock_refresh_forecast):
+    with patch.object(cron, "run_update_graph", side_effect=fake_update_graph):
         summary = await cron.run_daily_refresh()
 
-    assert summary.total_checked == 2
+    assert summary.total_checked == 3
     assert summary.total_flagged_for_review == 1
-    # f1 was flagged → skipped in sweep 2; f2 ran but no update
-    assert summary.total_updated == 0
-    assert summary.total_skipped == 2  # 1 flagged + 1 no-change
+    assert summary.total_updated == 1
+    assert summary.total_skipped == 2  # the flagged one plus the no-change one
 
-    # Verify f1 is flagged in DB
-    f1_record = db.get_forecast(f1_id)
-    assert f1_record is not None
-    assert f1_record.flagged_for_resolution_review is True
+
+@pytest.mark.asyncio
+async def test_run_daily_refresh_survives_one_bad_forecast():
+    """One forecast raising must not abort the sweep for the others."""
+    ids = [db.save_forecast(_make_forecast(), resolution_source="x") for _ in range(3)]
+    exploding = ids[1]
+
+    async def fake_update_graph(fid, *, verbose=False):
+        if fid == exploding:
+            raise RuntimeError("provider exploded")
+        return UpdateOutcome(updated=True, new_probability=0.6, reason="moved")
+
+    with patch.object(cron, "run_update_graph", side_effect=fake_update_graph):
+        summary = await cron.run_daily_refresh()
+
+    assert summary.total_checked == 3
+    assert summary.total_updated == 2
+    assert len(summary.errors) == 1
+    assert "provider exploded" in summary.errors[0]
 
 
 @pytest.mark.asyncio
 async def test_run_daily_refresh_records_run_history():
-    f = _make_forecast()
-    db.save_forecast(f, resolution_source="x")
+    db.save_forecast(_make_forecast(), resolution_source="x")
 
-    async def mock_check(fid):
-        db.mark_refreshed(fid, flagged=False)
-        return ResolutionCheckResult(appears_resolved=False, confidence="low", reasoning="no")
+    async def fake_update_graph(fid, *, verbose=False):
+        return UpdateOutcome(updated=False, reason="no change")
 
-    async def mock_refresh(fid):
-        return RefreshActionResponse(updated=False, reason="no change")
-
-    with patch.object(cron, "check_resolution", side_effect=mock_check), \
-         patch.object(cron, "refresh_forecast", side_effect=mock_refresh):
+    with patch.object(cron, "run_update_graph", side_effect=fake_update_graph):
         await cron.run_daily_refresh()
 
     last_run = db.last_refresh_run()
     assert last_run is not None
-    assert "total_checked" in last_run["summary"]
     assert last_run["summary"]["total_checked"] == 1
-
-
-@pytest.mark.asyncio
-async def test_refresh_forecast_skips_resolved():
-    """refresh_forecast should be a no-op for already-resolved forecasts."""
-    from superforecaster.refresh import refresh_forecast as rf
-
-    f = _make_forecast()
-    fid = db.save_forecast(f, resolution_source="x")
-    db.resolve_forecast(fid, outcome=1.0)
-
-    # No mock needed — should return early before calling agent
-    result = await rf(fid)
-    assert result.updated is False
-    assert "resolved" in (result.reason or "").lower()
-
-
-@pytest.mark.asyncio
-async def test_refresh_forecast_skips_flagged():
-    """refresh_forecast should skip forecasts that resolution flagged."""
-    from superforecaster.refresh import refresh_forecast as rf
-
-    f = _make_forecast()
-    fid = db.save_forecast(f, resolution_source="x")
-    db.mark_refreshed(fid, flagged=True)
-
-    result = await rf(fid)
-    assert result.updated is False
-    assert "flag" in (result.reason or "").lower()
-
-
-@pytest.mark.asyncio
-async def test_refresh_forecast_threshold_blocks_small_changes():
-    """If the agent's suggested change is below MIN_PROBABILITY_DELTA, no update."""
-    from superforecaster import refresh as refresh_module
-    from superforecaster.refresh import refresh_forecast as rf
-
-    f = _make_forecast(probability=0.50)
-    fid = db.save_forecast(f, resolution_source="x")
-
-    async def mock_run(record):
-        # Suggest a 1-point change, below the 3-point threshold
-        return ForecastRefreshResult(
-            should_update=True,
-            new_probability=0.51,
-            new_confidence="medium",
-            reasoning="Minor news.",
-        )
-
-    with patch.object(refresh_module, "run_refresh_agent", side_effect=mock_run):
-        result = await rf(fid)
-
-    assert result.updated is False
-    assert "threshold" in (result.reason or "").lower()
-
-    # No new update row should exist beyond the initial one
-    record = db.get_forecast(fid)
-    assert record is not None
-    assert len(record.updates) == 1
-
-
-@pytest.mark.asyncio
-async def test_refresh_forecast_writes_update_when_above_threshold():
-    from superforecaster import refresh as refresh_module
-    from superforecaster.refresh import refresh_forecast as rf
-
-    f = _make_forecast(probability=0.50)
-    fid = db.save_forecast(f, resolution_source="x")
-
-    async def mock_run(record):
-        return ForecastRefreshResult(
-            should_update=True,
-            new_probability=0.65,
-            new_confidence="high",
-            reasoning="Major new evidence.",
-            evidence_found=["source 1", "source 2"],
-        )
-
-    with patch.object(refresh_module, "run_refresh_agent", side_effect=mock_run):
-        result = await rf(fid)
-
-    assert result.updated is True
-    assert result.update is not None
-    assert result.update.probability == 0.65
-
-    record = db.get_forecast(fid)
-    assert record is not None
-    assert len(record.updates) == 2
-    assert record.updates[-1].probability == 0.65
-    assert record.last_refreshed_at is not None
