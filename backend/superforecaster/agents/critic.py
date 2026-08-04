@@ -57,7 +57,9 @@ assume it does — a criterion resting on a statistic nobody publishes is not re
 """
 
 
-def build_critic_agent(model: str | None = None) -> Agent[ForecastDeps, CriteriaCritique]:
+def build_critic_agent(
+    model: str | None = None,
+) -> Agent[ForecastDeps, CriteriaCritique]:
     return Agent[ForecastDeps, CriteriaCritique](
         model=model or resolve_agent_model(),
         name="critic_agent",

@@ -317,8 +317,12 @@ def test_derivation_clean():
 
 def test_derivation_catches_narrative_drift():
     """Base rate 0.20, adjustments summing 0.10, final 0.75 — unsupported by its own evidence."""
-    o = outside(reference_classes=[ref("a", 0.20), ref("b", 0.20)], aggregate_base_rate=0.20)
-    i = inside(adjustments=[adjustment("up", 0.10), adjustment("down", 0.0, is_noise=True)])
+    o = outside(
+        reference_classes=[ref("a", 0.20), ref("b", 0.20)], aggregate_base_rate=0.20
+    )
+    i = inside(
+        adjustments=[adjustment("up", 0.10), adjustment("down", 0.0, is_noise=True)]
+    )
     v = checks.check_derivation(forecast(0.75), o, i)
     assert v is not None
     assert v.principle == 6
@@ -326,13 +330,17 @@ def test_derivation_catches_narrative_drift():
 
 def test_derivation_allows_a_round_number():
     """P8 note: 0.60 is a legitimate answer when the arithmetic lands there."""
-    o = outside(reference_classes=[ref("a", 0.50), ref("b", 0.50)], aggregate_base_rate=0.50)
+    o = outside(
+        reference_classes=[ref("a", 0.50), ref("b", 0.50)], aggregate_base_rate=0.50
+    )
     i = inside(adjustments=[adjustment("up", 0.10)])
     assert checks.check_derivation(forecast(0.60), o, i) is None
 
 
 def test_derivation_ignores_noise_adjustments():
-    o = outside(reference_classes=[ref("a", 0.30), ref("b", 0.30)], aggregate_base_rate=0.30)
+    o = outside(
+        reference_classes=[ref("a", 0.30), ref("b", 0.30)], aggregate_base_rate=0.30
+    )
     i = inside(
         adjustments=[
             adjustment("up", 0.10),
@@ -344,13 +352,17 @@ def test_derivation_ignores_noise_adjustments():
 
 def test_derivation_clamps_to_unit_interval():
     """base 0.90 + 0.30 up would imply 1.20; it clamps to 1.00."""
-    o = outside(reference_classes=[ref("a", 0.90), ref("b", 0.90)], aggregate_base_rate=0.90)
+    o = outside(
+        reference_classes=[ref("a", 0.90), ref("b", 0.90)], aggregate_base_rate=0.90
+    )
     i = inside(adjustments=[adjustment("up", 0.30)])
     assert checks.check_derivation(forecast(0.98), o, i) is None
 
 
 def test_derivation_slack_is_configurable(monkeypatch):
-    o = outside(reference_classes=[ref("a", 0.30), ref("b", 0.30)], aggregate_base_rate=0.30)
+    o = outside(
+        reference_classes=[ref("a", 0.30), ref("b", 0.30)], aggregate_base_rate=0.30
+    )
     i = inside(adjustments=[adjustment("up", 0.10)])
     assert checks.check_derivation(forecast(0.48), o, i) is not None
 
@@ -373,7 +385,9 @@ def test_calibration_hygiene_rejects_unearned_extreme():
 
 def test_calibration_hygiene_allows_earned_extreme():
     """High confidence plus reference classes that agree earns the extreme."""
-    o = outside(reference_classes=[ref("a", 0.97), ref("b", 0.99)], aggregate_base_rate=0.98)
+    o = outside(
+        reference_classes=[ref("a", 0.97), ref("b", 0.99)], aggregate_base_rate=0.98
+    )
     assert checks.check_calibration_hygiene(forecast(0.99, "high"), o) is None
 
 
@@ -388,26 +402,34 @@ def test_calibration_hygiene_rejects_extreme_when_classes_disagree():
 
 def test_calibration_bounds_are_configurable(monkeypatch):
     monkeypatch.setenv("CHECK_CALIBRATION_CEILING", "0.999")
-    assert checks.check_calibration_hygiene(forecast(0.995, "medium"), outside()) is None
+    assert (
+        checks.check_calibration_hygiene(forecast(0.995, "medium"), outside()) is None
+    )
 
 
 # ---------- P11: Bayesian direction ----------
 
 
 def test_evidence_weight_is_positive_for_confirming_evidence():
-    d = update(evidence=[EvidenceItem(fact="f", source="s", p_if_true=0.9, p_if_false=0.1)])
+    d = update(
+        evidence=[EvidenceItem(fact="f", source="s", p_if_true=0.9, p_if_false=0.1)]
+    )
     assert checks.evidence_weight(d) > 0
 
 
 def test_evidence_weight_is_zero_for_uninformative_evidence():
     """p_if_true == p_if_false is a fact that tells you nothing — log(1) = 0."""
-    d = update(evidence=[EvidenceItem(fact="f", source="s", p_if_true=0.5, p_if_false=0.5)])
+    d = update(
+        evidence=[EvidenceItem(fact="f", source="s", p_if_true=0.5, p_if_false=0.5)]
+    )
     assert checks.evidence_weight(d) == pytest.approx(0.0)
 
 
 def test_evidence_weight_handles_zero_likelihood():
     """p_if_false == 0 would be an infinite ratio; it is clamped instead of raising."""
-    d = update(evidence=[EvidenceItem(fact="f", source="s", p_if_true=0.9, p_if_false=0.0)])
+    d = update(
+        evidence=[EvidenceItem(fact="f", source="s", p_if_true=0.9, p_if_false=0.0)]
+    )
     weight = checks.evidence_weight(d)
     assert weight > 0
     assert weight != float("inf")
@@ -490,7 +512,11 @@ def test_update_magnitude_does_not_fail_large_moves():
     d = update(
         prior=0.20,
         posterior=0.99,
-        evidence=[EvidenceItem(fact="chapter 11 filed", source="s", p_if_true=0.99, p_if_false=0.01)],
+        evidence=[
+            EvidenceItem(
+                fact="chapter 11 filed", source="s", p_if_true=0.99, p_if_false=0.01
+            )
+        ],
     )
     assert checks.check_update_magnitude(d) is None
 
@@ -538,7 +564,10 @@ def test_run_forecast_checks_collects_every_failure():
         disagreement="",
     )
     i = inside(
-        adjustments=[adjustment("up", 0.05, evidence="a"), adjustment("up", 0.05, evidence="b")],
+        adjustments=[
+            adjustment("up", 0.05, evidence="a"),
+            adjustment("up", 0.05, evidence="b"),
+        ],
         steel_man="",
     )
     violations = checks.run_forecast_checks(forecast(0.90), decomposition(), o, i)

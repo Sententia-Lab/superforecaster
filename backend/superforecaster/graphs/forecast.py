@@ -38,7 +38,9 @@ MAX_SYNTHESIS_ATTEMPTS = 2
 class Decompose(BaseNode[ForecastState, ForecastDeps, Forecast]):
     """Principles 1 and 2 — Fermi-ize, and label what is researchable."""
 
-    async def run(self, ctx: GraphRunContext[ForecastState, ForecastDeps]) -> FindBaseRates:
+    async def run(
+        self, ctx: GraphRunContext[ForecastState, ForecastDeps]
+    ) -> FindBaseRates:
         ctx.state.decomposition = await run_decompose(ctx.state.input, ctx.deps)
         return FindBaseRates()
 
@@ -50,7 +52,9 @@ class FindBaseRates(BaseNode[ForecastState, ForecastDeps, Forecast]):
     This node running before AdjustInsideView is the whole of principle 4.
     """
 
-    async def run(self, ctx: GraphRunContext[ForecastState, ForecastDeps]) -> AdjustInsideView:
+    async def run(
+        self, ctx: GraphRunContext[ForecastState, ForecastDeps]
+    ) -> AdjustInsideView:
         assert ctx.state.decomposition is not None
         ctx.state.outside = await run_outside_view(
             ctx.state.input, ctx.state.decomposition, ctx.deps
@@ -62,7 +66,9 @@ class FindBaseRates(BaseNode[ForecastState, ForecastDeps, Forecast]):
 class AdjustInsideView(BaseNode[ForecastState, ForecastDeps, Forecast]):
     """Principles 5, 9, 14, 15 — signed adjustments away from the base rate."""
 
-    async def run(self, ctx: GraphRunContext[ForecastState, ForecastDeps]) -> Synthesize:
+    async def run(
+        self, ctx: GraphRunContext[ForecastState, ForecastDeps]
+    ) -> Synthesize:
         assert ctx.state.outside is not None
         ctx.state.inside = await run_inside_view(
             ctx.state.input, ctx.state.outside, ctx.deps

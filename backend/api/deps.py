@@ -18,10 +18,14 @@ async def require_admin(authorization: str | None = Header(default=None)) -> Non
             detail="server misconfigured: ADMIN_API_KEY not set",
         )
     if authorization is None or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="missing bearer token")
-    token = authorization[len("Bearer "):]
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="missing bearer token"
+        )
+    token = authorization[len("Bearer ") :]
     if token != expected:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="invalid bearer token")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="invalid bearer token"
+        )
 
 
 def get_client_ip(request: Request) -> str:

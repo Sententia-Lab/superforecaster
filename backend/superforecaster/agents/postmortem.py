@@ -102,11 +102,17 @@ async def run_postmortem(
     outcome = (
         "AMBIGUOUS — excluded from scoring"
         if record.is_ambiguous
-        else f"{record.outcome:.1f}" if record.outcome is not None else "NOT YET RESOLVED"
+        else (
+            f"{record.outcome:.1f}"
+            if record.outcome is not None
+            else "NOT YET RESOLVED"
+        )
     )
     brier = f"{record.brier_score:.4f}" if record.brier_score is not None else "n/a"
     scored = (
-        f"{record.scored_probability:.3f}" if record.scored_probability is not None else "n/a"
+        f"{record.scored_probability:.3f}"
+        if record.scored_probability is not None
+        else "n/a"
     )
 
     prompt = f"""Review this resolved forecast for process errors.

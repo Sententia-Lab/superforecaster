@@ -86,9 +86,11 @@ def get_synthesize_agent() -> Agent[ForecastDeps, Forecast]:
 def _implied(outside: OutsideView, inside: InsideView) -> float:
     """The probability the agent's own numbers point at. Mirrors checks.check_derivation."""
     total = outside.aggregate_base_rate + sum(
-        0.0
-        if a.is_noise or a.direction == "neutral"
-        else (a.magnitude if a.direction == "up" else -a.magnitude)
+        (
+            0.0
+            if a.is_noise or a.direction == "neutral"
+            else (a.magnitude if a.direction == "up" else -a.magnitude)
+        )
         for a in inside.adjustments
     )
     return min(1.0, max(0.0, total))

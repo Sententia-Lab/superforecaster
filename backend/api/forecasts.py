@@ -62,7 +62,9 @@ def list_forecasts(
 def get_forecast(forecast_id: str) -> ForecastRecord:
     record = db.get_forecast(forecast_id)
     if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="forecast not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="forecast not found"
+        )
     return record
 
 

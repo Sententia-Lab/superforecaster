@@ -30,9 +30,15 @@ def _make_forecast(
         probability=probability,
         confidence="medium",
         decompositions=[
-            SubPrediction(question="Sub 1?", probability=0.5, rationale="r1", confidence="medium"),
-            SubPrediction(question="Sub 2?", probability=0.5, rationale="r2", confidence="medium"),
-            SubPrediction(question="Sub 3?", probability=0.5, rationale="r3", confidence="medium"),
+            SubPrediction(
+                question="Sub 1?", probability=0.5, rationale="r1", confidence="medium"
+            ),
+            SubPrediction(
+                question="Sub 2?", probability=0.5, rationale="r2", confidence="medium"
+            ),
+            SubPrediction(
+                question="Sub 3?", probability=0.5, rationale="r3", confidence="medium"
+            ),
         ],
         research=ResearchSummary(
             historical_analogs=[
@@ -82,7 +88,9 @@ def test_add_update_appends_row():
     f = _make_forecast(probability=0.5)
     fid = db.save_forecast(f, resolution_source="x")
 
-    update = db.add_forecast_update(fid, probability=0.6, confidence="high", reasoning="new evidence")
+    update = db.add_forecast_update(
+        fid, probability=0.6, confidence="high", reasoning="new evidence"
+    )
     assert update.probability == pytest.approx(0.6)
     assert update.is_late is False
 
@@ -107,7 +115,9 @@ def test_late_flag_set_within_24h_of_resolution():
     f = _make_forecast(resolution_date=resolution)
     fid = db.save_forecast(f, resolution_source="x", submission_gap_days=0)
 
-    update = db.add_forecast_update(fid, probability=0.6, confidence="medium", reasoning="r")
+    update = db.add_forecast_update(
+        fid, probability=0.6, confidence="medium", reasoning="r"
+    )
     assert update.is_late is True
 
 
@@ -194,7 +204,10 @@ def test_calibration_report_excludes_ambiguous_and_unresolved():
     f1 = _make_forecast(resolution_date=resolution, probability=0.7)
     f1_id = db.save_forecast(f1, resolution_source="x", submission_gap_days=0)
     with db.connect() as conn:
-        conn.execute("UPDATE forecast_updates SET created_at = ? WHERE forecast_id = ?", (base, f1_id))
+        conn.execute(
+            "UPDATE forecast_updates SET created_at = ? WHERE forecast_id = ?",
+            (base, f1_id),
+        )
     db.resolve_forecast(f1_id, outcome=1.0)
 
     # Ambiguous (excluded)

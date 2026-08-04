@@ -93,7 +93,9 @@ def pick_clean_model(
     asked = as_of.date() if isinstance(as_of, datetime) else as_of
     latest_allowed = asked - timedelta(days=margin_days)
 
-    eligible = [e for e in list_models(path=path) if e.training_cutoff <= latest_allowed]
+    eligible = [
+        e for e in list_models(path=path) if e.training_cutoff <= latest_allowed
+    ]
     return eligible[0] if eligible else None
 
 
@@ -143,7 +145,9 @@ async def probe(entry: ModelEntry) -> bool:
 async def probe_all(*, path: Path = GARDEN_PATH) -> list[ModelEntry]:
     """Probe every entry and rewrite the `available` flags in place."""
     entries = load_garden(path)
-    probed = [entry.model_copy(update={"available": await probe(entry)}) for entry in entries]
+    probed = [
+        entry.model_copy(update={"available": await probe(entry)}) for entry in entries
+    ]
     save_garden(probed, path)
     return sorted(probed, key=lambda e: e.training_cutoff, reverse=True)
 

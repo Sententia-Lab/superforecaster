@@ -44,7 +44,9 @@ not the final answer — later steps will revise them against base rates and evi
 """
 
 
-def build_decompose_agent(model: str | None = None) -> Agent[ForecastDeps, Decomposition]:
+def build_decompose_agent(
+    model: str | None = None,
+) -> Agent[ForecastDeps, Decomposition]:
     return Agent[ForecastDeps, Decomposition](
         model=model or resolve_agent_model(),
         name="decompose_agent",

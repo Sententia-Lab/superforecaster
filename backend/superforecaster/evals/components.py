@@ -58,7 +58,9 @@ def load_cases(agent: str, *, cases_dir: Path = CASES_DIR) -> list[ComponentCase
     return [ComponentCase.model_validate({"agent": agent, **c}) for c in raw]
 
 
-def _score(case_id: str, assertions: dict[str, bool], detail: str = "") -> ComponentScore:
+def _score(
+    case_id: str, assertions: dict[str, bool], detail: str = ""
+) -> ComponentScore:
     return ComponentScore(
         case_id=case_id,
         passed=all(assertions.values()),
@@ -84,7 +86,9 @@ def score_decompose(out: Any, expect: dict) -> ComponentScore:
         expect.get("id", ""),
         {
             "enough_sub_claims": len(out.sub_claims) >= expect.get("min_sub_claims", 3),
-            "has_researchable": any(s.knowability == "researchable" for s in out.sub_claims),
+            "has_researchable": any(
+                s.knowability == "researchable" for s in out.sub_claims
+            ),
             "chain_explained": bool(out.chain_note.strip()),
             "mentions_expected_terms": all(
                 term.lower() in text for term in expect.get("must_mention", [])
@@ -106,7 +110,9 @@ def score_outside_view(out: Any, expect: dict) -> ComponentScore:
     assertions = {
         "two_or_more_classes": len(out.reference_classes) >= 2,
         "every_class_sourced": all(rc.source.strip() for rc in out.reference_classes),
-        "every_class_has_sample": all(rc.sample_size >= 1 for rc in out.reference_classes),
+        "every_class_has_sample": all(
+            rc.sample_size >= 1 for rc in out.reference_classes
+        ),
         "check_clean": checks.check_dragonfly(out) is None,
     }
     if truth is not None:
@@ -137,9 +143,9 @@ def score_inside_view(out: Any, expect: dict) -> ComponentScore:
         "flip_tests_present": checks.check_signal_vs_noise(out) is None,
         "sought_disconfirmation": checks.check_disconfirming(out) is None,
     }
-    if (decisive := expect.get("decisive_fact")):
+    if decisive := expect.get("decisive_fact"):
         assertions["found_decisive_fact"] = decisive.lower() in joined_real
-    if (irrelevant := expect.get("irrelevant_fact")):
+    if irrelevant := expect.get("irrelevant_fact"):
         assertions["discarded_irrelevant_fact"] = irrelevant.lower() in joined_noise
 
     return _score(
@@ -158,10 +164,10 @@ def score_synthesize(out: Any, expect: dict) -> ComponentScore:
     tolerance = expect.get("tolerance", 0.10)
     assertions = {"in_unit_interval": 0.0 <= out.probability <= 1.0}
     if (target := expect.get("expected_probability")) is not None:
-        assertions["probability_near_expected"] = abs(out.probability - target) <= tolerance
-    return _score(
-        expect.get("id", ""), assertions, detail=f"p={out.probability:.3f}"
-    )
+        assertions["probability_near_expected"] = (
+            abs(out.probability - target) <= tolerance
+        )
+    return _score(expect.get("id", ""), assertions, detail=f"p={out.probability:.3f}")
 
 
 def score_critic(out: Any, expect: dict) -> ComponentScore:
@@ -175,7 +181,7 @@ def score_critic(out: Any, expect: dict) -> ComponentScore:
     if label is False:
         assertions["named_an_ambiguity"] = bool(out.ambiguities or out.missing)
         assertions["suggested_a_fix"] = bool(out.suggested_criteria.strip())
-        if (phrase := expect.get("known_ambiguity")):
+        if phrase := expect.get("known_ambiguity"):
             found = " ".join(out.ambiguities + out.missing).lower()
             assertions["found_the_known_ambiguity"] = phrase.lower() in found
     return _score(
@@ -200,18 +206,18 @@ def score_resolution(out: Any, expect: dict) -> ComponentScore:
 
     assertions = {"classification_correct": correct}
     if out.appears_resolved:
-        assertions["cited_evidence"] = bool(
-            (out.resolution_evidence or "").strip()
-        )
+        assertions["cited_evidence"] = bool((out.resolution_evidence or "").strip())
     if false_positive:
         assertions["no_false_positive"] = False
 
     return _score(
         expect.get("id", ""),
         assertions,
-        detail="FALSE POSITIVE — would have closed a live forecast"
-        if false_positive
-        else f"appears_resolved={out.appears_resolved}",
+        detail=(
+            "FALSE POSITIVE — would have closed a live forecast"
+            if false_positive
+            else f"appears_resolved={out.appears_resolved}"
+        ),
     )
 
 
@@ -251,9 +257,7 @@ def score_postmortem(out: Any, expect: dict) -> ComponentScore:
         assertions["attributed_to_noise"] = bool(out.outcome_noise)
     if label == "flawed_process":
         assertions["named_a_process_error"] = bool(out.process_errors)
-    return _score(
-        expect.get("id", ""), assertions, detail=f"verdict={out.verdict}"
-    )
+    return _score(expect.get("id", ""), assertions, detail=f"verdict={out.verdict}")
 
 
 SCORERS: dict[str, Callable[[Any, dict], ComponentScore]] = {
@@ -314,7 +318,9 @@ async def _dispatch(case: ComponentCase, deps: ForecastDeps) -> Any:
             deps=deps,
         )
     if case.agent == "resolution":
-        return await run_resolution_check(ForecastRecord.model_validate(data["record"]), deps)
+        return await run_resolution_check(
+            ForecastRecord.model_validate(data["record"]), deps
+        )
     if case.agent == "update":
         return await run_update(ForecastRecord.model_validate(data["record"]), deps)
     if case.agent == "postmortem":
@@ -355,7 +361,9 @@ async def run_component(
 ) -> ComponentReport:
     """Run every case for one agent."""
     if agent not in SCORERS:
-        raise ValueError(f"unknown agent {agent!r}; expected one of {', '.join(AGENTS)}")
+        raise ValueError(
+            f"unknown agent {agent!r}; expected one of {', '.join(AGENTS)}"
+        )
 
     cases = load_cases(agent, cases_dir=cases_dir)
     scores = [await run_case(c, mode=mode) for c in cases]

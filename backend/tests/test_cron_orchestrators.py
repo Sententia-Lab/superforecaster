@@ -32,7 +32,12 @@ def _make_forecast(probability: float = 0.5) -> Forecast:
         probability=probability,
         confidence="medium",
         decompositions=[
-            SubPrediction(question=f"Sub {i}?", probability=0.5, rationale="r", confidence="medium")
+            SubPrediction(
+                question=f"Sub {i}?",
+                probability=0.5,
+                rationale="r",
+                confidence="medium",
+            )
             for i in range(3)
         ],
         research=ResearchSummary(
@@ -56,9 +61,24 @@ def _future(days: int = 30) -> datetime:
 
 
 def test_digest_promotes_top_pending_questions_to_approved():
-    q1 = db.submit_question(text="Q1", resolution_criteria="X.", proposed_resolution_date=_future(), ip_hash="ip1")
-    q2 = db.submit_question(text="Q2", resolution_criteria="X.", proposed_resolution_date=_future(), ip_hash="ip2")
-    q3 = db.submit_question(text="Q3", resolution_criteria="X.", proposed_resolution_date=_future(), ip_hash="ip3")
+    q1 = db.submit_question(
+        text="Q1",
+        resolution_criteria="X.",
+        proposed_resolution_date=_future(),
+        ip_hash="ip1",
+    )
+    q2 = db.submit_question(
+        text="Q2",
+        resolution_criteria="X.",
+        proposed_resolution_date=_future(),
+        ip_hash="ip2",
+    )
+    q3 = db.submit_question(
+        text="Q3",
+        resolution_criteria="X.",
+        proposed_resolution_date=_future(),
+        ip_hash="ip3",
+    )
 
     db.cast_vote(q1.id, ip_hash="v1", vote=1)
     db.cast_vote(q1.id, ip_hash="v2", vote=1)
@@ -78,7 +98,12 @@ def test_digest_promotes_top_pending_questions_to_approved():
 
 
 def test_digest_skips_already_approved_questions():
-    q1 = db.submit_question(text="Q1", resolution_criteria="X.", proposed_resolution_date=_future(), ip_hash="ip1")
+    q1 = db.submit_question(
+        text="Q1",
+        resolution_criteria="X.",
+        proposed_resolution_date=_future(),
+        ip_hash="ip1",
+    )
     db.approve_question(q1.id)
     db.cast_vote(q1.id, ip_hash="v1", vote=1)
 
@@ -87,7 +112,12 @@ def test_digest_skips_already_approved_questions():
 
 
 def test_preview_digest_does_not_mutate():
-    q1 = db.submit_question(text="Q1", resolution_criteria="X.", proposed_resolution_date=_future(), ip_hash="ip1")
+    q1 = db.submit_question(
+        text="Q1",
+        resolution_criteria="X.",
+        proposed_resolution_date=_future(),
+        ip_hash="ip1",
+    )
     db.cast_vote(q1.id, ip_hash="v1", vote=1)
 
     preview = cron.preview_monthly_digest(n=5)
@@ -110,12 +140,17 @@ def test_preview_digest_does_not_mutate():
 @pytest.mark.asyncio
 async def test_run_daily_refresh_counts_each_outcome_kind():
     """Flagged, updated, and no-change forecasts land in the right counters."""
-    ids = [db.save_forecast(_make_forecast(probability=0.5), resolution_source="x") for _ in range(3)]
+    ids = [
+        db.save_forecast(_make_forecast(probability=0.5), resolution_source="x")
+        for _ in range(3)
+    ]
     flagged_id, updated_id, quiet_id = ids
 
     async def fake_update_graph(fid, *, verbose=False):
         if fid == flagged_id:
-            return UpdateOutcome(flagged_resolved=True, updated=False, reason="resolved")
+            return UpdateOutcome(
+                flagged_resolved=True, updated=False, reason="resolved"
+            )
         if fid == updated_id:
             return UpdateOutcome(updated=True, new_probability=0.62, reason="moved")
         return UpdateOutcome(updated=False, reason="no change")

@@ -132,7 +132,11 @@ def _drop_leaked(
     """
     if as_of is None:
         refs = [
-            SourceRef(url=r.get("url", ""), published_date=_parse_published(r.get("published_date")), tool="search_web")
+            SourceRef(
+                url=r.get("url", ""),
+                published_date=_parse_published(r.get("published_date")),
+                tool="search_web",
+            )
             for r in results
         ]
         return results, refs
@@ -265,7 +269,9 @@ async def search_wikipedia(ctx: RunContext[ForecastDeps], topic: str) -> str:
         if revision_date is not None
         else ""
     )
-    return f"Wikipedia: {top_title}{stamp}\n\n{text[:1500]}\n\nRelated articles: {related}"
+    return (
+        f"Wikipedia: {top_title}{stamp}\n\n{text[:1500]}\n\nRelated articles: {related}"
+    )
 
 
 def _extract_page_text(
@@ -288,9 +294,7 @@ def _extract_page_text(
     return content, _parse_published(revision.get("timestamp"))
 
 
-async def find_disconfirming_evidence(
-    ctx: RunContext[ForecastDeps], claim: str
-) -> str:
+async def find_disconfirming_evidence(ctx: RunContext[ForecastDeps], claim: str) -> str:
     """Search specifically for evidence AGAINST a claim.
 
     Use this before settling on a probability, not after. Ordinary search tends to

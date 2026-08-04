@@ -165,13 +165,17 @@ async def test_clean_forecast_ends_without_retrying(stub_agents):
     assert state.violations == []
 
 
-async def test_violation_routes_back_to_synthesize_exactly_once(monkeypatch, stub_agents):
+async def test_violation_routes_back_to_synthesize_exactly_once(
+    monkeypatch, stub_agents
+):
     """A blocking violation buys one more attempt — not an unbounded loop."""
     monkeypatch.setattr(
         fg.checks,
         "run_forecast_checks",
         lambda *a, **k: [
-            CheckViolation(principle=6, name="derivation", detail="injected", blocking=True)
+            CheckViolation(
+                principle=6, name="derivation", detail="injected", blocking=True
+            )
         ],
     )
     state = ForecastState(input=forecast_input())
@@ -188,7 +192,9 @@ async def test_retry_does_not_redo_the_research(monkeypatch, stub_agents):
         fg.checks,
         "run_forecast_checks",
         lambda *a, **k: [
-            CheckViolation(principle=6, name="derivation", detail="injected", blocking=True)
+            CheckViolation(
+                principle=6, name="derivation", detail="injected", blocking=True
+            )
         ],
     )
     await visited_nodes(ForecastState(input=forecast_input()), ForecastDeps())
@@ -203,7 +209,9 @@ async def test_retry_tells_the_agent_what_failed(monkeypatch, stub_agents):
         fg.checks,
         "run_forecast_checks",
         lambda *a, **k: [
-            CheckViolation(principle=6, name="derivation", detail="injected", blocking=True)
+            CheckViolation(
+                principle=6, name="derivation", detail="injected", blocking=True
+            )
         ],
     )
     await visited_nodes(ForecastState(input=forecast_input()), ForecastDeps())
@@ -218,7 +226,9 @@ async def test_ends_after_two_attempts_even_if_still_failing(monkeypatch, stub_a
         fg.checks,
         "run_forecast_checks",
         lambda *a, **k: [
-            CheckViolation(principle=6, name="derivation", detail="injected", blocking=True)
+            CheckViolation(
+                principle=6, name="derivation", detail="injected", blocking=True
+            )
         ],
     )
     state = ForecastState(input=forecast_input())
@@ -244,13 +254,17 @@ async def test_non_blocking_violation_does_not_retry(monkeypatch, stub_agents):
 # ---------- entry point ----------
 
 
-async def test_run_forecast_graph_returns_surviving_violations(monkeypatch, stub_agents):
+async def test_run_forecast_graph_returns_surviving_violations(
+    monkeypatch, stub_agents
+):
     """A forecast that never satisfied its own methodology must not look clean."""
     monkeypatch.setattr(
         fg.checks,
         "run_forecast_checks",
         lambda *a, **k: [
-            CheckViolation(principle=6, name="derivation", detail="injected", blocking=True)
+            CheckViolation(
+                principle=6, name="derivation", detail="injected", blocking=True
+            )
         ],
     )
     forecast, violations = await fg.run_forecast_graph(forecast_input())

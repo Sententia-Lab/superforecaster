@@ -62,4 +62,7 @@ def test_likely_resolved_fixture_builds_a_record(likely_resolved_data):
     assert record.id == "fixture-forecast-002"
     assert "Musk" in record.question or "DOGE" in record.question
     # Resolution criteria are specific enough to test against
-    assert "DOGE" in record.resolution_criteria or "leadership" in record.resolution_criteria
+    assert (
+        "DOGE" in record.resolution_criteria
+        or "leadership" in record.resolution_criteria
+    )

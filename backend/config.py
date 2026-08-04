@@ -29,7 +29,7 @@ class Settings:
     agent_model: str | None
     database_path: str
     refresh_cron_schedule: str
-    digest_cron_schedule: str 
+    digest_cron_schedule: str
     min_probability_delta: float
     search_lookback_hours: int
     agent_request_limit: int | None
@@ -45,7 +45,9 @@ class CheckThresholds:
     """
 
     reference_class_disagreement: float  # P7  — spread that demands an explanation
-    reference_class_agreement: float  # P16 — spread under which classes count as agreeing
+    reference_class_agreement: (
+        float  # P16 — spread under which classes count as agreeing
+    )
     calibration_floor: float  # P16 — lowest unearned probability
     calibration_ceiling: float  # P16 — highest unearned probability
     large_move: float  # P12 — jump that triggers VerifyLargeMove
@@ -54,7 +56,11 @@ class CheckThresholds:
     min_probability_delta: float  # P10 — below this an update is noise
 
 
-def _parse_optional_int(raw: str | None, *, unlimited_values: frozenset[str] = frozenset({"none", "unlimited"})) -> int | None:
+def _parse_optional_int(
+    raw: str | None,
+    *,
+    unlimited_values: frozenset[str] = frozenset({"none", "unlimited"}),
+) -> int | None:
     if raw is None:
         return None
     if raw.lower() in unlimited_values:
@@ -63,8 +69,12 @@ def _parse_optional_int(raw: str | None, *, unlimited_values: frozenset[str] = f
 
 
 def get_settings() -> Settings:
-    request_limit = _parse_optional_int(os.getenv("AGENT_REQUEST_LIMIT", str(DEFAULT_AGENT_REQUEST_LIMIT)))
-    tool_calls_limit = _parse_optional_int(os.getenv("AGENT_TOOL_CALLS_LIMIT", str(DEFAULT_AGENT_TOOL_CALLS_LIMIT)))
+    request_limit = _parse_optional_int(
+        os.getenv("AGENT_REQUEST_LIMIT", str(DEFAULT_AGENT_REQUEST_LIMIT))
+    )
+    tool_calls_limit = _parse_optional_int(
+        os.getenv("AGENT_TOOL_CALLS_LIMIT", str(DEFAULT_AGENT_TOOL_CALLS_LIMIT))
+    )
 
     return Settings(
         admin_api_key=os.getenv("ADMIN_API_KEY"),
@@ -128,6 +138,7 @@ def get_research_limits(max_iterations: int) -> UsageLimits:
 def get_synthesis_limits() -> UsageLimits:
     """Single-shot structured output — no tools, small retry budget."""
     return UsageLimits(request_limit=4, tool_calls_limit=0)
+
 
 def _validate_gateway_api_key(gateway_key: str) -> None:
     if gateway_key.startswith("paig_"):

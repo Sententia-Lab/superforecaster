@@ -113,9 +113,7 @@ def check_dragonfly(
     th = _thresholds(t)
     spread = _spread(o)
     if spread > th.reference_class_disagreement and not o.disagreement.strip():
-        rates = ", ".join(
-            f"{rc.name}={rc.base_rate:.2f}" for rc in o.reference_classes
-        )
+        rates = ", ".join(f"{rc.name}={rc.base_rate:.2f}" for rc in o.reference_classes)
         return CheckViolation(
             principle=7,
             name="dragonfly",

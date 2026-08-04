@@ -87,7 +87,11 @@ def configure_logfire(*, verbose: bool = False) -> None:
         "service_name": "superforecaster",
         "scrubbing": False,
         "send_to_logfire": tracing,
-        "console": logfire.ConsoleOptions(min_log_level="info") if (verbose or not tracing) else False,
+        "console": (
+            logfire.ConsoleOptions(min_log_level="info")
+            if (verbose or not tracing)
+            else False
+        ),
     }
     if tracing:
         kwargs["token"] = token
@@ -102,7 +106,11 @@ def configure_logfire(*, verbose: bool = False) -> None:
 
 
 def _preview(value: Any, limit: int | None = 240) -> str:
-    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    text = (
+        value
+        if isinstance(value, str)
+        else json.dumps(value, ensure_ascii=False, default=str)
+    )
     if limit is None:
         return text
     text = text.replace("\n", " ")
@@ -148,7 +156,11 @@ def _make_event_handler(*, verbose: bool):
                     _tags=["agent-progress", "tool-result"],
                 )
                 if show:
-                    print(f"[agent] tool result: {_preview(content, limit)}", file=sys.stderr, flush=True)
+                    print(
+                        f"[agent] tool result: {_preview(content, limit)}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
             elif isinstance(event, PartEndEvent):
                 part = event.part
                 if isinstance(part, TextPart) and part.content:
@@ -209,7 +221,11 @@ async def run_agent(
             file=sys.stderr,
             flush=True,
         )
-        print(f"[agent] prompt: {_preview(prompt, None if full else 500)}", file=sys.stderr, flush=True)
+        print(
+            f"[agent] prompt: {_preview(prompt, None if full else 500)}",
+            file=sys.stderr,
+            flush=True,
+        )
     if logging_active:
         logfire.info(
             "starting {run_name}",
@@ -225,7 +241,9 @@ async def run_agent(
             prompt,
             deps=deps,
             usage_limits=limits,
-            event_stream_handler=_make_event_handler(verbose=verbose) if trace_events else None,
+            event_stream_handler=(
+                _make_event_handler(verbose=verbose) if trace_events else None
+            ),
         )
 
     if show or logging_active:
@@ -245,6 +263,10 @@ async def run_agent(
                 file=sys.stderr,
                 flush=True,
             )
-            print(f"[agent] result: {_preview(result.output, None if full else 500)}", file=sys.stderr, flush=True)
+            print(
+                f"[agent] result: {_preview(result.output, None if full else 500)}",
+                file=sys.stderr,
+                flush=True,
+            )
 
     return result

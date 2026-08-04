@@ -39,7 +39,6 @@ question_set = {
             "estimated_prior": 0.15,
             "contamination_risk": 2,
         },
-
         # 🏢 Business & Corporate (6 questions)
         {
             "question": "Will Disney+ surpass Netflix in total global subscribers by end of 2022?",
@@ -204,7 +203,6 @@ question_set = {
             "estimated_prior": 0.45,
             "contamination_risk": 3,
         },
-
         # 💰 Economics & Finance (10 questions)
         {
             "question": "Will US CPI inflation exceed 8% year-over-year in any month of 2022?",
@@ -296,7 +294,6 @@ question_set = {
             "estimated_prior": 0.72,
             "contamination_risk": 1,
         },
-
         # 🤖 Technology & AI (10 questions)
         {
             "question": "Will OpenAI release GPT-4 publicly before July 2023?",
@@ -308,7 +305,7 @@ question_set = {
             "contamination_risk": 3,
         },
         {
-            "question": "Will Twitter change its name or brand to something other than \"Twitter\" in 2023?",
+            "question": 'Will Twitter change its name or brand to something other than "Twitter" in 2023?',
             "resolution_criteria": "Twitter Inc. rebrands or renames its core platform",
             "date_created": datetime.date(2023, 6, 1),
             "resolution_date": datetime.date(2023, 7, 23),
@@ -388,7 +385,6 @@ question_set = {
             "estimated_prior": 0.72,
             "contamination_risk": 3,
         },
-
         # 🏥 Health & Medicine (8 questions)
         {
             "question": "Will a COVID-19 vaccine demonstrate ≥90% efficacy in Phase 3 trials by end of 2020?",
@@ -462,7 +458,6 @@ question_set = {
             "estimated_prior": 0.30,
             "contamination_risk": 2,
         },
-
         # ⚡ Energy & Climate (6 questions)
         {
             "question": "Will Brent crude oil exceed $100/barrel at any point in 2022?",
@@ -518,7 +513,6 @@ question_set = {
             "estimated_prior": 0.25,
             "contamination_risk": 2,
         },
-
         # 🚀 Space & Science (6 questions)
         {
             "question": "Will the James Webb Space Telescope launch before end of 2021?",
@@ -549,7 +543,7 @@ question_set = {
         },
         {
             "question": "Will SpaceX successfully catch the Starship booster (Super Heavy) with the launch tower arms in 2024?",
-            "resolution_criteria": "\"Mechazilla\" chopstick arms catch the booster on a flight test",
+            "resolution_criteria": '"Mechazilla" chopstick arms catch the booster on a flight test',
             "date_created": datetime.date(2024, 6, 1),
             "resolution_date": datetime.date(2024, 10, 13),
             "outcome": 1.0,
@@ -574,7 +568,6 @@ question_set = {
             "estimated_prior": 0.72,
             "contamination_risk": 1,
         },
-
         # ⚽ Sports (4 questions)
         {
             "question": "Will Argentina win the 2022 FIFA World Cup?",
