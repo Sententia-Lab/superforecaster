@@ -8,12 +8,15 @@ from config import get_settings
 
 from superforecaster import db
 from superforecaster.agents.critic import run_critique
+from superforecaster.agents.draft import run_draft
 from superforecaster.graphs import run_forecast_graph
 from superforecaster.models import (
     ApproveQuestionRequest,
     CreateQuestionRequest,
     CriteriaCritique,
     CritiqueQuestionRequest,
+    DraftQuestionRequest,
+    DraftResponse,
     EditQuestionRequest,
     ForecastInput,
     QuestionRecord,
@@ -40,6 +43,24 @@ async def critique_question(body: CritiqueQuestionRequest) -> CriteriaCritique:
         resolution_criteria=body.resolution_criteria,
         resolution_date=body.resolution_date,
     )
+
+
+@router.post("/draft")
+async def draft_question(body: DraftQuestionRequest) -> DraftResponse:
+    """Parse freeform text into a question, then critique its resolvability.
+
+    Two sequential agent calls. Deliberately not streamed: it is the cheapest step in
+    the system, and a spinner is a truthful UI for something that takes seconds. If it
+    ever becomes the slowest thing a user waits on, it gets the same treatment /runs
+    has.
+    """
+    parsed = await run_draft(body.text)
+    critique = await run_critique(
+        question=parsed.question,
+        resolution_criteria=parsed.resolution_criteria,
+        resolution_date=parsed.resolution_date,
+    )
+    return DraftResponse(parsed=parsed, critique=critique)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)

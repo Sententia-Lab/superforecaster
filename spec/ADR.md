@@ -22,7 +22,7 @@ Sources: `spec/implemented/SPEC_04_26_2026.md` (v3), `spec/implemented/spec3.md`
 | [1](#adr-1--pydantic-ai-as-the-agent-framework) | Pydantic AI as the agent framework | Accepted |
 | [2](#adr-2--sqlite-for-persistence) | SQLite for persistence | Accepted |
 | [3](#adr-3--fastapi-for-the-rest-layer) | FastAPI for the REST layer | Accepted |
-| [4](#adr-4--nextjs--mui-for-the-frontend) | Next.js + MUI for the frontend | Accepted |
+| [4](#adr-4--nextjs--mui-for-the-frontend) | Next.js + MUI for the frontend | **Superseded by 24** |
 | [5](#adr-5--api-key-auth-for-admin-actions) | API key auth for admin actions | Accepted |
 | [6](#adr-6--open-submission-tracked-by-hashed-ip) | Open submission, tracked by hashed IP | Accepted |
 | [7](#adr-7--time-weighted-brier-scoring) | Time-weighted Brier scoring | Accepted |
@@ -42,6 +42,11 @@ Sources: `spec/implemented/SPEC_04_26_2026.md` (v3), `spec/implemented/spec3.md`
 | [21](#adr-21--the-end-to-end-backtest-is-deferred) | The end-to-end backtest is deferred | Accepted |
 | [22](#adr-22--flat-modules-except-agents-graphs-evals) | Flat modules, except agents / graphs / evals | Accepted |
 | [23](#adr-23--spec-lifecycle-planned--implemented) | Spec lifecycle: planned → implemented | Accepted |
+| [24](#adr-24--a-zero-build-static-frontend) | A zero-build static frontend | Accepted |
+| [25](#adr-25--sse-for-live-runs-not-websockets) | SSE for live runs, not WebSockets | Accepted |
+| [26](#adr-26--runs-are-memory-resident-the-trail-is-kept-client-side) | Runs are memory-resident; the trail is kept client-side | Accepted |
+| [27](#adr-27--the-ui-projects-typed-state-it-never-asks-for-narration) | The UI projects typed state; it never asks for narration | Accepted |
+| [28](#adr-28--a-failed-run-resumes-from-its-last-completed-node) | A failed run resumes from its last completed node | Accepted |
 
 ---
 
@@ -83,21 +88,24 @@ migrate to Postgres later without changing application logic.
 matters for a public project. Pydantic models are shared between the agent and API responses,
 so there is one definition of a `Forecast`.
 
-**Known cost.** `POST /forecasts` runs a full graph synchronously inside the request. The HTTP
-response blocks for the entire run. Accepted for now; an async job layer is not built.
+**Known cost, largely retired (spec3.1).** `POST /forecasts` still runs a full graph
+synchronously inside the request and is kept that way for API clients that want one call and
+one answer. `POST /runs` is the async path: it schedules the graph as a background task and
+returns 202 in milliseconds, with progress delivered over SSE. See ADR 25 and ADR 26.
 
 ---
 
 ## ADR 4 — Next.js + MUI for the frontend
 
-**Status:** Accepted (v3)
+**Status:** **Superseded by ADR 24** (v3 → spec3.1)
 
-**Decision.** Next.js App Router on Vercel, MUI v6, TypeScript throughout. No Tailwind.
+**Decision was.** Next.js App Router on Vercel, MUI v6, TypeScript throughout. No Tailwind.
 
-**Rationale.** SSR matters because public forecast pages should be indexable. MUI gives a
+**Rationale was.** SSR matters because public forecast pages should be indexable. MUI gives a
 consistent component set without building a design system.
 
-**Rules out.** Tailwind — mixing utility classes with MUI creates specificity conflicts.
+**Why it was replaced.** The second half of that rationale expired the moment a design system
+arrived. See ADR 24.
 
 ---
 
@@ -150,8 +158,12 @@ dominates the time-weighted average. The flag is informational.
 
 **Status:** Accepted (v3)
 
-**Decision.** `docker compose up` runs the full stack. Two services, `api` and `frontend`.
-SQLite in a named volume, no database container.
+**Decision.** `docker compose up` runs the full stack. SQLite in a named volume, no database
+container.
+
+**Amended (spec3.1).** One service, not two. The frontend became static files with no build
+step (ADR 24), so it is bind-mounted into the `api` container and served by FastAPI rather than
+built into an image of its own. The `api` service pins `--workers 1` — see ADR 25.
 
 ---
 
@@ -466,3 +478,203 @@ never stopped being true, describing work that had shipped.
 **Consequence.** `SPEC_IN_PROGRESS.md` was deleted; `spec3.md` covers the same work and is the
 version that matches the code. `TECHNICAL_DIRECTION.md` was deleted and its content became
 this file.
+
+---
+
+## ADR 24 — A zero-build static frontend
+
+**Status:** Accepted (spec3.1)
+
+**Decision.** `frontend/` is five static files — `index.html`, `app.js`, `api.js`,
+`admin.html`, `admin.css`. No `package.json`, no `node_modules`, no build step. FastAPI serves
+them at `/` via `StaticFiles`, so there is one deployable instead of two.
+
+**Supersedes.** ADR 4.
+
+**Rationale.** The design that arrived (`Superforecaster.dc.html`) ships its own token system —
+`--pv-*` variables, a light/dark toggle, a bespoke stream timeline. Layering that over MUI
+means fighting emotion's specificity for every one of the fourteen event renderers, and ADR 4's
+own rule was "no competing style system." The rationale that bought MUI — a consistent
+component set without building a design system — is void once a design system exists.
+
+Vanilla rather than React because the app is one page whose deepest tree is three levels. A
+CDN React would add a network dependency and an import map to buy a diffing algorithm that a
+full re-render at this size does not need.
+
+**What is lost, explicitly.** Server-side rendering, and with it the indexability of public
+forecast pages — ADR 4's other justification. Forecast pages are now client-rendered. If
+indexability matters later, the fix is prerendering the `/forecasts/{id}` read view, not
+reinstating Next.js for the streaming view.
+
+**Consequence.** `docker-compose.yml` lost its `frontend` service; the `api` service
+bind-mounts `./frontend` and sets `FRONTEND_DIR`. The six Next.js routes and eight components
+were deleted; the four admin tabs were ported to `admin.html` as function rather than restyled
+as product, because the new design does not cover them.
+
+---
+
+## ADR 25 — SSE for live runs, not WebSockets
+
+**Status:** Accepted (spec3.1)
+
+**Decision.** `GET /runs/{id}/stream` is `text/event-stream`, hand-rolled over a
+`StreamingResponse`. No `sse-starlette`, no WebSocket.
+
+**Rationale.** The data is one-directional — the only client-to-server message is "cancel",
+which is a `DELETE`. SSE gets automatic reconnection with `Last-Event-ID` for free, survives
+ordinary HTTP proxies, and needs no new dependency.
+
+Every event carries a monotonic `seq` which is also the SSE `id:`, so a dropped connection
+resumes at exactly the right frame. A fresh page load uses `?from_seq=` for the same thing. A
+client cannot end up with a timeline that is missing its middle without being told: `replay()`
+prepends a `truncated` event when the requested point has already been evicted from the ring
+buffer.
+
+**Rules out.** WebSockets, and long-polling. Also `X-Accel-Buffering: no` is set, because an
+nginx in front will otherwise buffer the whole stream into one response and turn a live view
+into a very slow page load.
+
+**Known limit.** The registry is in-process, so this is `--workers 1`. Two workers would each
+hold half the runs and a stream opened on the wrong one would replay nothing. Scaling out
+means a shared bus behind `Run.emit` / `Run.subscribe`, which is why those are the seam.
+
+---
+
+## ADR 26 — Runs are memory-resident; the trail is kept client-side
+
+**Status:** Accepted (spec3.1, amended)
+
+**Decision.** A `Run` lives in an in-process registry with a ring buffer of its events. The
+`runs` DB table stores only identity and terminal state — **no event rows on the server**. The
+completed `Forecast` persists through the existing `save_forecast`. The reasoning trail is
+persisted by the **browser**, one localStorage key per run, capped at `MAX_TRAILS` (12) with
+oldest-first eviction.
+
+**Amended (2026-08-04).** The original decision was that the trail was not persisted anywhere,
+following the design's own line: *"The reasoning trail is not kept locally. Re-run this
+question to watch it again."* That was wrong in practice — re-running costs five agent
+invocations and a search budget to see something the user already watched once, and the run is
+not reproducible anyway because the search results move. Reversed on request.
+
+**Why client-side rather than a server events table.** The trail is a viewing artifact, not a
+record: nothing downstream reads it, no score depends on it, and it is per-person. A server
+table would need a schema, a retention policy, and a migration, to store something the browser
+that watched it can hold for free. A run's trail measures ~20KB, so the 12-trail cap sits well
+inside a 5MB origin budget.
+
+**How a trail is recovered**, in order: this browser's localStorage; then
+`GET /runs/{id}` while the run is still in the server's ring buffer (which also covers runs
+started in another tab), and that snapshot is then written locally; then an honest "no stored
+trail for this run."
+
+**Consequence.** A restart still loses every *in-flight* run — the trail is only written when
+the run ends. That is recorded rather than hidden: `init_db` flips orphaned `queued`/`running`
+rows to `lost`, and the UI says the server restarted instead of spinning on a stream that will
+never produce another frame. Clearing site data still loses finished trails, which is the
+price of not owning a server-side table.
+
+**Related.** `_finalize_if_orphaned` is a task done-callback covering the same failure one
+level down — a task cancelled before the event loop gives it a slice never enters `execute`,
+so its `finally` never runs and nothing would ever close the stream.
+
+---
+
+## ADR 27 — The UI projects typed state; it never asks for narration
+
+**Status:** Accepted (spec3.1)
+
+**Decision.** Every event the stream emits is derived from a field an agent already returns, or
+from an existing `pydantic_ai` stream event. No prompt was changed to make the UI possible, and
+no agent knows a UI exists.
+
+| Event | Source |
+|---|---|
+| `sub` `note` | `Decomposition.sub_claims`, `.chain_note` |
+| `ref` `analog` `note` | `OutsideView.reference_classes`, `.analogs`, `.disagreement` |
+| `adj` `bias` `note` | `InsideView.adjustments`, `.bias_checks`, `.steel_man` |
+| `draft` | `Forecast.probability`, `.confidence` |
+| `check` `route` | `checks.run_forecast_checks_detailed` |
+| `query` `source` | `FunctionToolCallEvent`, diffed `deps.sources_seen` |
+| `thought` | `PartDeltaEvent` content deltas |
+
+**Rationale.** The alternative — asking a model to narrate its own progress — produces a second
+account that can disagree with the first. What the UI shows is then a story about the forecast
+rather than the forecast. Projection makes divergence impossible: `build_waterfall` calls the
+same `checks.signed_adjustment` that `check_derivation` uses, so the chart and the check cannot
+tell different stories about what the evidence implies.
+
+Two mechanisms carry it, both already present. `forecast_graph.iter()` yields nodes so state can
+be read after each one. `ForecastDeps.emit` reaches the agents' own event stream handler through
+`ctx.deps` — `run_agent` already forwards `deps` into `agent.run`, so no `run_<agent>` signature
+changed.
+
+**Extended (2026-08-04) — a verdict you can argue with.** Two additions, both projections of
+data that already existed:
+
+- **`check.evidence`** carries the material each check reasoned over, pass or fail: the
+  anchor-plus-adjustments walk for P6, the class rates and spread against the threshold for P7,
+  the five bias slots and which were filled for P15. Built by `checks.check_evidence`, a pure
+  function beside the validators rather than inside them — they answer pass or fail, and this
+  answers "on what basis". A violation's `detail` states a conclusion; this is what you check
+  that conclusion against.
+- **`brief`** is emitted when Synthesize starts a second attempt, carrying the *literal* text
+  the retry prompt contains, built from the same `_violation_block` and `_arithmetic_block`
+  that `run_synthesize` uses. A retry that looks like a re-roll from outside is one nobody can
+  audit; showing the correction verbatim is what makes the two attempts distinguishable. The
+  formatters are now shared rather than duplicated, so the displayed text cannot drift from the
+  sent text.
+
+**Honest limits, carried in the UI rather than papered over.** `thought` events only appear when
+the model emits thinking or text before its structured output, so a stage can legitimately show
+tool calls and no narration. `source.credibility` is `null` because nothing scores a domain.
+`check` events carry `detail` only on failure, because the seven validators return
+`CheckViolation | None` and a pass has no message — the UI shows the check name alone rather
+than inventing one, and `evidence` now fills that gap with numbers instead of prose.
+
+
+---
+
+## ADR 28 — A failed run resumes from its last completed node
+
+**Status:** Accepted (2026-08-04)
+
+**Decision.** Every run is checkpointed with `pydantic_graph`'s `FileStatePersistence`,
+one JSON file per run under `RUN_CHECKPOINT_DIR`. On failure the checkpoint is kept and
+`POST /runs/{id}/resume` re-runs **only the node that died**. On success it is deleted.
+
+**Rationale.** A forecast run is five agent invocations with a live search budget, and the
+failure that prompted this — `UsageLimitExceeded` on the inside view — happens *after* the
+decomposition and the base rates have already been paid for. Throwing that away and starting
+over is the expensive kind of failure, and it is the common one: a usage limit fires mid-node,
+not at the start.
+
+A graph node is exactly one agent call, so pydantic-graph's own snapshot granularity is the
+granularity that matters. No new persistence machinery was needed — only the recovery step
+below.
+
+**The wrinkle this exists to handle.** `FileStatePersistence` marks a snapshot `'error'` when
+its node raises, and `load_next` returns only snapshots with status `'created'`. A failed run
+is therefore *not* resumable as shipped: `iter_from_persistence` finds nothing and raises.
+`checkpoints.rewind_for_resume` flips the stalled snapshot back to `'created'` — that one
+function is the whole difference between a checkpoint and a post-mortem. It also catches
+`'pending'` and `'running'`, which is what a process death leaves behind: no exception, but
+equally unfinished.
+
+**Resume raises the budget by default.** The usual reason to be here is that the old budget
+ran out, so resuming with the same one walks into the same wall. `ResumeRunRequest.max_iterations`
+overrides it, the error event carries a `hint` saying so, and the UI prefills double the
+previous depth.
+
+**The event stream continues rather than restarting.** `seq` keeps counting across the resume,
+so a client reconnecting with `?from_seq=` sees more of the same run instead of a second run
+that happens to share an id. A `resume` event marks the seam and names the node being re-run.
+
+**Rules out.** Auto-retry on failure. A run that failed for a reason resuming will not fix
+would loop, and the failure is usually a budget or a provider problem that wants a human
+decision. Resume is a button.
+
+**Related.** The per-iteration research budget became configuration in the same change
+(`RESEARCH_TOOL_CALLS_PER_ITERATION`, `RESEARCH_REQUESTS_PER_ITERATION`, both defaulting to 3
+where the literal was 2). At the old rate the default `max_iterations=5` capped a researching
+agent at ten tool calls, which a normal run reaches — per ADR 14, a number that tight has no
+business being a literal.

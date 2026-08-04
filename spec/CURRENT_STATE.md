@@ -15,6 +15,8 @@ flowchart TD
     CLI[CLI<br/>__main__.py] --> FG
     API[FastAPI<br/>api/] --> FG
     CRON[cron.py<br/>daily] --> UG
+    UI[frontend/<br/>static, no build] -->|SSE| RUNS
+    RUNS[runs.py<br/>registry + event buffer] --> FG
 
     subgraph FG["graphs/forecast.py — ForecastGraph"]
         D[Decompose<br/>P1, P2] --> B[FindBaseRates<br/>P4, P7]
@@ -39,8 +41,10 @@ flowchart TD
     FG -.-> TL[tools.py<br/>date-clamped search]
     UG -.-> TL
     FG -.-> MG[model_garden.py<br/>training-cutoff clamp]
+    FG -.->|hooks + deps.emit| RUNS
     EF --> DB[(db.py<br/>SQLite)]
     EU2 --> DB
+    RUNS --> DB
 ```
 
 Two agents sit outside both graphs: `critic.py` (P3, runs while a question is being drafted)
@@ -61,13 +65,15 @@ backend/
     model_garden.py              # model registry by training cutoff  (clamp 2)
     model_garden.json            # registry data
     db.py                        # SQLite layer + scoring math
+    runs.py                      # live-run registry, event buffer, state -> UI events
+    checkpoints.py               # graph snapshots; resume a failed run mid-graph
     cron.py                      # APScheduler jobs + orchestrators
     observability.py             # Logfire config + run_agent wrapper
     __main__.py                  # CLI
-    agents/                      # one module per methodology step (8)
+    agents/                      # one module per methodology step (9)
       __init__.py                #   with_model, format_question, as_of_note
       decompose.py  outside_view.py  inside_view.py  synthesize.py
-      resolution.py  update.py  critic.py  postmortem.py
+      resolution.py  update.py  critic.py  postmortem.py  draft.py
     graphs/                      # orchestration only
       state.py  forecast.py  update.py
     evals/
@@ -75,11 +81,13 @@ backend/
       components/*.json          #   per-agent golden data — all currently []
     fixtures/                    # JSON inputs for manual CLI runs
   api/
-    main.py  deps.py  forecasts.py  questions.py  calibration.py  admin.py
-  tests/                         # 221 tests, no network required
+    main.py  deps.py  forecasts.py  questions.py  calibration.py  admin.py  runs.py
+  tests/                         # 288 tests, no network required
   test_forecasting_baseline/     # 66 legacy questions; raises on import, never run
 
-frontend/                        # Next.js 15 + MUI v6 (unchanged by recent work)
+frontend/                        # static, zero build — served by FastAPI at /
+  index.html  app.js  api.js     #   the run/stream app; trails cached in localStorage
+  admin.html  admin.css          #   moderation tables over the admin routes
 spec/
   CURRENT_STATE.md               # this file
   ADR.md                         # architecture decisions
@@ -87,6 +95,7 @@ spec/
   implemented/                   # shipped and merged to main
     SPEC_04_26_2026.md           #   v3 — platform, DB, API, frontend, cron
     spec3.md                     #   v4 — agent decomposition + graphs
+    spec3.1.md                   #   streaming + static frontend
   planned/
     spec4.md                     #   end-to-end backtest — needs a corpus
 ```
@@ -223,6 +232,26 @@ ResolutionCheckResult             # output of resolution_agent
   reasoning           str
 ```
 
+### Live runs
+
+```
+RunStatus = Literal["queued","running","done","error","cancelled","lost"]
+
+RunEvent                          # one frame on the SSE wire
+  seq, run_id, type, stage, attempt, ts
+  payload        dict[str, Any]   # untyped on purpose — 14 event models would be 14
+                                  # classes to keep in step with a JS renderer that
+                                  # reads them as JSON. spec3.1 §3.3 is the schema.
+
+RunSummary                        # a run as the home rail shows it
+  id, question, status, stage, stage_index, attempt
+  tool_calls, last_seq, forecast_id, error, created_at, ended_at
+
+RunSnapshot     summary, events   # the no-SSE fallback
+CreateRunRequest  question, resolution_criteria, resolution_date, category,
+                  resolution_source, max_iterations=5
+```
+
 ### Standalone agents
 
 ```
@@ -238,6 +267,12 @@ PostMortem                        # P13 — output of postmortem_agent
   outcome_noise  list[str]        # what was genuinely unknowable
   verdict        Literal["sound_process", "flawed_process", "insufficient_evidence"]
   lesson         str
+
+DraftedQuestion                   # output of draft_agent — extraction only
+  question, resolution_criteria, resolution_date, category
+  resolution_source str = ""      # "" when the text named none; the critic's job to
+                                  # notice, so inventing one here would hide the gap
+DraftResponse   parsed, critique  # what POST /questions/draft returns
 ```
 
 ### Contamination clamps
@@ -380,6 +415,12 @@ ForecastDeps                       # injected into every agent run (plain datacl
   model        str | None      = None   # clamp 2 — a model whose cutoff predates as_of
   verbose      bool            = False
   sources_seen list[SourceRef]  = []    # appended by the tools themselves
+  emit         Callable | None  = None  # live-run event sink; None everywhere but a
+                                        # streamed run. Rides here rather than through
+                                        # run_agent's signature because deps is already
+                                        # forwarded into agent.run, so the event stream
+                                        # handler reaches it via ctx.deps. Must be
+                                        # synchronous — awaiting stalls token delivery.
   .leaked_sources -> list[SourceRef]
       Sources dated after as_of. Always empty in a correct run — non-empty means the
       tool clamp has a bug, not that the forecast is merely suspect.
@@ -453,9 +494,39 @@ is_large_move(d, t=None) -> bool
     P12. |posterior - prior| > t.large_move. A routing signal for GuardUpdate, not a
     violation.
 
+check_evidence(forecast, decomposition, outside, inside, t=None)
+    -> dict[str, dict]
+    The material each check reasoned over, keyed by check name — the anchor-plus-
+    adjustments walk for P6, the class rates and spread against the threshold for P7,
+    the five bias slots and which were filled for P15. Built here rather than inside
+    the seven validators so those stay as they were: they answer pass or fail, and
+    this answers "on what basis". A violation's `detail` states a conclusion; this is
+    what you check that conclusion against.
+
+run_forecast_checks_detailed(forecast, decomposition, outside, inside, t=None)
+    -> list[CheckResult]
+    All seven checks, passes included, in FORECAST_CHECK_LABELS order. Exists because a
+    UI showing the critique must distinguish "ran and passed" from "never ran", which a
+    list of violations cannot. `CheckResult` carries principle, name, label, passed,
+    and the violation (None on a pass).
+
+    Passing results carry no detail — the seven validators only produce a message on
+    failure. The UI renders the check name alone rather than inventing one.
+
 run_forecast_checks(forecast, decomposition, outside, inside, t=None) -> list[CheckViolation]
-    All seven forecast-side checks. Takes the four pieces rather than a ForecastState so
-    this module keeps no dependency on `graphs`, which imports it.
+    All seven forecast-side checks. Now a filter over run_forecast_checks_detailed, so
+    the two can never disagree about which checks exist. Takes the four pieces rather
+    than a ForecastState so this module keeps no dependency on `graphs`.
+
+signed_adjustment(a) -> float
+    An adjustment's contribution; noise and neutral contribute 0. Public because the
+    streaming waterfall walks the same anchor -> adjustments -> stated path that
+    check_derivation verifies — re-deriving it there would let the picture and the
+    check disagree. `_signed` is retained as an alias.
+
+implied_probability(o, i) -> float
+    aggregate_base_rate + sum of signed adjustments, clamped to [0,1]. The value
+    check_derivation compares against.
 
 run_update_checks(d, t=None) -> list[CheckViolation]
     check_bayes_direction + check_update_magnitude.
@@ -463,7 +534,6 @@ run_update_checks(d, t=None) -> list[CheckViolation]
 blocking(violations) -> list[CheckViolation]
     The subset that should trigger another synthesis attempt.
 
-_signed(a) -> float        # an adjustment's contribution; noise and neutral contribute 0
 _spread(o) -> float        # max - min base_rate across reference classes
 _thresholds(t) -> CheckThresholds
 ```
@@ -578,6 +648,14 @@ run_<n>(...) -> <Out>                               # the seam nodes, tests, eva
 | `update.py` | 10, 11, 12 | `UpdateDecision` | search_web, find_disconfirming_evidence |
 | `critic.py` | 3 | `CriteriaCritique` | search_web |
 | `postmortem.py` | 13 | `PostMortem` | search_web |
+| `draft.py` | — | `DraftedQuestion` | — |
+
+```
+synthesize.retry_brief(outside, inside, violations) -> dict
+    What a second synthesis attempt is actually told, as structured data. Built from
+    the same `_violation_block` and `_arithmetic_block` the prompt uses, so the text
+    shown to a user is the text sent to the model rather than a description of it.
+```
 
 ```
 run_decompose(input, deps) -> Decomposition                            # async
@@ -607,6 +685,11 @@ run_critique(question, resolution_criteria, resolution_date=None, deps=None)    
 
 run_postmortem(record, deps=None) -> PostMortem                        # async
     Standalone; separates process errors from outcome noise on a resolved forecast.
+
+run_draft(text, deps=None) -> DraftedQuestion                          # async
+    Freeform text -> question, criteria, date, category, source. No tools, one call.
+    Separate from critic_agent on purpose: extraction and adjudicability are different
+    jobs, and folding them together would make score_critic measure two things at once.
 ```
 
 Shared helpers in `agents/__init__.py`:
@@ -657,10 +740,24 @@ Critique.run(ctx)          -> Synthesize | End[Forecast]
     blocking violations and synthesis_attempts < MAX_SYNTHESIS_ATTEMPTS (2). Otherwise
     ends. Surviving violations travel out with the result rather than being swallowed.
 
-run_forecast_graph(input, *, as_of=None, model=None, verbose=False)    # async
+run_forecast_graph(input, *, as_of=None, model=None, verbose=False,   # async
+                   hooks=None, emit=None)
     -> tuple[Forecast, list[CheckViolation]]
     Single entry point. Re-stamps question metadata from the input afterwards — the model
     has no business restating it and letting it try invites drift.
+
+    `hooks` and `emit` are the streaming seam, both default off. With hooks=None this
+    calls graph.run() and is byte-identical to before; with hooks it drives graph.iter()
+    node by node. `emit` rides on ForecastDeps down to the agents' event stream handler.
+
+_run_with_hooks(state, deps, hooks) -> Forecast                        # async
+    stage_started fires before a node's agent is called, stage_finished after — the only
+    ordering that lets a UI show a stage as busy while it works. The retry needs no
+    special handling: Synthesize is simply yielded twice.
+
+_attempt_for(stage, state) -> int
+STAGE_KEYS: dict[str, str]     # node class name -> the short stage key the UI groups by
+GraphHooks                     # Protocol: stage_started, stage_finished
 
 forecast_mermaid() -> str      # the real wiring, backs `superforecaster diagram`
 ```
@@ -766,6 +863,113 @@ get_vote(question_id, ip_hash) -> int | None
 
 record_refresh_run(summary_json) -> None
 last_refresh_run() -> dict | None
+
+create_run(run_id, question, resolution_criteria, resolution_source,
+           resolution_date, category) -> None
+    Insert a queued run, before the background task is scheduled — a crash in the gap
+    then surfaces as a `lost` run rather than as no record at all.
+finish_run(run_id, *, status, forecast_id=None, error=None) -> None    # idempotent
+get_run(run_id) -> dict | None
+list_runs(status=None, limit=20) -> list[dict]
+mark_orphaned_runs_lost() -> int
+    Flip every still-live run to `lost`. Called from init_db, because a run only ever
+    lives in memory and anything still marked running after a restart is gone.
+```
+
+`runs.forecast_id` carries a real foreign key to `forecasts(id)` — a run claiming an id
+nothing can resolve would show the UI a dead link. **No event rows exist**: the reasoning
+trail is not persisted anywhere (ADR 26).
+
+### `superforecaster/runs.py` — live runs
+
+In-process registry, per-run event ring buffer, and the projection of typed graph state into
+the events the UI renders. Nothing here changes an agent or a prompt: every event is derived
+from a field an agent already returns, or from an existing `pydantic_ai` stream event.
+
+```
+Run                                # one execution + its buffer + its subscribers
+  id, input, resolution_source, status, stage, attempt, seq, dropped
+  tool_calls, forecast_id, error, created_at, ended_at, events, task, state
+  .emit(type, payload) -> RunEvent
+      Append and fan out. Synchronous, never blocks. A subscriber whose bounded queue
+      is full is dropped rather than allowed to stall the graph; it reconnects and
+      replays from the buffer.
+  .emit_thought(delta) / .flush_thought()
+      Token deltas coalesced on an 80ms timer. Un-coalesced this is one SSE frame per
+      token — three bytes of payload inside ninety bytes of envelope. Flushed before
+      every non-thought event so narration never arrives after the tool call it
+      preceded.
+  .stage_started(stage, attempt) / .stage_finished(stage, state)     # GraphHooks
+  .subscribe() / .unsubscribe(q)
+  .replay(from_seq) -> list[RunEvent]
+      Prepends a `truncated` event when the requested point was already evicted, so a
+      reconnecting client learns it has a hole instead of silently rendering a
+      timeline missing its middle.
+  .summary() / .snapshot(from_seq) / .is_terminal
+
+RunRegistry                        # module-level singleton `registry`
+  .create(input, resolution_source) -> Run       # raises SlotsFullError past the cap
+  .get / .active / .recent / .slots_free / .cancel / .reap / .clear
+
+start(input, resolution_source) -> Run
+    Create and schedule. Returns as soon as the task exists — the async create path.
+resume_run(run_id, *, max_iterations=None) -> Run
+    Re-run a failed run from its last completed node. `max_iterations` raises the
+    search budget, because the usual reason to be here is that the old one ran out.
+    The event stream continues — `seq` keeps counting — so a client reconnecting with
+    `?from_seq=` sees more of the same run rather than a second run sharing an id.
+_failure_hint(exc) -> str
+    What to change before resuming. Special-cases UsageLimitExceeded, the one failure
+    where resuming unchanged is guaranteed to fail identically.
+execute(run, *, resume=False) -> None                                  # async
+    Drive the graph, persist the forecast, close the stream. Terminal in every branch:
+    a client cannot tell a hung server from a crashed one, so this always emits a last
+    frame saying which.
+_finalize_if_orphaned(run) -> None
+    Task done-callback. A task cancelled before the event loop gives it a slice has its
+    coroutine closed rather than entered, so `execute`'s `finally` never runs and
+    nothing would ever close the stream.
+
+Run.stage_started also emits a `brief` when Synthesize begins attempt 2, so the second
+pass is inspectable rather than looking like a re-roll.
+
+project_decompose / project_outside / project_inside / project_synth / project_critique
+    Typed state -> events. `project_outside` puts `OutsideView.disagreement` in the
+    anchor note — the half of P7 the schema cannot enforce, surfaced rather than
+    restated. `project_critique` emits all seven checks including passes, then a
+    `route` event under the same condition the Critique node itself uses.
+
+build_waterfall(o, i, f) -> list[dict]
+    Anchor -> signed adjustments -> stated, as running totals, via
+    checks.signed_adjustment. The gap between the last adjustment's total and the final
+    row is the derivation slack the critique measured — visible rather than explained.
+
+result_payload(run, forecast, violations, forecast_id) -> dict
+utc_now() -> datetime
+SlotsFullError
+```
+
+### `superforecaster/checkpoints.py` — resume a failed run
+
+Wraps `pydantic_graph.FileStatePersistence`, one JSON file per run under
+`RUN_CHECKPOINT_DIR`. A graph node is one agent call, so snapshot granularity is exactly
+"re-run only the agent that failed".
+
+```
+persistence_for(run_id) -> FileStatePersistence
+checkpoint_path(run_id) / has_checkpoint(run_id) / drop_checkpoint(run_id)
+
+completed_stages(run_id) -> list[str]
+    Node names that already ran successfully. Read from the raw JSON rather than
+    through `load_all`, which needs the graph's types bound and would make this import
+    `graphs` — the dependency runs the other way.
+
+rewind_for_resume(run_id) -> str | None
+    Resets the newest snapshot in a non-terminal state back to 'created', and returns
+    the node that will re-run. This function is the whole difference between a
+    checkpoint and a post-mortem: `FileStatePersistence` marks a raised node 'error',
+    and `load_next` only returns 'created', so a failed run is otherwise not resumable
+    at all. Also catches 'pending' and 'running' — what a process death leaves behind.
 ```
 
 ### `superforecaster/cron.py` — scheduled jobs
@@ -830,8 +1034,9 @@ Internals: `_print_json`, `_load_fixture`, `_record_from_fixture`, `_cmd_*`,
 
 ### `api/` — FastAPI
 
-28 routes. CORS open. Swagger at `/docs`. `main.py` uses an async lifespan that runs
-`db.init_db()` then `cron.start_scheduler()`.
+34 routes. CORS open. Swagger at `/docs`. `main.py` uses an async lifespan that runs
+`db.init_db()` then `cron.start_scheduler()`, and mounts `frontend/` at `/` via `StaticFiles`
+(last, so it cannot shadow an API prefix).
 
 | Method + path | Handler | Admin |
 |---|---|---|
@@ -843,6 +1048,7 @@ Internals: `_print_json`, `_load_fixture`, `_record_from_fixture`, `_cmd_*`,
 | PATCH `/forecasts/{id}/resolve` | `resolve` | yes |
 | POST `/forecasts/{id}/refresh` | `refresh` → `run_update_graph` | yes |
 | POST `/questions/critique` | `critique_question` → `run_critique` | no |
+| POST `/questions/draft` | `draft_question` → `run_draft` + `run_critique` | no |
 | POST `/questions` | `create_question` | no |
 | GET `/questions` | `list_questions` | no |
 | GET `/questions/top-monthly` | `top_monthly` | no |
@@ -853,12 +1059,27 @@ Internals: `_print_json`, `_load_fixture`, `_record_from_fixture`, `_cmd_*`,
 | GET `/calibration` | `calibration` | no |
 | GET `/admin/digest/preview`, POST `/admin/digest/run` | `digest_preview` / `digest_run` | yes |
 | POST `/admin/refresh/run`, GET `/admin/refresh/status` | `refresh_run` / `refresh_status` | yes |
+| POST `/runs` | `create_run` → `runs.start` (202) | yes |
+| POST `/runs/{id}/resume` | `resume_run` → `runs.resume_run` (202) | yes |
+| GET `/runs` | `list_runs` | no |
+| GET `/runs/{id}` | `get_run` → `RunSnapshot` | no |
+| GET `/runs/{id}/stream` | `stream_run` → `text/event-stream` | no |
+| DELETE `/runs/{id}` | `cancel_run` | yes |
+
+`create_run` is `async` deliberately — `runs.start` calls `asyncio.create_task`, and a sync
+handler would run in FastAPI's threadpool with no running loop.
+
+The stream replays the buffer then tails. Subscribing happens *before* snapshotting the
+buffer: the other order drops any event emitted in the gap, which is exactly the window a busy
+run is most likely to emit in. `Last-Event-ID` overrides `?from_seq`, so a browser's automatic
+reconnect resumes without the client tracking anything.
 
 `api/deps.py`: `require_admin(authorization)`, `get_client_ip(request)`,
 `get_client_ip_hash(request)`.
 
 `POST /forecasts` and `POST /questions/{id}/forecast` run a full graph **synchronously inside
-the request** — the HTTP response blocks for the whole run.
+the request** — the HTTP response blocks for the whole run. `POST /runs` is the async path and
+is what the frontend uses.
 
 ---
 
@@ -931,14 +1152,22 @@ Backend reads everything through `config.py`. `backend/.env`; see `backend/.env.
 | `CHECK_DERIVATION_SLACK` | P6 — stated vs implied tolerance | `0.05` |
 | `CHECK_ROUND_NUMBER_RATE` | P8 — run-level rounding rate (unused until spec4) | `0.40` |
 | `MODEL_GARDEN_MARGIN_DAYS` | Margin on published cutoffs | `90` |
+| `RUN_MAX_CONCURRENT` | Live forecast runs allowed at once | `5` |
+| `RUN_EVENT_BUFFER` | Events retained per run for SSE replay | `5000` |
+| `RUN_RETENTION_MINUTES` | How long a finished run stays in memory | `60` |
+| `RUN_CHECKPOINT_DIR` | Graph snapshots, one JSON per run | `./run_checkpoints` |
+| `RESEARCH_REQUESTS_PER_ITERATION` | LLM requests per `max_iterations` unit | `3` |
+| `RESEARCH_TOOL_CALLS_PER_ITERATION` | Tool calls per `max_iterations` unit | `3` |
+| `FRONTEND_DIR` | Static files served at `/`; unset disables the mount | `../frontend` |
 
-Frontend: `NEXT_PUBLIC_API_URL` (default `http://localhost:8000`).
+Frontend: none. It is same-origin static files; `window.SF_API_URL` overrides the base URL when
+the page is opened from somewhere other than the API.
 
 ---
 
 ## What Works
 
-Verified by `cd backend && uv run pytest` — **221 tests, no network, no API keys**:
+Verified by `cd backend && uv run pytest` — **313 tests, no network, no API keys**:
 
 - All eight agents import and build without keys (lazy construction)
 - The forecast graph visits its nodes in methodology order — P4 asserted structurally
@@ -951,7 +1180,22 @@ Verified by `cd backend && uv run pytest` — **221 tests, no network, no API ke
 - `pick_clean_model` returns `None` rather than a contaminated fallback
 - All eight component scorers tested, including false-positive weighting and outcome-bias resistance
 - Time-weighted Brier matches the spec example; rate-limit, vote toggle, soft-delete, IP-gated edits enforced
-- FastAPI loads with 28 routes; CLI `--help`, `models list`, `diagram`, `test component all` all run
+- FastAPI loads with 34 routes; CLI `--help`, `models list`, `diagram`, `test component all` all run
+- The forecast graph streams: five stage groups, seven check events per critique attempt, and
+  a `route` event on the retry — with the hookless path asserted node-for-node unchanged
+- `build_waterfall` and `check_derivation` agree on the implied probability, by construction
+- Thought deltas coalesce and always flush before the next non-thought event
+- SSE frames carry `seq` as the `id:`; `from_seq` and `Last-Event-ID` both resume correctly
+- A crashing run emits `error` then `end` — never a silently truncated stream
+- A run cancelled before its task starts still closes its stream
+- A full subscriber queue drops that subscriber, not the event
+- Orphaned runs are marked `lost` on boot
+- Every check carries the numbers behind its verdict; the P6 walk matches `check_derivation`
+- A retried synthesis emits the literal correction text, ordered before the corrected draft
+- A failed run keeps its checkpoint and resumes re-running **only** the node that died —
+  asserted by call counts on the earlier agents, which stay at 1
+- A successful run leaves no checkpoint behind
+- Resume continues the same event sequence rather than restarting it
 
 ---
 
@@ -977,7 +1221,23 @@ outside `models.py`.
 after `from datetime import datetime`. Its 66 questions are unusable for clean scoring anyway
 (all predate every served model's cutoff).
 
-**Live frontend ↔ backend integration** has not been smoke-tested in a recent session.
+**Reasoning trails are kept by the browser**, one localStorage key per run (~20KB each),
+capped at 12 with oldest-first eviction. Recovery order on opening a finished run: local
+storage, then `GET /runs/{id}` while it is still in the server's ring buffer (which the client
+then caches), then an honest "no stored trail". The server keeps no event rows — see ADR 26.
+
+**The streaming path has been exercised end-to-end with stubbed agents only.** A scripted
+graph was driven through the real registry, the real SSE endpoint, and the real frontend in a
+browser: 71 frames, seven stage groups including the retry, and the waterfall rendering. What
+that proves is the transport and the projections. **No live agent has ever streamed** — the
+prompts remain unexercised (see below).
+
+**Two limits the UI carries rather than hides.** `thought` events only appear when the model
+emits thinking or text before its structured output, so a stage can legitimately show tool
+calls and no narration. `source.credibility` is always `null` — nothing scores a domain.
+
+**The registry is in-process**, so the API is pinned to `--workers 1`. Two workers would each
+hold half the runs and a stream opened on the wrong one would replay nothing.
 
 ---
 
@@ -1007,9 +1267,8 @@ cd backend && uv run python -m superforecaster forecast --fixture -v
 cd backend && uv run uvicorn api.main:app --reload
 ```
 
-```bash
-cd frontend && npm install && npm run dev
-```
+The frontend is static and served by the API at `http://localhost:8000/` — no install, no
+build, no separate process. Admin actions need a token, set from the header button.
 
 ```bash
 docker compose up --build

@@ -16,9 +16,10 @@ from superforecaster import db
 
 @pytest.fixture(autouse=True)
 def _isolated_db(tmp_path, monkeypatch):
-    """Point each test at its own temporary SQLite file."""
+    """Point each test at its own temporary SQLite file and checkpoint directory."""
     db_file = tmp_path / "test.db"
     monkeypatch.setenv("DATABASE_PATH", str(db_file))
+    monkeypatch.setenv("RUN_CHECKPOINT_DIR", str(tmp_path / "checkpoints"))
     db.init_db()
     yield db_file
 

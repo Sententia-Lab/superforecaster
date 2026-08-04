@@ -24,4 +24,7 @@ RUN mkdir -p /app/data
 
 EXPOSE 8000
 
-CMD ["uv", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --workers 1 is load-bearing, not a default. The live-run registry is in-process, so
+# a second worker would hold half the runs and a stream opened on the wrong one would
+# replay nothing. Scaling out means a shared bus behind Run.emit/subscribe first.
+CMD ["uv", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

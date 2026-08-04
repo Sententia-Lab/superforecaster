@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any, Callable
 
 from .models import SourceRef
 
@@ -29,6 +30,18 @@ class ForecastDeps:
     model: str | None = None
     verbose: bool = False
     sources_seen: list[SourceRef] = field(default_factory=list)
+
+    emit: Callable[[str, dict[str, Any]], None] | None = None
+    """Fire-and-forget sink for live run events. None everywhere except a streamed run.
+
+    Rides here rather than through `run_agent`'s signature because `deps` is already
+    forwarded into `agent.run`, so the event stream handler can reach it from
+    `ctx.deps` — threading it explicitly would mean editing all eight `run_<agent>`
+    call sites to pass something none of them care about.
+
+    MUST be synchronous and non-blocking: it is called from inside the agent's own
+    event stream, and awaiting there would stall token delivery.
+    """
 
     @property
     def leaked_sources(self) -> list[SourceRef]:

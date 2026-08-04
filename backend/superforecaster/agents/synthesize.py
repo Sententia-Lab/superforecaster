@@ -111,6 +111,37 @@ Fix these specifically. Do not start over — the decomposition, base rate, and
 adjustments below are unchanged and still stand."""
 
 
+def _arithmetic_block(outside: OutsideView, implied: float) -> str:
+    return (
+        f"ARITHMETIC CHECK — base rate {outside.aggregate_base_rate:.3f} plus the signed\n"
+        f"non-noise adjustments implies {implied:.3f}. Your probability should match this\n"
+        f"unless you explain the divergence in reasoning."
+    )
+
+
+def retry_brief(
+    outside: OutsideView,
+    inside: InsideView,
+    violations: list[CheckViolation],
+) -> dict[str, object]:
+    """What a second synthesis attempt is actually told, as structured data.
+
+    Built from the same two formatters `run_synthesize` uses, so this is the real
+    prompt text and not a description of it. A retry that looks like a re-roll from
+    outside is one nobody can audit; showing the correction verbatim is what makes the
+    difference between the two attempts inspectable.
+    """
+    implied = _implied(outside, inside)
+    return {
+        "anchor": outside.aggregate_base_rate,
+        "implied": implied,
+        "unchanged": ["decomposition", "outside view", "inside view"],
+        "violations": [v.model_dump() for v in violations],
+        "arithmetic": _arithmetic_block(outside, implied),
+        "correction": _violation_block(violations).strip(),
+    }
+
+
 async def run_synthesize(
     input: ForecastInput,
     decomposition: Decomposition,
@@ -135,9 +166,7 @@ OUTSIDE VIEW:
 INSIDE VIEW:
 {inside.model_dump_json(indent=2)}
 
-ARITHMETIC CHECK — base rate {outside.aggregate_base_rate:.3f} plus the signed
-non-noise adjustments implies {implied:.3f}. Your probability should match this
-unless you explain the divergence in reasoning.{_violation_block(violations)}
+{_arithmetic_block(outside, implied)}{_violation_block(violations)}
 
 Fill question, resolution_criteria, resolution_date, and category from the input
 exactly. Carry the sub-claims into `decompositions`."""
