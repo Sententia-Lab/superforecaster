@@ -318,7 +318,7 @@ Next.js 15 + MUI v6 + TypeScript, deployable to Vercel or via Docker.
 
 **Live frontend ↔ backend integration:** Both halves build and pass their own tests, but a manual end-to-end smoke test (submit a question via the UI, vote on it, run a forecast, verify it appears on `/predictions`) hasn't been performed in this session.
 
-**Logfire:** Configured but the user's existing token is invalid (401 warning). Not blocking; warnings only.
+**Logfire:** `configure_logfire()` (`backend/superforecaster/observability.py`) validates `LOGFIRE_TOKEN` synchronously (`GET /v1/info`) before enabling cloud export. If the token is missing or invalid, cloud tracing is disabled and agent progress (prompt, tool calls/results, reasoning, final result) prints in full to the local console instead — no 401 warning is surfaced. When a valid token is configured, cloud tracing is active and local printing stays terse (gated by `--verbose`). Currently configured with a working `LOGFIRE_TOKEN` and `PYDANTIC_AI_GATEWAY_API_KEY`.
 
 ---
 
