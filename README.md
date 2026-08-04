@@ -334,7 +334,7 @@ spec/                # Spec-driven docs (SPEC.md, CURRENT_STATE.md)
 docker-compose.yml
 ```
 
-For architecture details, data models, and the full API surface, see `spec/CURRENT_STATE.md` and `spec/SPEC.md`.
+For architecture details, data models, and the full API surface, see `spec/CURRENT_STATE.md`. For why the system is shaped this way, see `spec/ADR.md`.
 
 ---
 

@@ -1,5 +1,14 @@
 # Decompose the forecaster into agents + graphs, and make every step testable
 
+> **Implemented and merged.** This is the plan as written before the work, kept as a record.
+> It references `spec/TECHNICAL_DIRECTION.md` and `spec/change_specs/`, both of which are gone:
+> the decisions moved to `spec/ADR.md` and specs now live in `spec/planned/` and
+> `spec/implemented/`. For what the code looks like today, read `spec/CURRENT_STATE.md`.
+>
+> Two decisions in here were reversed during review and the final code differs: there is no
+> per-forecast granularity check (ADR 15) and a large probability move is verified rather than
+> capped (ADR 16).
+
 ## Context
 
 Today the whole forecasting pipeline is two prompts in one file. `superforecaster/agent.py` runs a
