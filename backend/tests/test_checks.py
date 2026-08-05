@@ -550,6 +550,150 @@ def test_aggregation_reports_when_no_class_carries_weight():
     assert "no reference class carries any weight" in v.detail
 
 
+# ---------- P7: the anchor is the chain the decomposition describes ----------
+
+
+def researched(sub_claim_id: str, rate: float) -> ReferenceClass:
+    """A reference class that names exactly one column, as the merge stamps them."""
+    return ReferenceClass(
+        name=f"class for {sub_claim_id}",
+        base_rate=rate,
+        sample_size=40,
+        weight=1.0,
+        sources=[graded()],
+        sub_claim_ids=[sub_claim_id],
+    )
+
+
+def a_grid(rule: str, rates: dict[str, float], estimates: dict[str, float]):
+    """A decomposition and an outside view sharing sub-claim ids sc1..scN."""
+    ids = sorted(set(rates) | set(estimates))
+    d = Decomposition(
+        sub_claims=[
+            SubPrediction(
+                question=f"part {i}",
+                probability=estimates.get(i, 0.5),
+                rationale="because",
+                knowability="researchable" if i in rates else "judgment",
+            ).model_copy(update={"id": i})
+            for i in ids
+        ],
+        chain_rule=rule,
+        chain_note="stated",
+    )
+    o = OutsideView(
+        reference_classes=[researched(i, r) for i, r in sorted(rates.items())] or
+                          [ref("a", 0.2), ref("b", 0.2)],
+        aggregate_base_rate=0.0,
+        disagreement="",
+    )
+    return d, o
+
+
+def test_a_conjunction_anchor_is_the_product_of_its_columns():
+    """A mean of conjunction factors is always >= their product. That gap was a
+    systematic upward bias on every conjunctive question."""
+    d, o = a_grid("conjunction", {"sc1": 0.55, "sc2": 0.70, "sc3": 0.60}, {})
+    o.aggregate_base_rate = 0.55 * 0.70 * 0.60
+
+    assert checks.check_aggregation(o, d) is None
+    # The pre-3.3 arithmetic would have said 0.617 — more than 3x the truth.
+    assert checks.weighted_base_rate(o) == pytest.approx(0.6167, abs=1e-3)
+
+
+def test_a_disjunction_anchor_is_one_minus_the_product_of_complements():
+    d, o = a_grid("disjunction", {"sc1": 0.20, "sc2": 0.30, "sc3": 0.10}, {})
+    o.aggregate_base_rate = 1 - (0.80 * 0.70 * 0.90)
+
+    assert checks.check_aggregation(o, d) is None
+
+
+def test_a_column_nobody_researched_contributes_its_own_estimate():
+    """The empty-cell trap. Skipping sc4 silently treats it as certain."""
+    d, o = a_grid("conjunction", {"sc1": 0.55, "sc2": 0.70, "sc3": 0.60}, {"sc4": 0.80})
+
+    rows = checks.chain_inputs(d, o)
+    assert [r["source"] for r in rows] == ["researched"] * 3 + ["estimated"]
+    assert rows[-1]["rate"] == pytest.approx(0.80)
+
+    implied, rule = checks.anchor_from(o, d)
+    assert rule == "conjunction"
+    assert implied == pytest.approx(0.55 * 0.70 * 0.60 * 0.80)
+    # Without sc4 the product would be 0.231 — a quarter higher than the truth.
+    assert implied < 0.55 * 0.70 * 0.60
+
+
+def test_custom_falls_back_to_the_weighted_mean():
+    """No formula to apply, so the pre-3.3 arm is the honest answer."""
+    d, o = a_grid("custom", {"sc1": 0.20, "sc2": 0.24, "sc3": 0.22}, {})
+    o.aggregate_base_rate = 0.22
+
+    implied, rule = checks.anchor_from(o, d)
+    assert rule == "weighted mean"
+    assert implied == pytest.approx(0.22)
+    assert checks.check_aggregation(o, d) is None
+
+
+def test_no_decomposition_keeps_the_pre_3_3_behaviour():
+    """`d` is optional so the component evals and direct unit tests need no edit."""
+    o = outside(reference_classes=[ref("a", 0.20), ref("b", 0.24)], aggregate_base_rate=0.22)
+    assert checks.check_aggregation(o) is None
+    assert checks.check_aggregation(o, None) is None
+
+
+def test_aggregation_catches_an_anchor_that_is_not_the_chain():
+    d, o = a_grid("conjunction", {"sc1": 0.55, "sc2": 0.70, "sc3": 0.60}, {})
+    o.aggregate_base_rate = 0.62  # the mean, not the product
+
+    v = checks.check_aggregation(o, d)
+    assert v is not None
+    assert "conjunction" in v.detail
+
+
+# ---------- P7: spread is measured within a column ----------
+
+
+def test_dragonfly_ignores_spread_between_different_columns():
+    """The regression this rescoping exists to prevent.
+
+    A 0.15 lens on one sub-question and a 0.80 lens on another are not disagreeing —
+    they are measuring different things. Whole-view spread called that 0.65.
+    """
+    o = outside(
+        reference_classes=[researched("sc1", 0.15), researched("sc4", 0.80)],
+        disagreement="",
+    )
+    assert checks.base_rate_spread(o) == pytest.approx(0.65)
+    assert checks.check_dragonfly(o) is None
+
+
+def test_dragonfly_still_fires_within_one_column():
+    o = outside(
+        reference_classes=[researched("sc1", 0.12), researched("sc1", 0.55)],
+        disagreement="",
+    )
+    v = checks.check_dragonfly(o)
+    assert v is not None
+    assert "for sc1" in v.detail
+
+
+def test_the_worst_column_is_the_one_reported():
+    o = outside(
+        reference_classes=[
+            researched("sc1", 0.20), researched("sc1", 0.24),
+            researched("sc2", 0.10), researched("sc2", 0.70),
+        ],
+        disagreement="",
+    )
+    assert checks.sub_claim_spreads(o) == {
+        "sc1": pytest.approx(0.04),
+        "sc2": pytest.approx(0.60),
+    }
+    assert checks.worst_sub_claim_spread(o) == pytest.approx(0.60)
+    v = checks.check_dragonfly(o)
+    assert v is not None and "for sc2" in v.detail
+
+
 # ---------- Citations ----------
 
 

@@ -238,3 +238,65 @@ def test_cancelling_a_finished_run_is_404(client, admin_headers, stub_agents):  
     run_id = start_run(client, admin_headers)
     res = client.delete(f"/runs/{run_id}", headers=admin_headers)
     assert res.status_code == 404
+
+
+# ---------- local mode ----------
+
+
+def test_a_test_client_is_not_local_mode(client):
+    """Why the auth tests above still 403 without a token: TestClient's client host is
+    `testclient`, not loopback, so it takes the deployed path."""
+    assert client.get("/config").json()["auth_required"] is True
+
+
+def test_config_is_public(client):
+    res = client.get("/config")
+    assert res.status_code == 200
+    assert set(res.json()) >= {"auth_required", "search_enabled", "model"}
+
+
+def test_admin_is_skipped_for_an_unauthenticated_request_from_localhost(monkeypatch):
+    """The one-command case: export an API key, start the server, click Run now."""
+    from fastapi import Request
+
+    from api import deps
+
+    monkeypatch.delenv("ADMIN_API_KEY", raising=False)
+    scope = {"type": "http", "headers": [], "client": ("127.0.0.1", 51234)}
+    assert deps.is_local_mode(Request(scope)) is True
+
+
+def test_a_configured_key_always_wins(monkeypatch):
+    monkeypatch.setenv("ADMIN_API_KEY", "secret")
+    from fastapi import Request
+
+    from api import deps
+
+    scope = {"type": "http", "headers": [], "client": ("127.0.0.1", 51234)}
+    assert deps.is_local_mode(Request(scope)) is False
+
+
+def test_a_forwarded_request_is_never_local_mode(monkeypatch):
+    """A reverse proxy in front of this is the shape of a real deployment, and anything
+    upstream can write whatever it likes into the client address."""
+    monkeypatch.delenv("ADMIN_API_KEY", raising=False)
+    from fastapi import Request
+
+    from api import deps
+
+    scope = {
+        "type": "http",
+        "headers": [(b"x-forwarded-for", b"203.0.113.9")],
+        "client": ("127.0.0.1", 51234),
+    }
+    assert deps.is_local_mode(Request(scope)) is False
+
+
+def test_a_remote_request_with_no_key_is_a_clear_500(monkeypatch):
+    monkeypatch.delenv("ADMIN_API_KEY", raising=False)
+    from fastapi import Request
+
+    from api import deps
+
+    scope = {"type": "http", "headers": [], "client": ("203.0.113.9", 51234)}
+    assert deps.is_local_mode(Request(scope)) is False

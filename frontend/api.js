@@ -8,6 +8,23 @@
 const API = (window.SF_API_URL || "").replace(/\/$/, "");
 const ADMIN_TOKEN_KEY = "superforecaster_admin_token";
 
+/**
+ * What this server says about itself. Filled by `loadServerConfig` at boot.
+ *
+ * `auth_required: false` is a local server with no `ADMIN_API_KEY` — the one-command
+ * case. Defaulted to `true` so a failed fetch degrades into asking for a token rather
+ * than into firing unauthenticated requests at something that wanted one.
+ */
+let serverConfig = { auth_required: true, search_enabled: false, model: "" };
+
+async function loadServerConfig() {
+  try {
+    const res = await fetch(API + "/config");
+    if (res.ok) serverConfig = { ...serverConfig, ...(await res.json()) };
+  } catch { /* keep the safe defaults */ }
+  return serverConfig;
+}
+
 /** @returns {string|null} */
 function getAdminToken() {
   try { return window.localStorage.getItem(ADMIN_TOKEN_KEY); } catch { return null; }
@@ -57,8 +74,13 @@ async function req(path, { method = "GET", body, admin = false } = {}) {
   const headers = { "Content-Type": "application/json" };
   if (admin) {
     const token = getAdminToken();
-    if (!token) throw { status: 403, detail: "Admin token not set." };
-    headers["Authorization"] = `Bearer ${token}`;
+    // The server is the authority on its own auth. This used to refuse before sending
+    // anything, so a local server with no ADMIN_API_KEY — which would have honoured the
+    // request — answered "Admin token not set" to the button that starts a forecast.
+    if (!token && serverConfig.auth_required) {
+      throw { status: 403, detail: "This server needs an admin token. Click Admin in the header." };
+    }
+    if (token) headers["Authorization"] = `Bearer ${token}`;
   }
 
   const res = await fetch(API + path, {

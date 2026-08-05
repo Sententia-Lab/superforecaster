@@ -26,8 +26,21 @@ must be specific enough that someone could argue about it separately.
     x P(B is a plausible target | A is looking)
     x P(deal closes in the timeframe | interest exists)
 
-Explain in chain_note how the sub-claims combine — multiply for a conjunction, take
-the maximum for alternatives, and say which it is.
+SAY HOW THEY COMBINE
+Set `chain_rule`:
+  conjunction  every sub-claim must hold for the answer to be YES — the rates multiply
+  disjunction  any one of them suffices — the rates combine as 1 - prod(1 - p)
+  custom       neither of those describes the relationship
+
+This is arithmetic, not commentary. The outside view combines the per-sub-claim base
+rates using the rule you pick, and the result is the anchor for the whole forecast, so
+picking the wrong one moves the final number.
+
+`custom` is a last resort — for sub-claims that genuinely interact, where one makes
+another more likely or they overlap. Not for merely being unsure. If you pick it, say in
+`chain_note` what the relationship actually is.
+
+Explain the chain in `chain_note` in prose whichever rule you picked.
 
 SEPARATE KNOWABLE FROM UNKNOWABLE (principle 2)
 Label each sub-claim:

@@ -180,15 +180,20 @@ const supportChip = (v) =>
  * rebuilds the whole tree on every event, so the element — and its `open` — is thrown
  * away several times a second while a run streams.
  */
-const disclosure = (key, summary, body) => {
+const disclosure = (key, summary, body, dflt = false, bodyAttrs = {}) => {
   // `state.opened`, not `state.collapsed` — the stage accordion stores the inverse
   // (truthy means hidden), and one map meaning both things is a bug waiting to happen.
-  const open = !!state.opened[key];
+  //
+  // `dflt` applies only while the key is ABSENT. A column's live tail wants to be open
+  // while it researches and closed once its finding lands, but writing that on each
+  // event would stomp a reader who deliberately collapsed it. Read as a default and the
+  // first click makes their choice permanent.
+  const open = key in state.opened ? state.opened[key] : dflt;
   return h("div.disclose", {},
     h("button.disclose-t", { type: "button", "aria-expanded": String(open),
       onClick: () => { state.opened[key] = !open; scheduleRender(); } },
       h("span.caret", {}, open ? "▾" : "▸"), summary),
-    open ? h("div.work", {}, body()) : null);
+    open ? h("div.work", bodyAttrs, body()) : null);
 };
 
 // ---------- state ----------
@@ -205,6 +210,7 @@ const state = {
   openId: null,
   saved: [],
   backlog: [],
+  editingBacklogId: null,  // set while `review` is editing a queued question, not a draft
   collapsed: {},           // stageKey -> true (stage group is HIDDEN)
   opened: {},              // disclosureKey -> true (disclosure is SHOWN)
   trailMissing: {},        // runId -> true, once hydration has been tried and failed
@@ -421,7 +427,14 @@ async function onRunNow() {
   try {
     const summary = await createRun(runFieldsFrom(state.fields));
     attachRun(summary);
-    setState({ phase: "view", openId: summary.id, busy: false, draftText: "", fields: null, critique: null });
+    // Running a queued question consumes it. Leaving the entry behind invites a second
+    // click that spends another of the five slots on the same forecast.
+    const backlog = state.editingBacklogId
+      ? state.backlog.filter((b) => b.id !== state.editingBacklogId)
+      : state.backlog;
+    if (state.editingBacklogId) persist(BACKLOG_KEY, backlog);
+    setState({ phase: "view", openId: summary.id, busy: false, draftText: "", fields: null,
+               critique: null, backlog, editingBacklogId: null });
   } catch (e) {
     setState({ busy: false });
     if (e.status === 429) { onQueueToBacklog(); toast("All slots busy — parked in the backlog."); }
@@ -433,7 +446,40 @@ function onQueueToBacklog() {
   const item = { id: `bk_${Math.random().toString(16).slice(2, 8)}`, ...runFieldsFrom(state.fields) };
   const backlog = [item, ...state.backlog];
   persist(BACKLOG_KEY, backlog);
-  setState({ backlog, phase: "draft", draftText: "", fields: null, critique: null });
+  setState({ backlog, phase: "draft", draftText: "", fields: null, critique: null,
+             editingBacklogId: null });
+  window.scrollTo(0, 0);
+}
+
+/**
+ * Save edits back onto a queued question.
+ *
+ * Replaced in place rather than unshifted: the queue order is the reader's, and editing
+ * the wording of a question they parked last week is not a reason to move it to the front.
+ */
+function onSaveBacklog() {
+  const edited = runFieldsFrom(state.fields);
+  const backlog = state.backlog.map((b) =>
+    (b.id === state.editingBacklogId ? { ...b, ...edited } : b));
+  persist(BACKLOG_KEY, backlog);
+  setState({ backlog, phase: "draft", draftText: "", fields: null, critique: null,
+             editingBacklogId: null });
+  toast("Saved to the backlog.");
+}
+
+/**
+ * Open a queued question in the review form.
+ *
+ * No critique travels with it: `CriteriaCritique` is a one-pass P3 read of the text the
+ * reader originally typed, and re-running it against edited fields would spend an agent
+ * call to re-answer a question nobody asked again. `isResolvable()` returns true with no
+ * critique, so the form is unblocked.
+ */
+function onEditBacklog(id) {
+  const item = state.backlog.find((b) => b.id === id);
+  if (!item) return;
+  setState({ phase: "review", fields: { ...item }, critique: null,
+             applied: false, dismissed: false, editingBacklogId: id });
   window.scrollTo(0, 0);
 }
 
@@ -485,7 +531,10 @@ async function onRunFromBacklog(id) {
     const backlog = state.backlog.filter((b) => b.id !== id);
     persist(BACKLOG_KEY, backlog);
     attachRun(summary);
-    setState({ backlog, phase: "view", openId: summary.id });
+    // Clear the edit target too: running the entry the review form was open on leaves
+    // `editingBacklogId` pointing at a row that no longer exists.
+    setState({ backlog, phase: "view", openId: summary.id,
+               editingBacklogId: state.editingBacklogId === id ? null : state.editingBacklogId });
   } catch (e) {
     toast(e.status === 429 ? "Still no free slots." : e.detail || "Could not start it.");
   }
@@ -559,6 +608,10 @@ function attachRun(summary, fromSeq = 0, keep = false) {
  *
  * A stage group is keyed by `stage + attempt`, which is what makes the Synthesize
  * retry render as its own "attempt 2" card instead of overwriting attempt 1.
+ *
+ * Events carrying a `sub_claim` are routed into that column's card instead of the
+ * group's flat item list. Decompose, Synthesize and Critique never carry one and take
+ * exactly the path they always did.
  */
 function applyEvent(runId, ev) {
   const run = state.runs[runId];
@@ -569,7 +622,8 @@ function applyEvent(runId, ev) {
     case "stage": {
       const key = `${ev.payload.stage}-${ev.payload.attempt}`;
       if (!run.stages.some((s) => s.key === key)) {
-        run.stages.push({ key, stage: ev.payload.stage, attempt: ev.payload.attempt, items: [] });
+        run.stages.push({ key, stage: ev.payload.stage, attempt: ev.payload.attempt,
+                          items: [], columns: null, columnOrder: [] });
       }
       run.summary = { ...run.summary, stage: ev.payload.stage, attempt: ev.payload.attempt,
                       stage_index: STAGE_ORDER.indexOf(ev.payload.stage) + 1 };
@@ -601,14 +655,58 @@ function applyEvent(runId, ev) {
 
   if (ev.type === "query") run.toolCalls += 1;
 
+  if (ev.type === "column") {
+    group.columns = group.columns || {};
+    group.columns[ev.payload.id] = { ...ev.payload, items: [], done: false, exhausted: false };
+    if (!group.columnOrder.includes(ev.payload.id)) group.columnOrder.push(ev.payload.id);
+    return;
+  }
+
+  // Untagged: the pre-3.3 path, byte-for-byte. This is every event in the decompose,
+  // synth and critique rows, plus the whole-question notes the research rows emit
+  // below their cards.
+  const bucket = ev.sub_claim == null ? group : columnFor(group, ev.sub_claim);
+  if (!bucket) return;
+
+  if (ev.type === "exhausted") {
+    bucket.exhausted = true;
+    bucket.done = true;
+    return;
+  }
+  // A finding closes its column. Stored on the column rather than in its log, because
+  // the card renders it as a result and the log as a trail.
+  if (ev.type === "claim" || ev.type === "adj") {
+    bucket.done = true;
+    if (ev.type === "claim") bucket.claim = ev;
+    else (bucket.adjustments = bucket.adjustments || []).push(ev);
+    return;
+  }
+
   // Consecutive thought deltas belong to one paragraph — the server coalesces on an
   // 80ms timer, which still leaves several frames inside a single stretch of prose.
-  const last = group.items[group.items.length - 1];
+  // Merged within a column: two columns narrating at once must not run together.
+  const last = bucket.items[bucket.items.length - 1];
   if (ev.type === "thought" && last && last.type === "thought") {
     last.payload = { ...last.payload, delta: last.payload.delta + ev.payload.delta };
     return;
   }
-  group.items.push(ev);
+  bucket.items.push(ev);
+}
+
+/**
+ * The column a tagged event belongs to, created on the spot if it arrives first.
+ *
+ * A stray should be impossible — `project_columns` runs at `stage_started`, before any
+ * agent — but dropping an event to keep an invariant is the wrong trade when the
+ * invariant is only about ordering.
+ */
+function columnFor(group, id) {
+  group.columns = group.columns || {};
+  if (!group.columns[id]) {
+    group.columns[id] = { id, question: "", items: [], done: false, exhausted: false };
+    group.columnOrder.push(id);
+  }
+  return group.columns[id];
 }
 
 function saveResult(runId, payload) {
@@ -807,7 +905,85 @@ const EVENT_RENDERERS = {
 
   truncated: (p) =>
     h("div.ev.truncated", {}, `${p.count} earlier events were dropped from the buffer.`),
+
+  // Both of these are drawn by the column card that owns them, not inline. Registered
+  // so `renderTrail`'s `if (!renderer) return null` does not silently swallow one that
+  // arrives outside a card.
+  column: () => null,
+  exhausted: () => null,
 };
+
+/**
+ * One column of the grid: a sub-question, end to end, at one stage.
+ *
+ * Opened by a `column` event at the top of the row — before any agent starts — so a row
+ * that spends four minutes on four concurrent searches is legible for all four of them
+ * rather than blank until the barrier.
+ */
+function renderColumnCard(group, col) {
+  const key = `${group.key}-${col.id}`;
+  const claim = col.claim && col.claim.payload;
+  const rate = claim ? claim.rate : col.anchor;
+  const log = col.items;
+  const adjustments = col.adjustments || [];
+
+  // One clipped line of whatever the agent is doing right now. The full trail is one
+  // click away; this is the part you can watch without opening anything.
+  const live = !col.done && log.length ? log[log.length - 1] : null;
+  const liveText = live
+    ? (live.type === "thought" ? live.payload.delta
+       : live.type === "query" ? `${live.payload.tool} · ${live.payload.q}`
+       : live.payload.title || live.payload.domain || "")
+    : "";
+
+  return h("div.colcard", { class: col.done ? "" : "busy" },
+    h("div.evhead", {},
+      h("span.num-strong", { style: rate == null ? "color:var(--pv-text-3)" : "" },
+        rate == null ? "—" : pct(rate)),
+      col.id ? h("span.micro", {}, col.id) : null,
+      h("div.spacer", {}),
+      col.exhausted ? h("span.chip.warn", {}, "budget spent") : null,
+      col.knowability
+        ? h("span.chip", { class: col.knowability === "researchable" ? "for" : "" },
+            col.knowability)
+        : null),
+    h("div", {}, col.question),
+    // The inside row adjusts FROM a rate the row above it found. Showing where the
+    // number started is what makes an adjustment readable as a delta.
+    group.stage === "inside" && col.anchor != null
+      ? h("div.micro", {}, `from ${pct(col.anchor)}`)
+      : null,
+
+    !col.researching && !log.length
+      ? h("div.micro", {},
+          col.knowability === "researchable"
+            ? "no reference class found — nothing was researched for this"
+            : "judgment — no base rate to look up")
+      : null,
+
+    live ? h("div.collive", {}, liveText) : null,
+
+    log.length
+      ? disclosure(`col-log-${key}`,
+          h("span.micro", {}, `${log.length} search step${log.length === 1 ? "" : "s"}`),
+          () => log.map((ev) => EVENT_RENDERERS[ev.type]?.(ev.payload, ev)).filter(Boolean),
+          // Open while it works, closed once its finding lands — as a default, so a
+          // reader who collapses it keeps it collapsed.
+          !col.done,
+          { "data-scroll": `col-log-${key}`, class: "coltail" })
+      : null,
+
+    adjustments.length
+      ? disclosure(`col-adj-${key}`,
+          h("span.micro", {}, `${adjustments.length} modifier${adjustments.length === 1 ? "" : "s"}`),
+          () => adjustments.map((ev) => EVENT_RENDERERS.adj(ev.payload, ev)))
+      : null,
+
+    claim && (claim.classes || []).length
+      ? h("div", { style: "margin-top:8px" },
+          claim.classes.map((c, i) => renderClass(c, `${key}-${i}`)))
+      : null);
+}
 
 /**
  * Which decomposed sub-claim this base rate or adjustment answers.
@@ -905,18 +1081,34 @@ function renderCheckEvidence(name, e) {
     case "dragonfly":
       return h("div.work", {},
         (e.classes || []).map((c) =>
-          row(c.name, `${pct(c.base_rate)} · n=${c.sample_size} · ${c.support || "?"}`)),
-        row("spread vs threshold", `${(e.spread ?? 0).toFixed(3)} vs ${(e.threshold ?? 0).toFixed(3)}`,
+          row(`${(c.sub_claim_ids || []).join(", ") || "—"} · ${c.name}`,
+              `${pct(c.base_rate)} · n=${c.sample_size} · ${c.support || "?"}`)),
+        // Per column. Two lenses on different sub-questions are not disagreeing, so the
+        // whole-view number below is context, not the thing being judged.
+        Object.entries(e.spreads || {}).map(([id, v]) =>
+          row(`spread within ${id || "the question"}`, (v ?? 0).toFixed(3),
+              v > e.threshold ? "var(--pv-red)" : "var(--pv-green)")),
+        row("worst vs threshold", `${(e.spread ?? 0).toFixed(3)} vs ${(e.threshold ?? 0).toFixed(3)}`,
             e.spread > e.threshold ? "var(--pv-red)" : "var(--pv-green)"),
+        e.whole_view_spread != null
+          ? row("across all columns (not judged)", (e.whole_view_spread).toFixed(3),
+                "var(--pv-text-3)")
+          : null,
         row("disagreement stated", e.disagreement ? "yes" : "no",
             e.disagreement ? "var(--pv-green)" : "var(--pv-text-3)"));
 
     case "aggregation":
       return h("div.work", {},
-        (e.classes || []).map((c) =>
-          row(c.name, `${pct(c.base_rate)} × weight ${(c.weight ?? 0).toFixed(2)}`)),
-        row("implied by weights", pct(e.implied)),
+        row("chain rule", e.rule || "—"),
+        (e.chain || []).map((c) =>
+          row(`${c.id} · ${c.question}`, `${pct(c.rate)} · ${c.source}`,
+              c.source === "estimated" ? "var(--pv-yellow)" : "")),
+        row("implied by the chain", pct(e.implied)),
         row("stated anchor", pct(e.stated)),
+        e.weighted_mean != null
+          ? row("weighted mean of all classes (not the anchor)", pct(e.weighted_mean),
+                "var(--pv-text-3)")
+          : null,
         row("drift vs slack",
             `${Math.abs((e.stated ?? 0) - (e.implied ?? 0)).toFixed(3)} vs ${(e.slack ?? 0).toFixed(3)}`,
             Math.abs((e.stated ?? 0) - (e.implied ?? 0)) > (e.slack ?? 0)
@@ -984,6 +1176,7 @@ function render() {
   document.documentElement.setAttribute("data-theme", state.theme);
 
   const focus = captureFocus();
+  const scrolls = captureScrolls();
   // `replaceChildren` is raw DOM and does NOT skip nulls the way `h` does — it
   // stringifies them, which is how a literal "null" ended up on the page.
   root.replaceChildren(
@@ -994,6 +1187,39 @@ function render() {
     ].filter(Boolean),
   );
   restoreFocus(focus);
+  restoreScrolls(scrolls);
+}
+
+/**
+ * Remember where each scrollable log was, and whether it was following the tail.
+ *
+ * The focus pair above solves this for inputs; a column's live search log needs the
+ * same treatment for the same reason — the whole tree is rebuilt several times a second
+ * while three columns stream, and a region that resets to the top every frame cannot be
+ * read at all.
+ *
+ * "Pinned" means within 8px of the bottom, which is the difference between a reader
+ * watching the tail and a reader who scrolled up to look at something. Yanking the
+ * second one back down is the single worst thing a live log can do, so the distinction
+ * is worth the two lines.
+ */
+function captureScrolls() {
+  const out = {};
+  document.querySelectorAll("[data-scroll]").forEach((el) => {
+    out[el.getAttribute("data-scroll")] = {
+      top: el.scrollTop,
+      pinned: el.scrollHeight - el.scrollTop - el.clientHeight < 8,
+    };
+  });
+  return out;
+}
+
+function restoreScrolls(saved) {
+  document.querySelectorAll("[data-scroll]").forEach((el) => {
+    const s = saved[el.getAttribute("data-scroll")];
+    // No entry means the region is new — a log that just opened starts at its tail.
+    el.scrollTop = !s || s.pinned ? el.scrollHeight : s.top;
+  });
 }
 
 /**
@@ -1029,12 +1255,21 @@ function renderHeader() {
     h("div.wordmark", {}, "Superforecaster"),
     h("div.spacer", {}),
     h("div.micro", {}, `${MAX_SLOTS - slotsFree()} of ${MAX_SLOTS} slots running`),
-    h("button.btn.tiny.ghost", {
-      onClick: () => {
-        const token = window.prompt("Admin token (needed to start a run):", getAdminToken() || "");
-        if (token !== null) { setAdminToken(token.trim() || null); toast(token.trim() ? "Token saved." : "Token cleared."); }
-      },
-    }, getAdminToken() ? "Admin ✓" : "Admin"),
+    // No web search is not a smaller version of the same forecast — it is one built on
+    // Wikipedia alone. Worth one word in the header rather than a surprise in the trail.
+    serverConfig.search_enabled ? null
+      : h("span.chip.warn", { title: "TAVILY_API_KEY is not set. Wikipedia still works, but base rates will be thinner." },
+          "no web search"),
+    // Hidden entirely on a local server with no ADMIN_API_KEY — there is no token to set,
+    // and offering the button implies the run will fail without one.
+    serverConfig.auth_required
+      ? h("button.btn.tiny.ghost", {
+          onClick: () => {
+            const token = window.prompt("Admin token (needed to start a run):", getAdminToken() || "");
+            if (token !== null) { setAdminToken(token.trim() || null); toast(token.trim() ? "Token saved." : "Token cleared."); }
+          },
+        }, getAdminToken() ? "Admin ✓" : "Admin")
+      : null,
     h("button.btn.tiny", {
       onClick: () => {
         const theme = state.theme === "dark" ? "light" : "dark";
@@ -1128,6 +1363,7 @@ function renderReview() {
   const f = state.fields;
   const c = state.critique;
   const ok = isResolvable();
+  const editing = !!state.editingBacklogId;
   const field = (label, key, opts = {}) =>
     h("label.field", {},
       h("span.micro", {}, label),
@@ -1143,8 +1379,11 @@ function renderReview() {
 
   return h("div", {},
     h("section.panel", {},
-      h("div.evhead", {}, h("h2", {}, "Parsed from your text"), h("div.spacer", {}),
-        h("button.btn.tiny", { onClick: () => setState({ phase: "draft" }) }, "Rewrite")),
+      h("div.evhead", {},
+        h("h2", {}, editing ? "Queued question" : "Parsed from your text"), h("div.spacer", {}),
+        h("button.btn.tiny", {
+          onClick: () => setState({ phase: "draft", editingBacklogId: null }),
+        }, editing ? "Discard changes" : "Rewrite")),
       field("Question", "question", { textarea: true }),
       field("Resolution criteria", "resolution_criteria", { textarea: true, bad: !ok }),
       h("div.grid2", {},
@@ -1155,9 +1394,11 @@ function renderReview() {
       h("div", { style: "display:flex;gap:8px;align-items:center;margin-top:6px" },
         h("span.micro", { style: "flex:1" },
           !ok ? "Blocked: the criteria have to be adjudicable before a run is worth its cost."
+              : editing ? "Editing a queued question. Saving updates the backlog; running it removes it from the queue."
               : slotsFree() <= 0 ? "All five run slots are busy. Add it to the backlog."
               : "Full graph, two clamped search tools. Expect five to eight minutes."),
-        h("button.btn", { onClick: onQueueToBacklog }, "Add to backlog"),
+        h("button.btn", { onClick: editing ? onSaveBacklog : onQueueToBacklog },
+          editing ? "Save changes" : "Add to backlog"),
         h("button.btn.primary", { disabled: !ok || slotsFree() <= 0 || state.busy, onClick: onRunNow },
           state.busy ? "Starting…" : "Run now"))),
 
@@ -1205,7 +1446,11 @@ function renderBacklog() {
       : h("div.micro", { style: "margin:4px 0 8px" },
           free > 0 ? `${free} of ${MAX_SLOTS} slots free` : "All slots busy — these wait"),
     state.backlog.map((b) =>
-      h("div.rowcard", {},
+      h("div.rowcard", {
+        class: state.editingBacklogId === b.id ? "on" : "",
+        title: "Open and edit this question",
+        onClick: () => onEditBacklog(b.id),
+      },
         h("div.evhead", {},
           h("span.chip", {}, b.category),
           h("span.micro", {}, `resolves ${(b.resolution_date || "").slice(0, 10)}`)),
@@ -1354,8 +1599,16 @@ function renderTrail(run) {
           h("div", {}, group.attempt > 1 ? `${meta.label} · attempt ${group.attempt}` : meta.label),
           h("div.pchips", {}, (meta.principles || []).map(principleChip)),
           h("div.spacer", {}),
-          busy ? h("span.micro.pulse", {}, "working") : h("span.micro", {}, `${group.items.length}`)),
+          busy ? h("span.micro.pulse", {}, "working")
+               : h("span.micro", {}, `${(group.columnOrder || []).length || group.items.length}`)),
         collapsed ? null : h("div.items", {},
+          // A fanned-out row draws its columns as cards, then whatever it emitted for
+          // the question as a whole below them — the anchor note, the reflect pass's
+          // steel-man and bias sweep. `runsOf` still handles the untagged rows.
+          (group.columnOrder || []).length
+            ? h("div.cols", {},
+                group.columnOrder.map((id) => renderColumnCard(group, group.columns[id])))
+            : null,
           runsOf(group.items).map((run_) => {
             const draw = (ev) => {
               const renderer = EVENT_RENDERERS[ev.type];
@@ -1390,5 +1643,9 @@ state.backlog = loadLocal(BACKLOG_KEY, []);
 state.theme = loadLocal(THEME_KEY, window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light");
 
 render();
+// Re-render once the server has said whether it wants a token and whether search is on.
+// Not awaited before the first paint: the page is useful immediately, and the two things
+// this changes are a header chip and a button.
+loadServerConfig().then(scheduleRender);
 pollRuns();
 window.setInterval(pollRuns, POLL_MS);

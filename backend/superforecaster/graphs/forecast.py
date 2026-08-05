@@ -52,8 +52,13 @@ class GraphHooks(Protocol):
     keeps the streaming machinery from being something every caller has to know about.
     """
 
-    def stage_started(self, stage: str, attempt: int) -> None:
-        """Called before a node runs."""
+    def stage_started(self, stage: str, attempt: int, state: ForecastState) -> None:
+        """Called before a node runs, with everything the earlier nodes wrote.
+
+        `state` is here so a fanned-out row can open one card per column *before* any
+        agent starts — the decomposition it needs to do that is already on the state,
+        and without it the row stays blank until its barrier.
+        """
 
     def stage_finished(self, stage: str, state: ForecastState) -> None:
         """Called after a node runs, with the field it just wrote already on `state`."""
@@ -270,7 +275,7 @@ async def _run_with_hooks(
         while not isinstance(node, End):
             stage = STAGE_KEYS[type(node).__name__]
             if hooks:
-                hooks.stage_started(stage, _attempt_for(stage, live_state))
+                hooks.stage_started(stage, _attempt_for(stage, live_state), live_state)
             node = await graph_run.next(node)
             if hooks:
                 hooks.stage_finished(stage, live_state)

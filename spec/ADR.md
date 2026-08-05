@@ -599,6 +599,10 @@ price of not owning a server-side table.
 level down — a task cancelled before the event loop gives it a slice never enters `execute`,
 so its `finally` never runs and nothing would ever close the stream.
 
+**Note (2026-08-05).** A saved trail now carries `columns` and `columnOrder` on each stage group.
+Trails written by the pre-grid client have neither and take the existing path, so there is no
+migration.
+
 ---
 
 ## ADR 27 — The UI projects typed state; it never asks for narration
@@ -652,6 +656,26 @@ tool calls and no narration. `source.credibility` is `null` because nothing scor
 `check` events carry `detail` only on failure, because the seven validators return
 `CheckViolation | None` and a pass has no message — the UI shows the check name alone rather
 than inventing one, and `evidence` now fills that gap with numbers instead of prose.
+
+**Extended 2026-08-05 — the grid.** Every event gains a `sub_claim` tag on the envelope, and two
+new types appear.
+
+- **`column`** opens one card per sub-question at the *top* of a fanned-out row, before any agent
+  starts. Every field is read off state an agent already produced: the sub-questions from
+  `Decomposition`, and on the inside row the incoming rate and classes from the `OutsideView` the
+  previous node wrote. `researching` is derived from `knowability`, not asserted — a `judgment`
+  column gets a card that says there is nothing to look up, rather than vanishing from the row.
+  This is why `GraphHooks.stage_started` widened to carry the state: without it the hook has no
+  decomposition, and a row of four concurrent searches stays blank for minutes.
+- **`exhausted`** reports a cell that crossed its hard budget. Pure `SearchBudget` state — code,
+  not a model.
+
+`sub_claim` sits on the envelope beside `stage` and `attempt` rather than inside `payload`,
+because it is a coordinate rather than content: the client routes on it before it reads the
+payload, and `observability` — which builds three different payload shapes and has no idea the
+grid exists — would otherwise have to inject it into all three. It forwards an opaque tag.
+
+The rule holds: no prompt was changed to make either event possible.
 
 
 ---
@@ -747,3 +771,280 @@ membership. See the ADR 13 amendment.
 
 **Rules out.** Reading a self-reported confidence label in any check. If a field exists only so
 a validator can threshold it, the model will learn to write whatever clears the threshold.
+
+---
+
+## ADR 30 — Research fans out per sub-question, inside the node
+
+**Status:** Accepted (2026-08-05)
+
+**Decision.** Decompose fixes a grid: rows are stages, columns are sub-questions. Both research
+rows — `FindBaseRates` and `AdjustInsideView` — run one agent per column concurrently and merge
+at a barrier. The fan-out lives *inside* `run_outside_view` / `run_inside_view`. No graph node
+was added; `forecast_graph.get_nodes()` still equals `STAGE_KEYS`.
+
+**Rationale.** One agent with fifteen tool calls covering three to five sub-questions spends
+them on the most searchable one. That is not a prompt failure — nothing in the prompt was ever
+going to allocate a shared budget fairly across parts of a question the agent cannot see the
+difficulty of in advance. Per-column agents make the allocation structural, and the whole row
+now costs roughly a quarter of the wall-clock.
+
+**Why the seam is `run_<agent>` and not the node.** ADR 11 names `run_<agent>` as the one seam a
+test, an eval, and a graph node all call; nine sites in `test_checkpoints.py` monkeypatch exactly
+those two functions. And ADR 12 scopes `graphs/` to methodology sequencing — a parallel map of
+one agent over N inputs is a row's internal shape, not an edge. Keeping the fan-out below the
+seam is what leaves the `FindBaseRates → AdjustInsideView` edge, and P4's ordering guarantee,
+untouched.
+
+**Amends ADR 12** rather than superseding it. Two assertions are the canaries: node names equal
+`STAGE_KEYS` (no node was added), and every stage starts before it finishes (the fan-out stayed
+inside the node, so the barriers are still the graph's). If either goes red, the fan-out has
+escaped into `graphs/`.
+
+**What became structurally impossible.** `_merge_base_rates` stamps `sub_claim_ids` on every
+reference class *unconditionally* — a cell researched exactly one column, so letting the model
+volunteer a different id would re-open the linkage hole `check_linkage` closes. The group of
+classes belonging to no column at all, which the old flat prompt produced routinely, no longer
+has a way to exist. `group_by_sub_claim`'s trailing "the question as a whole" group is deleted.
+Same move as ADR 12 made for ordering: convert a checked property into an unrepresentable state.
+
+**A failed column degrades; a failed row does not.** `asyncio.gather(return_exceptions=True)`, so
+one cell throwing cannot cancel its siblings mid-search. A column that returns nothing contributes
+no classes and falls back to its own working estimate in `checks.chain_inputs`. Only when *every*
+column fails does the row raise and hand over to ADR 28's checkpoint.
+
+**Rules out.** A `sub_claim_ids` instruction in any research prompt — the link is code's to
+assert. And sharing one `sources_seen` list across concurrent cells: `observability` detects new
+sources by slicing the tail off that list, so a shared list hands each cell the other's sources.
+Each cell gets a private list, merged after the barrier.
+
+---
+
+## ADR 31 — P14 and P15 move to a reflect pass
+
+**Status:** Accepted (2026-08-05)
+
+**Decision.** The inside-view row produces per-column adjustments plus a per-column steel-man.
+The whole-question `steel_man`, `what_would_change_my_mind`, and all five `bias_checks` come from
+a new no-tools `reflect` agent that runs after the row's barrier with every column's adjustments
+in front of it.
+
+**Amends ADR 11's table:** `inside_view → P5, P9` and `reflect → P14, P15`.
+
+**Rationale.** Four columns produce twenty bias checks and `InsideView` wants exactly five, on a
+closed set of names. There is no honest merge: concatenating four `confirmation` assessments
+produces text no reader wants, and picking one discards three. Either way the artifact stops
+meaning what `check_bias_coverage` reads it as.
+
+Worse, three of the five are questions about the *final probability*. "Would I give the same
+number for a 10x bigger version" and "am I stuck near the first number I saw" have no referent
+inside a column, which has no number. Asking anyway produces five plausible paragraphs about
+nothing — which is precisely the failure P15 exists to catch.
+
+And `check_disconfirming` fails when every adjustment points the same direction. No column can
+evaluate that; it cannot see the others' directions. The reflect pass can, so the instruction and
+the check are finally about the same set.
+
+The `INSTRUCTIONS` were lifted from `inside_view` verbatim rather than rewritten, so the wording
+that produced today's outputs is preserved. Cost is one request against `get_synthesis_limits()`
+— no tools, no search budget.
+
+This is arguably *more* faithful to ADR 11's own rationale ("a step you cannot run in isolation
+is a step you cannot test"): `run_reflect` is testable against a fixed adjustment list with no
+network at all.
+
+---
+
+## ADR 32 — The search budget is a gradient, and it is per cell
+
+**Status:** Accepted (2026-08-05)
+
+**Decision.** Two thresholds per cell instead of one wall for the row. `soft_depth` — the cline —
+is where the agent starts being pushed to stop searching and commit. `hard_depth` is
+`UsageLimits.tool_calls_limit`. A cell that crosses the wall degrades to no result; the row and
+the run continue. Configured by `CELL_SOFT_CALLS_PER_ITERATION` and `CELL_HARD_HEADROOM`.
+
+**Rationale.** A wall with no warning is the worst possible shape: the agent searches at full
+tilt and then dies mid-thought, and `UsageLimitExceeded` killed the whole graph. ADR 28 made the
+budget configurable *because* hitting it killed a run — that motivation is now addressed at the
+source rather than worked around at the resume button.
+
+**Two channels, and why both.** The primary one is a notice appended to every tool return. It
+arrives at the exact moment the decision is made — the model just asked for a result and is about
+to read it, so there is no attention to compete for and nothing to skim past. It is also the only
+channel that can say "this is your last tool result."
+
+Its two blind spots are real: there is no tool result before the first request, and after the
+last one it goes silent while the model may still make several more requests (an output-validation
+retry, a text-only turn). A dynamic `@agent.instructions` function covers both. Instructions are
+re-fetched per model request, which is what makes the pressure escalate *within* a run — unlike
+the static `SEARCH BUDGET: at most N rounds` line it replaces, which was frozen into request 1.
+
+**The counter lives on `ForecastDeps`, not a contextvar.** `agent.override` and
+`capture_run_messages` already use contextvars; a third whose correctness rests on "gather wraps
+coroutines in Tasks, and Tasks copy the context" is three implicit couplings where a dataclass
+field is zero.
+
+**`used` is incremented by the tools**, not read off `RunContext.usage` — a tool needs the count
+at return time and `usage.tool_calls` increments afterwards. And `find_disconfirming_evidence`
+runs three searches inside one tool call, so it increments once: `SearchBudget.used` and
+`UsageLimits.tool_calls_limit` have to count the same thing, or the cline fires at a depth the
+wall does not agree with.
+
+**The one case degradation cannot absorb.** If *every* column exhausts, there is no outside view
+to build — `OutsideView` requires two reference classes and there are none. That raises, with the
+per-column depths spent in the message, and ADR 28's resume-with-a-higher-depth is the answer.
+
+**Rules out.** Auto-raising the budget on exhaustion. The depth is the operator's call, same as
+ADR 28's "resume is a button."
+
+---
+
+## ADR 33 — The anchor is the chain the decomposition describes
+
+**Status:** Accepted (2026-08-05)
+
+**Decision.** `Decomposition` gains a typed `chain_rule` (`conjunction` | `disjunction` |
+`custom`). `aggregate_base_rate` is that rule applied to the per-column rates — the product for a
+conjunction, `1 - prod(1 - p)` for a disjunction — computed at merge by `checks.anchor_from`.
+`custom` falls back to the weighted mean across all classes, which is what the anchor was before.
+
+**Rationale.** The anchor was a weight-weighted *mean* across every reference class, regardless
+of which sub-question each one answered. For a conjunctive question that is not imprecise, it is
+the wrong operation, and it is biased in a known direction: the mean of factors each below 1 is
+always greater than their product.
+
+    sc1 0.55 · sc2 0.70 · sc3 0.60 · sc4 0.80
+    mean    0.66     <- the old anchor. Answers no question anyone asked.
+    product 0.185    <- what the decomposition actually says.
+
+Every conjunctive question was getting an inflated anchor by construction, and the entire P6
+chain hangs off it. `chain_note` has always asked the decompose agent for this distinction —
+"multiply for a conjunction, take the maximum for alternatives, and say which it is" — and
+nothing could read the answer.
+
+**The empty-cell trap.** A product over only the *researched* columns silently treats the rest as
+1.0. `checks.chain_inputs` runs over every sub-question, falling back to `SubPrediction.probability`
+— the decompose agent's own working estimate, an existing typed field — and marks the row
+`estimated` so a reader can tell the two apart.
+
+**Amends ADR 29, and weakens what it added.** `check_aggregation` was the check that made a
+model-asserted anchor accountable to its own weights. Now the merge computes the anchor with
+`anchor_from` and the check re-derives it with `anchor_from`, so no model performs that arithmetic
+and the check cannot catch one performing it badly. It has become a guard on the *artifact*:
+drift between the merge and the rule, a hand-built fixture, a checkpoint resumed from an older
+version.
+
+That is a real loss, traded for making the failure structurally impossible rather than merely
+checked — the same move ADR 12 made for "outside view first" and ADR 30 for sub-claim linkage.
+It is written down here, and in the function's own docstring, so it is not later discovered as a
+tautology nobody chose.
+
+**Rejected:** adding a `rate` field to each cell's output and checking it against
+`sub_claim_rate`. That re-introduces a model-asserted number one function call away from the
+weights that imply it, for a check that fires only when the model's mental arithmetic is wrong
+about two or three numbers it can see.
+
+**P7's spread is now measured within a column.** `base_rate_spread` is max-minus-min across all
+classes, which meant something when every class measured the same thing. Once each measures a
+different sub-question it measures nothing: a 0.15 lens on "will they commit" and a 0.80 lens on
+"will they pick an exchange" are not disagreeing, and the old number called that 0.65.
+`check_dragonfly` now fires on the widest *column* and names it; `check_calibration_hygiene`'s
+second arm uses the same, because post-fan-out the global spread is wide by construction and the
+advisory would otherwise fire on every run.
+
+**Known approximation, deliberately left.** `check_derivation` and `build_waterfall` still add
+signed adjustments to `aggregate_base_rate` flat, while an adjustment is now a delta from *its
+column's* rate. Changing that means propagating each column's adjusted rate back through the
+chain rule, which is self-contained work with its own failure modes, and `check_derivation` is
+the load-bearing P6 check with two test suites pinning it. The cell prompt compensates —
+magnitudes are points on the final probability arrived at via this sub-question, which is what
+the old global-anchor prompt already assumed. Filed as the follow-on.
+
+**ADR 29 is not reversed.** The grid asks for a per-base-rate confidence, and it already exists
+derived: `checks.claim_support` grades a reference class by its *strongest* `GradedSource`. No
+self-reported confidence field returns.
+
+---
+
+## ADR 34 — Schema migrations are a version counter and a dict
+
+**Status:** Accepted (2026-08-05)
+
+**Decision.** `db.init_db()` runs `_migrate` after its `CREATE TABLE IF NOT EXISTS` block.
+`MIGRATIONS` maps a version number to the statements that take the schema from `version - 1` to
+`version`; `PRAGMA user_version` — four bytes SQLite already keeps in the file header — records
+where a given file is. No Alembic, no migrations directory, no dependency.
+
+**Rationale.** The gap this closes was not theoretical, and its shape is the argument. ADR 29
+deleted `forecast_updates.confidence`: the INSERT stopped supplying it and the fresh-schema DDL
+stopped declaring it. Both changes were correct. But `CREATE TABLE IF NOT EXISTS` does exactly
+nothing to a table that already exists, so every deployed database kept a `NOT NULL` column that
+nothing wrote.
+
+The failure mode is what makes this worth an ADR. Every run completed all five stages, spent its
+full search budget, produced a real forecast — and then died on the final write with
+`IntegrityError`, rendered under Critique because that was the last stage to draw. The offered
+remedy was "resume the failed step", which could not work: no step had failed. A schema drift
+that only surfaces after a complete agent run is the most expensive kind of drift there is.
+
+**Why not Alembic.** It was the agreed fix for a year and never got built, which is evidence
+about its size relative to this problem. The whole mechanism here is a counter and a dict, it has
+no dependency, and it survives copying the file. If the schema ever needs branching or downgrade
+paths, Alembic is still the answer — this does not preclude it.
+
+**Every step must tolerate having nothing to do.** A database created fresh by `init_db` is
+already at the current schema but its `user_version` is 0, so every step still runs against it.
+`_migrate` swallows `no such column` for exactly this reason and re-raises everything else. That
+asymmetry is deliberate: a step that finds its work already done is normal, and a step that fails
+for any other reason must not be silently marked complete.
+
+**Rules out.** Telling an operator to delete the database. The data in it is forecasts scored
+against resolved questions — the only record of whether this system works.
+
+---
+
+## ADR 35 — An unset admin key means "not deployed", not "misconfigured"
+
+**Status:** Accepted (2026-08-05)
+
+**Decision.** With `ADMIN_API_KEY` unset, admin routes accept unauthenticated requests that
+arrive from a loopback address and carry no proxy header. Everything else still 403s or 500s
+exactly as before. The frontend asks the server which case it is via a new public
+`GET /config`, rather than deciding for itself.
+
+**Rationale.** The setup was two keys and one command, and then the first click failed. You
+exported an API key, started the server, typed a question, pressed **Run now**, and got
+"Admin token not set" — from `api.js`, which refused before sending anything. The remedy was
+to invent a value, put it in a `.env` you did not otherwise need, restart, then paste the
+same value into a `window.prompt` behind a button labelled Admin. Four steps of ceremony
+around a secret whose only purpose was to authenticate you to yourself.
+
+On a laptop, where the only thing that can reach the port is the process's own owner, a
+token protects nothing. It is worth something the moment the port is reachable by anyone
+else — so the condition is not "is a key set" but "could this request have come from
+somewhere else."
+
+**Loopback plus no proxy header, and why both.** `request.client.host` in `{127.0.0.1, ::1}`
+is the local case. But anything upstream can rewrite that, and a reverse proxy in front of
+this is precisely the shape of a real deployment — so any of `X-Forwarded-For`,
+`X-Real-IP`, `X-Forwarded-Host` or `Forwarded` disqualifies the request regardless of what
+the socket says. Two independent signals, and the failure mode of each is to demand the key.
+
+`superforecaster serve` binds `127.0.0.1` by default, which keeps that statement true by
+construction rather than by hope.
+
+**The client stopped deciding.** `api.js` refusing on a missing token was a second, stale
+copy of the server's auth policy. `GET /config` returns `auth_required` and the client
+believes it; the Admin button is hidden entirely when there is nothing to authenticate. A
+server is the only thing that can answer a question about its own auth.
+
+**Rules out.** Defaulting `ADMIN_API_KEY` to a known value, and generating one on first
+boot. Both produce a system that looks authenticated and is not, which is worse than one
+that says plainly it is running unauthenticated on localhost — as the startup banner now
+does, every time.
+
+**Related.** The same banner reports whether `TAVILY_API_KEY` is set. A forecast built on
+Wikipedia alone is shaped exactly like one with web search behind it — same checks, same
+confidence, thinner reference classes — so the difference has to be stated rather than
+inferred. It also appears as a header chip in the UI.

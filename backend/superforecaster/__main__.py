@@ -293,6 +293,97 @@ async def _cmd_diagram(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------- config subcommand ----------
+
+# Names whose value must never be printed. Everything else is a knob, not a secret.
+_SECRETS = {
+    "ANTHROPIC_API_KEY",
+    "PYDANTIC_AI_GATEWAY_API_KEY",
+    "TAVILY_API_KEY",
+    "LOGFIRE_TOKEN",
+    "ADMIN_API_KEY",
+    "OPENAI_API_KEY",
+}
+
+_REPORTED = (
+    "ANTHROPIC_API_KEY",
+    "PYDANTIC_AI_GATEWAY_API_KEY",
+    "TAVILY_API_KEY",
+    "ADMIN_API_KEY",
+    "LOGFIRE_TOKEN",
+    "AGENT_MODEL",
+    "DATABASE_PATH",
+    "CELL_SOFT_CALLS_PER_ITERATION",
+    "CELL_HARD_HEADROOM",
+)
+
+
+def _cmd_config(args: argparse.Namespace) -> int:
+    """Show every setting and where its value came from.
+
+    `load_dotenv(override=False)` means an exported variable silently beats `backend/.env`,
+    and once it has run the two are indistinguishable in `os.environ`. That makes "my .env
+    says X, why is it doing Y" unanswerable by inspection — which is the question this
+    command exists to answer.
+
+    Secrets are reported as set/unset with a length. The point is provenance, not the value.
+    """
+    import os
+
+    from config import ENV_FILE, origin, resolve_agent_model
+
+    print(f"\n.env file   {ENV_FILE}  ({'present' if ENV_FILE.exists() else 'ABSENT'})\n")
+    print(f"  {'setting':32} {'origin':12} value")
+    print(f"  {'-' * 32} {'-' * 12} {'-' * 30}")
+    for name in _REPORTED:
+        raw = os.getenv(name) or ""
+        src = origin(name)
+        if not raw:
+            shown = "—"
+        elif name in _SECRETS:
+            shown = f"set ({len(raw)} chars)"
+        else:
+            shown = raw
+        print(f"  {name:32} {src:12} {shown}")
+
+    print()
+    try:
+        print(f"  resolved model                   {resolve_agent_model()}")
+    except RuntimeError as e:
+        print(f"  resolved model                   NOT CONFIGURED — {e}")
+    return 0
+
+
+# ---------- serve subcommand ----------
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    """Start the API, which also serves the web UI at `/`.
+
+    Here rather than only as a `uvicorn` incantation because it is the first command
+    anyone runs, and `uvicorn api.main:app --port 8000` requires knowing the module path,
+    the working directory it resolves against, and that the frontend comes with it.
+
+    Defaults to 127.0.0.1: this binds nothing to the network until someone asks, which is
+    also what keeps `api.deps.is_local_mode` an honest statement about who can reach it.
+
+    Synchronous — the only one. `uvicorn.run` builds its own event loop, so dispatching
+    this through `asyncio.run` like every other subcommand raises "cannot be called from
+    a running event loop". Hence `blocking=True` on the parser defaults.
+    """
+    import uvicorn
+
+    print(f"\n  http://localhost:{args.port}", flush=True)
+    uvicorn.run(
+        "api.main:app",
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        log_level="info",
+    )
+    return 0
+
+
 # ---------- test subcommand ----------
 
 
@@ -425,12 +516,26 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_verbose_flag(p_test)
     p_test.set_defaults(func=_cmd_test)
 
+    p_config = sub.add_parser(
+        "config", help="Show every setting and where its value came from"
+    )
+    p_config.set_defaults(func=_cmd_config, blocking=True)
+
+    p_serve = sub.add_parser("serve", help="Start the API and the web UI")
+    p_serve.add_argument("--port", type=int, default=8000)
+    p_serve.add_argument("--host", default="127.0.0.1")
+    p_serve.add_argument("--reload", action="store_true", help="Restart on file changes")
+    p_serve.set_defaults(func=_cmd_serve, blocking=True)
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    # `serve` runs its own event loop and so cannot be awaited inside one.
+    if getattr(args, "blocking", False):
+        return args.func(args)
     return asyncio.run(args.func(args))
 
 

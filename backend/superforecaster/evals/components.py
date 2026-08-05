@@ -298,8 +298,12 @@ async def _dispatch(case: ComponentCase, deps: ForecastDeps) -> Any:
             deps,
         )
     if case.agent == "inside_view":
+        # An `inside_view` case needs a decomposition as well as an outside view: the
+        # row fans out per sub-question, and each cell adjusts from its own column's
+        # rate rather than the whole-question anchor.
         return await run_inside_view(
             ForecastInput.model_validate(data["input"]),
+            Decomposition.model_validate(data["decomposition"]),
             OutsideView.model_validate(data["outside"]),
             deps,
         )

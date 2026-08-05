@@ -28,7 +28,7 @@ class RecordingHooks:
     finished: list[str] = field(default_factory=list)
     order: list[str] = field(default_factory=list)
 
-    def stage_started(self, stage: str, attempt: int) -> None:
+    def stage_started(self, stage: str, attempt: int, state: ForecastState) -> None:
         self.started.append((stage, attempt))
         self.order.append(f"start:{stage}")
 
@@ -118,19 +118,19 @@ async def test_the_retry_edge_shows_up_as_a_second_synthesize(monkeypatch, stub_
 async def test_emit_reaches_the_agents_through_deps(monkeypatch, stub_agents):  # noqa: F811
     """`emit` rides on ForecastDeps rather than a parameter, which is what lets the
     agents' own event stream handler reach it without any agent knowing about it."""
-    emitted: list[tuple[str, dict]] = []
+    emitted: list[tuple[str, dict, str | None]] = []
 
     async def spying_decompose(input, deps):
         assert deps.emit is not None
-        deps.emit("thought", {"delta": "hello"})
+        deps.emit("thought", {"delta": "hello"}, None)
         return a_decomposition()
 
     monkeypatch.setattr(fg, "run_decompose", spying_decompose)
     await fg.run_forecast_graph(
-        forecast_input(), emit=lambda t, p: emitted.append((t, p))
+        forecast_input(), emit=lambda t, p, sc=None: emitted.append((t, p, sc))
     )
 
-    assert emitted == [("thought", {"delta": "hello"})]
+    assert emitted == [("thought", {"delta": "hello"}, None)]
 
 
 async def test_no_emit_means_deps_carries_none(monkeypatch, stub_agents):  # noqa: F811

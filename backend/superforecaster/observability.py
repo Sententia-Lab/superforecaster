@@ -181,8 +181,13 @@ def _make_event_handler(*, verbose: bool):
     ) -> None:
         tool_n = 0
         emit = getattr(ctx.deps, "emit", None)
+        # Which column of the grid this agent is filling, forwarded as an opaque tag.
+        # Nothing here knows what a column *means* — that keeps the UI's routing key from
+        # becoming something the observability layer has to model.
+        sub_claim = getattr(ctx.deps, "sub_claim", None)
         # Tools append to `deps.sources_seen` themselves for the leakage audit. Diffing
         # that list is how a `source` event gets a real URL without touching any tool.
+        # Safe under concurrency only because each cell is handed a private list.
         sources_reported = len(getattr(ctx.deps, "sources_seen", ()) or ())
 
         async for event in stream:
@@ -195,18 +200,19 @@ def _make_event_handler(*, verbose: bool):
                             "q": _tool_query_arg(event.part.args),
                             "hits": None,
                         },
+                        sub_claim,
                     )
                 elif isinstance(event, FunctionToolResultEvent):
                     seen = getattr(ctx.deps, "sources_seen", None) or []
                     for ref in seen[sources_reported:]:
-                        emit("source", _source_payload(ref))
+                        emit("source", _source_payload(ref), sub_claim)
                     sources_reported = len(seen)
                 elif isinstance(event, PartDeltaEvent):
                     # ToolCallPartDelta carries `args_delta`, not `content_delta`, so
                     # this picks up narration without leaking partial JSON arguments.
                     delta = getattr(event.delta, "content_delta", None)
                     if isinstance(delta, str) and delta:
-                        emit("thought", {"delta": delta})
+                        emit("thought", {"delta": delta}, sub_claim)
 
             if isinstance(event, FunctionToolCallEvent):
                 tool_n += 1

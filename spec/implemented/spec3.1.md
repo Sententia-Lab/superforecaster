@@ -150,6 +150,13 @@ data: {"seq":47,"run_id":"run_c40b91d","type":"query","stage":"outside","attempt
 
 ### 3.3 Event catalogue
 
+> **SUPERSEDED by `spec3.3.md` §3.3.** This table is kept for the history of the decision, not
+> as a reference. It has been wrong since ADR 29 and the spec3.2 wire change: `ref` and `analog`
+> no longer exist (replaced by `claim`), `sub.confidence` / `draft.confidence` /
+> `result.confidence` were deleted, `source.snippet` never shipped, and `brief`, `resume`,
+> `truncated`, `column` and `exhausted` are missing entirely. The envelope also gained a
+> `sub_claim` tag. Read `spec3.3.md` §3.3.
+
 Every `payload` shape, and exactly where the data comes from. **No LLM output changes.**
 
 | `type` | Emitted after | `payload` | Source field |
