@@ -35,6 +35,14 @@ object each agent returned (`decompose`, `outside`, `inside`, `synth` events car
 but no result was produced"). Each research row routes through a decision so an empty row
 bypasses the fork — see `no_base_rate_cells` / `no_inside_cells`.
 
+**The frontend holds the models and does the projecting.** `applyEvent` stores whole objects
+(`run.models.decomposition` / `.outside` / `.inside` / `.forecast` / `.violations`); the column
+cards, per-column rates, signed adjustments, source-to-search join, and check list are all
+derived in `app.js`. Five small helpers there mirror `checks.py` on purpose — the check and the
+picture have to agree about what the evidence implies. The waterfall chart and the per-check
+evidence renderers are gone; a static principles drawer with P-chip hover-highlight replaces
+"what this principle says", and it needs no backend involvement at all.
+
 **The anchor is the chain, not a mean.** `Decomposition.chain_rule` is typed
 (`conjunction` | `disjunction` | `custom`), and `aggregate_base_rate` is that rule applied to the
 per-column rates via `checks.anchor_from` — the product for a conjunction. The old weighted mean

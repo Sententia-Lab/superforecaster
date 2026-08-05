@@ -239,6 +239,9 @@ p  { margin:0 0 10px; }
 }
 .ev.source { display:flex; gap:9px; align-items:baseline; }
 .ev.route { color:var(--pv-red); background:var(--pv-red-fill); border-radius:var(--pv-radius-chip); padding:8px 10px; }
+/* A bias row is a chip and its assessment; without a gap they read as one word. */
+.ev.bias { display:flex; gap:9px; align-items:baseline; flex-wrap:wrap; }
+.ev.check { display:block; }
 .ev.brief {
   border:1px solid var(--pv-yellow); background:var(--pv-yellow-fill);
   border-radius:var(--pv-radius-chip); padding:9px 11px;
@@ -286,8 +289,53 @@ p  { margin:0 0 10px; }
 .evhead { display:flex; align-items:baseline; gap:8px; margin-bottom:3px; }
 .evhead .k { font-weight:var(--pv-fw-semibold); }
 .num-strong { font-variant-numeric:tabular-nums; font-weight:var(--pv-fw-semibold); }
+/* A signed move reads as a direction before it reads as a number. */
+.num-strong.up { color:var(--pv-green); }
+.num-strong.down { color:var(--pv-red); }
 .minibar { height:4px; background:var(--pv-surface-3); border-radius:2px; margin:5px 0 3px; overflow:hidden; }
 .minibar > i { display:block; height:100%; background:var(--pv-text-3); }
+
+/* ---------- the principles drawer ---------- */
+/* A P-chip is a reference, so it behaves like one: hovering lights up every other
+   mention of the same principle, clicking opens the drawer at it. `data-focus-p` is
+   stamped on the root by JS rather than re-rendering, because the trail rebuilds
+   several times a second while a run streams. */
+.pchip { cursor:help; }
+:root[data-focus-p="1"]  .pchip[data-p="1"],
+:root[data-focus-p="2"]  .pchip[data-p="2"],
+:root[data-focus-p="3"]  .pchip[data-p="3"],
+:root[data-focus-p="4"]  .pchip[data-p="4"],
+:root[data-focus-p="5"]  .pchip[data-p="5"],
+:root[data-focus-p="6"]  .pchip[data-p="6"],
+:root[data-focus-p="7"]  .pchip[data-p="7"],
+:root[data-focus-p="8"]  .pchip[data-p="8"],
+:root[data-focus-p="9"]  .pchip[data-p="9"],
+:root[data-focus-p="10"] .pchip[data-p="10"],
+:root[data-focus-p="11"] .pchip[data-p="11"],
+:root[data-focus-p="12"] .pchip[data-p="12"],
+:root[data-focus-p="13"] .pchip[data-p="13"],
+:root[data-focus-p="14"] .pchip[data-p="14"],
+:root[data-focus-p="15"] .pchip[data-p="15"],
+:root[data-focus-p="16"] .pchip[data-p="16"] {
+  background:var(--pv-brand); color:var(--pv-brand-fg); border-color:var(--pv-brand);
+}
+
+.drawer-scrim {
+  position:fixed; inset:0; background:rgba(0,0,0,.34); z-index:40;
+  display:flex; justify-content:flex-end;
+}
+.drawer {
+  background:var(--pv-surface); border-left:1px solid var(--pv-border);
+  width:min(460px, 100%); height:100%; overflow:auto; padding:20px 22px 40px;
+}
+.drawer-head { display:flex; align-items:baseline; gap:10px; margin-bottom:6px; }
+.plist { margin-top:14px; display:flex; flex-direction:column; gap:10px; }
+.prow {
+  border:1px solid var(--pv-border); border-radius:var(--pv-radius-card);
+  padding:9px 11px; background:var(--pv-bg);
+}
+.prow.on { border-color:var(--pv-brand); background:var(--pv-brand-fill); }
+@media (max-width: 640px) { .drawer { width:100%; border-left:none; } }
 
 /* ---------- one card per sub-question ---------- */
 /* A vertical list, not a grid. "Column" here means one agent per sub-question — a
@@ -314,13 +362,6 @@ p  { margin:0 0 10px; }
 
 .bignum { font-size:var(--pv-fs-display); line-height:var(--pv-lh-display); letter-spacing:var(--pv-ls-display); font-weight:var(--pv-fw-bold); font-variant-numeric:tabular-nums; }
 .stat { display:flex; flex-direction:column; gap:2px; }
-.wf { display:flex; flex-direction:column; gap:6px; margin-top:12px; }
-.wfrow { display:grid; grid-template-columns: minmax(0,1fr) 54px 96px 44px; gap:9px; align-items:center; font-size:var(--pv-fs-xs); }
-.wfrow .track { height:9px; background:var(--pv-surface-3); border-radius:3px; overflow:hidden; }
-.wfrow .track > i { display:block; height:100%; background:var(--pv-text-3); }
-.wfrow.final .track > i { background:var(--pv-brand); }
-.wfrow .lbl { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--pv-text-2); }
-.wfrow.anchor .lbl, .wfrow.final .lbl { color:var(--pv-text); font-weight:var(--pv-fw-medium); }
 
 .toast {
   position:fixed; bottom:18px; left:50%; transform:translateX(-50%);

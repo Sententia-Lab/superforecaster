@@ -24,14 +24,15 @@ const MAX_SEARCH_DEPTH = 50;
 const STAGE_META = {
   decompose: { num: "1", label: "Decompose", principles: [1, 2] },
   outside: { num: "2", label: "Find base rates", principles: [4, 7] },
-  inside: { num: "3", label: "Adjust — inside view", principles: [5, 9, 14, 15] },
-  synth: { num: "4", label: "Synthesize", principles: [6, 8, 16] },
-  critique: { num: "5", label: "Critique", principles: [] },
-  // Not a graph node — a seam in the trail, so the stages above it are visibly the
+  inside: { num: "3", label: "Adjust — inside view", principles: [5, 9] },
+  reflect: { num: "4", label: "Reflect", principles: [14, 15] },
+  synth: { num: "5", label: "Synthesize", principles: [6, 8, 16] },
+  critique: { num: "6", label: "Critique", principles: [] },
+  // Not a graph step — a seam in the trail, so the stages above it are visibly the
   // ones that already ran rather than looking like part of this attempt.
   resume: { num: "↻", label: "Resumed", principles: [] },
 };
-const STAGE_ORDER = ["decompose", "outside", "inside", "synth", "critique"];
+const STAGE_ORDER = ["decompose", "outside", "inside", "reflect", "synth", "critique"];
 
 /**
  * One line per methodology principle, so a bare "P7" explains itself.
@@ -54,6 +55,73 @@ const PRINCIPLES = {
   derivation: "P6 — The final probability must equal the base rate plus the stated adjustments. This is what stops a compelling story pulling the estimate away from the evidence.",
   calibration_hygiene: "P16 — A well-calibrated 60% beats a miscalibrated 90%. An extreme probability is allowed, but it has to be argued for rather than asserted.",
 };
+
+// ---------- derivations ----------
+//
+// The backend streams the typed objects its agents returned and nothing else — a whole
+// `Decomposition`, a whole `OutsideView`. Everything below turns those into what the
+// screen needs. It used to live in `runs.py` as ~340 lines of projection, which put
+// layout decisions in Python and six hundred lines from the CSS they served.
+//
+// Each of these mirrors a function in `checks.py`, deliberately: the check and the
+// picture have to agree about what the evidence implies, so they compute it the same way.
+
+/** The reference classes a sub-claim's cell researched. */
+function classesFor(id, outside) {
+  if (!outside || !id) return [];
+  return outside.reference_classes.filter((rc) => (rc.sub_claim_ids || []).includes(id));
+}
+
+/** Weighted mean of a sub-claim's classes, or null when nothing researched it. */
+function subClaimRate(id, outside) {
+  const classes = classesFor(id, outside);
+  const total = classes.reduce((n, rc) => n + rc.weight, 0);
+  if (!classes.length || total <= 1e-9) return null;
+  return classes.reduce((n, rc) => n + rc.weight * rc.base_rate, 0) / total;
+}
+
+/** The adjustments a sub-claim's cell produced. */
+function adjustmentsFor(id, inside) {
+  if (!inside || !id) return [];
+  return inside.adjustments.filter((a) => (a.sub_claim_ids || []).includes(id));
+}
+
+/** An adjustment's signed contribution. Noise moves the number by zero, by definition. */
+function signedAdjustment(a) {
+  if (a.is_noise) return 0;
+  if (a.direction === "up") return a.magnitude;
+  if (a.direction === "down") return -a.magnitude;
+  return 0;
+}
+
+const CONFIDENCE_RANK = { low: 1, medium: 2, high: 3 };
+
+/** A claim is graded by its strongest source, so an extra thin one changes nothing. */
+function claimSupport(sources) {
+  if (!sources || !sources.length) return "";
+  return sources.reduce(
+    (best, s) =>
+      (CONFIDENCE_RANK[s.confidence] || 0) > (CONFIDENCE_RANK[best] || 0)
+        ? s.confidence
+        : best,
+    "",
+  );
+}
+
+/**
+ * Which search returned a cited URL, joined against what the tools actually recorded.
+ *
+ * This is the one thing a reader cannot get from the citation alone — the agent asserts
+ * the URL, the tool records the query that produced it, and only the two together answer
+ * "which search found this base rate".
+ */
+function sourcesSeenIndex(run) {
+  const by = {};
+  for (const ev of run.searchLog || []) {
+    if (ev.type === "source" && ev.payload.url) by[ev.payload.url] = ev.payload;
+  }
+  return by;
+}
 
 /**
  * Short title per principle number, for the chips on stage headers.
@@ -82,11 +150,67 @@ const PRINCIPLE_TITLES = {
 };
 
 /** `P7 dragonfly eye`, with the full line on hover. Never a bare number. */
+/**
+ * A principle chip. Hovering one highlights every other mention of the same principle
+ * and opens the drawer to it, so "P7" is answerable without leaving the page.
+ *
+ * `data-p` is the whole mechanism: the highlight is a CSS sibling rule keyed on it, and
+ * the drawer scrolls to the row with the matching attribute. No backend involvement —
+ * the principle text is static, and shipping it per check was the largest single thing
+ * the old projection layer did.
+ */
 const principleChip = (n) => {
   const entry = PRINCIPLE_TITLES[n];
-  if (!entry) return h("span.chip", {}, `P${n}`);
-  return h("span.chip", { title: `P${n} — ${entry[0]}. ${entry[1]}` }, `P${n} ${entry[0]}`);
+  const label = entry ? `P${n} ${entry[0]}` : `P${n}`;
+  return h("span.chip.pchip", {
+    "data-p": String(n),
+    title: entry ? `P${n} — ${entry[0]}. ${entry[1]}` : `P${n}`,
+    onMouseEnter: () => setPrincipleFocus(n),
+    onMouseLeave: () => setPrincipleFocus(null),
+    onClick: (e) => { e.stopPropagation(); openPrinciples(n); },
+  }, label);
 };
+
+/**
+ * Highlight every mention of a principle at once.
+ *
+ * Done by stamping the root rather than re-rendering: the trail is rebuilt several
+ * times a second while a run streams, and a hover that triggered a full render would
+ * fight the stream for frames.
+ */
+function setPrincipleFocus(n) {
+  document.documentElement.setAttribute("data-focus-p", n == null ? "" : String(n));
+}
+
+/** Open the principles drawer, scrolled to one principle. */
+function openPrinciples(n) {
+  state.principlesOpen = true;
+  state.principleAt = n ?? null;
+  scheduleRender();
+}
+
+/** The reference the P-chips point at. Static — nothing here comes from a run. */
+function renderPrinciplesDrawer() {
+  if (!state.principlesOpen) return null;
+  return h("div.drawer-scrim", { onClick: () => setState({ principlesOpen: false }) },
+    h("aside.drawer", { onClick: (e) => e.stopPropagation() },
+      h("div.drawer-head", {},
+        h("h2", {}, "The sixteen principles"),
+        h("div.spacer", {}),
+        h("button.btn.tiny.ghost", { onClick: () => setState({ principlesOpen: false }) }, "Close")),
+      h("p.dim", {}, "What the agent system is held to. Every check in a run reports the "
+        + "principle it enforces; these are what those numbers mean."),
+      h("div.plist", {},
+        Object.entries(PRINCIPLE_TITLES).map(([n, [title, text]]) =>
+          h("div.prow", {
+            "data-p": n,
+            class: String(state.principleAt) === n ? "on" : "",
+          },
+            h("div.evhead", {},
+              h("span.chip.pchip", { "data-p": n }, `P${n}`),
+              h("strong", {}, title)),
+            h("div.dim", {}, text))))));
+}
 
 const CATEGORIES = ["general", "finance", "economics", "politics", "ai", "energy",
                     "science", "health", "sport", "tech"];
@@ -121,7 +245,6 @@ function h(tag, attrs, ...children) {
 }
 
 const pct = (p) => (p === null || p === undefined ? "—" : `${Math.round(p * 100)}%`);
-const signed = (d) => (d > 0 ? `+${Math.round(d * 100)}` : `${Math.round(d * 100)}`);
 const domainOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return u || ""; } };
 
 /** True only for an absolute http(s) URL. */
@@ -216,6 +339,8 @@ const state = {
   trailMissing: {},        // runId -> true, once hydration has been tried and failed
   toast: null,
   busy: false,
+  principlesOpen: false,   // the P-chip reference drawer
+  principleAt: null,       // which row it opened to
 };
 
 function loadLocal(key, fallback) {
@@ -580,6 +705,10 @@ function attachRun(summary, fromSeq = 0, keep = false) {
     : {
         summary,
         stages: [],
+        // The typed objects the graph emits, keyed by what they are. Every renderer
+        // reads from here rather than from the event that delivered them.
+        models: {},
+        searchLog: [],
         result: null,
         lastSeq: fromSeq,
         toolCalls: 0,
@@ -606,38 +735,71 @@ function attachRun(summary, fromSeq = 0, keep = false) {
 /**
  * Fold one event into the local run.
  *
- * A stage group is keyed by `stage + attempt`, which is what makes the Synthesize
- * retry render as its own "attempt 2" card instead of overwriting attempt 1.
+ * Two kinds of event arrive, and they are handled differently on purpose.
  *
- * Events carrying a `sub_claim` are routed into that column's card instead of the
- * group's flat item list. Decompose, Synthesize and Critique never carry one and take
- * exactly the path they always did.
+ * **Stage results** carry a whole typed object — `decompose` is a `Decomposition`,
+ * `outside` an `OutsideView`. They land in `run.models`, and the renderers read from
+ * there. Nothing is flattened on arrival, so adding a field to a model shows up in the
+ * UI without a wire format to change first.
+ *
+ * **Live progress** — `query`, `source`, `thought`, `exhausted` — is inherently
+ * incremental and has no whole-model equivalent. It routes into the column card it is
+ * tagged with, which is what keeps a four-minute research row legible while it works
+ * rather than blank until its barrier.
+ *
+ * A stage group is keyed by `stage + attempt`, which is what makes the synthesize retry
+ * render as its own "attempt 2" card instead of overwriting attempt 1.
  */
 function applyEvent(runId, ev) {
   const run = state.runs[runId];
   if (!run) return;
   run.lastSeq = Math.max(run.lastSeq, ev.seq);
+  run.models = run.models || {};
 
   switch (ev.type) {
     case "stage": {
       const key = `${ev.payload.stage}-${ev.payload.attempt}`;
       if (!run.stages.some((s) => s.key === key)) {
-        run.stages.push({ key, stage: ev.payload.stage, attempt: ev.payload.attempt,
-                          items: [], columns: null, columnOrder: [] });
+        const group = { key, stage: ev.payload.stage, attempt: ev.payload.attempt,
+                        items: [], columns: null, columnOrder: [] };
+        openColumns(run, group);
+        run.stages.push(group);
       }
       run.summary = { ...run.summary, stage: ev.payload.stage, attempt: ev.payload.attempt,
                       stage_index: STAGE_ORDER.indexOf(ev.payload.stage) + 1 };
       return;
     }
+    case "stage_end":
+      return; // The header already moved on; nothing to draw for a close.
+
+    // ---- whole typed objects ----
+    case "decompose":
+      run.models.decomposition = ev.payload;
+      return;
+    case "outside":
+      run.models.outside = ev.payload;
+      closeColumns(run, "outside");
+      return;
+    case "inside":
+      run.models.inside = ev.payload;
+      closeColumns(run, "inside");
+      return;
+    case "synth":
+      (run.models.drafts = run.models.drafts || []).push(ev.payload);
+      run.models.forecast = ev.payload;
+      return;
+    case "critique":
+      run.models.violations = ev.payload.violations || [];
+      return;
+
     case "result":
       run.result = ev.payload;
       run.summary = { ...run.summary, forecast_id: ev.payload.forecast_id };
-      saveResult(runId, ev.payload);
+      saveResult(runId, ev.payload, run);
       return;
     case "resume":
       // Needs its own case: the fall-through below appends to the *last stage group*,
-      // and a resume arrives before the resumed node has emitted its `stage`. It used
-      // to hit `if (!group) return` and vanish, leaving the renderer dead code.
+      // and a resume arrives before the resumed step has emitted its `stage`.
       run.summary = { ...run.summary, status: "running",
                       max_iterations: ev.payload.max_iterations ?? run.summary.max_iterations };
       run.stages.push({ key: `resume-${ev.seq}`, stage: "resume", attempt: 1, items: [ev] });
@@ -654,31 +816,18 @@ function applyEvent(runId, ev) {
   if (!group) return;
 
   if (ev.type === "query") run.toolCalls += 1;
-
-  if (ev.type === "column") {
-    group.columns = group.columns || {};
-    group.columns[ev.payload.id] = { ...ev.payload, items: [], done: false, exhausted: false };
-    if (!group.columnOrder.includes(ev.payload.id)) group.columnOrder.push(ev.payload.id);
-    return;
+  if (ev.type === "source" || ev.type === "query") {
+    // A flat log of everything the tools recorded, kept so a citation can be joined
+    // back to the search that produced it. See `sourcesSeenIndex`.
+    (run.searchLog = run.searchLog || []).push(ev);
   }
 
-  // Untagged: the pre-3.3 path, byte-for-byte. This is every event in the decompose,
-  // synth and critique rows, plus the whole-question notes the research rows emit
-  // below their cards.
   const bucket = ev.sub_claim == null ? group : columnFor(group, ev.sub_claim);
   if (!bucket) return;
 
   if (ev.type === "exhausted") {
     bucket.exhausted = true;
     bucket.done = true;
-    return;
-  }
-  // A finding closes its column. Stored on the column rather than in its log, because
-  // the card renders it as a result and the log as a trail.
-  if (ev.type === "claim" || ev.type === "adj") {
-    bucket.done = true;
-    if (ev.type === "claim") bucket.claim = ev;
-    else (bucket.adjustments = bucket.adjustments || []).push(ev);
     return;
   }
 
@@ -694,11 +843,60 @@ function applyEvent(runId, ev) {
 }
 
 /**
+ * Open one card per column at the top of a research row, before any agent runs.
+ *
+ * Derived from the decomposition the previous stage already delivered, which is why the
+ * backend no longer sends a `column` event: everything this needs is on a model the
+ * client is holding. Without the cards the row is blank until its barrier, which for
+ * four concurrent searches is several minutes of nothing.
+ *
+ * `researching` is derived rather than asserted — a `judgment` column gets a card that
+ * says there is no base rate to look up, and never enters research. It still exists,
+ * because a column that vanishes from a row looks like a bug rather than an answer.
+ */
+function openColumns(run, group) {
+  if (group.stage !== "outside" && group.stage !== "inside") return;
+  const d = run.models.decomposition;
+  if (!d) return;
+
+  group.columns = {};
+  group.columnOrder = [];
+  for (const s of d.sub_claims) {
+    if (!s.id) continue;
+    const anchor = group.stage === "inside" ? subClaimRate(s.id, run.models.outside) : null;
+    const classes = group.stage === "inside" ? classesFor(s.id, run.models.outside) : [];
+    group.columns[s.id] = {
+      id: s.id,
+      question: s.question,
+      knowability: s.knowability,
+      rationale: s.rationale,
+      p: s.probability,
+      anchor,
+      classes,
+      // The inside row adjusts FROM a rate the row above it found. No reference class
+      // means no base rate to adjust from, which is P5's premise.
+      researching: group.stage === "inside" ? classes.length > 0 : s.knowability === "researchable",
+      items: [],
+      done: false,
+      exhausted: false,
+    };
+    group.columnOrder.push(s.id);
+  }
+}
+
+/** Mark a research row's cards finished once its barrier has delivered the model. */
+function closeColumns(run, stage) {
+  const group = [...run.stages].reverse().find((g) => g.stage === stage);
+  if (!group || !group.columns) return;
+  for (const id of group.columnOrder) group.columns[id].done = true;
+}
+
+/**
  * The column a tagged event belongs to, created on the spot if it arrives first.
  *
- * A stray should be impossible — `project_columns` runs at `stage_started`, before any
- * agent — but dropping an event to keep an invariant is the wrong trade when the
- * invariant is only about ordering.
+ * A stray should be impossible — the cards open when the stage does — but dropping an
+ * event to keep an invariant is the wrong trade when the invariant is only about
+ * ordering.
  */
 function columnFor(group, id) {
   group.columns = group.columns || {};
@@ -709,16 +907,15 @@ function columnFor(group, id) {
   return group.columns[id];
 }
 
-function saveResult(runId, payload) {
+function saveResult(runId, payload, run) {
+  const f = payload.forecast || {};
   const record = {
     id: runId,
     forecast_id: payload.forecast_id,
-    question: payload.question,
-    probability: payload.probability,
-    anchor: payload.anchor,
-    support: payload.support,
-    reasoning: payload.reasoning,
-    waterfall: payload.waterfall,
+    question: f.question,
+    probability: f.probability,
+    anchor: run && run.models.outside ? run.models.outside.aggregate_base_rate : null,
+    reasoning: f.reasoning,
     violations: payload.violations,
     stamp: new Date().toISOString(),
   };
@@ -766,120 +963,29 @@ async function pollRuns() {
 
 // ---------- event renderers ----------
 
+/**
+ * Renderers for the live-progress events — the ones that are inherently incremental and
+ * have no whole-model equivalent.
+ *
+ * Stage *results* are not here. Those arrive as whole typed objects and are drawn by
+ * `renderStageBody` from `run.models`, which is why this table is a fraction of its
+ * former size: it used to hold a renderer per flattened field the backend invented.
+ */
 const EVENT_RENDERERS = {
   thought: (p) =>
-    h("div.ev.thought", {}, p.delta, h("span.caret", {}, "▍")),
-
-  note: (p) =>
-    h("div.ev.note", {},
-      h("div.micro", {}, p.label),
-      h("div.dim", {}, p.text)),
+    h("div.ev.thought", {}, p.delta, h("span.caret", {}, "\u258d")),
 
   query: (p) =>
     h("div.ev.query", {},
       h("span.chip", {}, p.tool),
-      h("span.dim", {}, `“${p.q}”`)),
+      h("span.dim", {}, `\u201c${p.q}\u201d`)),
 
   source: (p) =>
     h("div.ev.source", {},
       h("span", { style: `width:6px;height:6px;border-radius:50%;background:var(--pv-text-3);flex:none;margin-top:6px` }),
       h("div", {},
         h("div", {}, link(p.url, p.title || domainOf(p.url))),
-        h("div.micro", {}, domainOf(p.url), p.published_date ? ` · ${p.published_date.slice(0, 10)}` : ""))),
-
-  sub: (p) =>
-    h("div.ev.sub", {},
-      h("div.evhead", {},
-        h("span.chip", { class: p.knowability === "researchable" ? "for" : "" }, p.knowability),
-        p.id ? h("span.micro", {}, p.id) : null),
-      h("div", {}, p.question),
-      h("div.dim", {}, p.rationale)),
-
-  // One sub-claim and everything the outside view found for it. The unit a reader
-  // actually asks about — "which part of this did you look up, and what did you find" —
-  // which a flat list of reference classes cannot answer.
-  claim: (p, ev) => {
-    const n = (p.classes || []).length;
-    const queries = [...new Set((p.classes || []).flatMap((c) => c.queries || []))];
-    return h("div.ev.claim", {},
-      h("div.evhead", {},
-        h("span.num-strong", { style: p.rate === null ? "color:var(--pv-text-3)" : "" },
-          p.rate === null ? "—" : pct(p.rate)),
-        p.id ? h("span.micro", {}, p.id) : null,
-        h("div.spacer", {}),
-        h("span.chip", { class: p.knowability === "researchable" ? "for" : "" },
-          p.knowability)),
-      h("div", {}, p.question),
-      // The searches that produced this sub-claim's base rates, up front. Derived by
-      // joining each cited URL to the SourceRef the tool recorded for it — not the
-      // model's account of what it searched for.
-      queries.length
-        ? h("div.micro", {}, `searched: ${queries.join(" · ")}`)
-        : null,
-      n === 0
-        ? h("div.micro", {},
-            p.knowability === "researchable"
-              ? "no reference class found — nothing was researched for this"
-              : "judgment — no base rate to look up")
-        : disclosure(`claim-${ev.seq}`,
-            h("span.micro", {}, `${n} reference class${n === 1 ? "" : "es"}`),
-            () => (p.classes || []).map((c, i) => renderClass(c, `${ev.seq}-${i}`))));
-  },
-
-  adj: (p, ev) =>
-    h("div.ev.adj", { class: p.noise ? "noise" : "" },
-      h("div.evhead", {},
-        h("span.num-strong", {
-          style: `color:${p.noise ? "var(--pv-text-3)" : p.dir === "up" ? "var(--pv-green)" : "var(--pv-red)"}`,
-        }, p.noise ? "0 pts" : `${p.dir === "up" ? "+" : "−"}${Math.round(p.mag * 100)} pts`),
-        p.noise ? h("span.chip", {}, "noise") : null,
-        h("div.spacer", {}),
-        p.noise ? null : supportChip(p.support)),
-      h("div", {}, p.evidence),
-      h("div.dim", {}, h("span.micro", {}, "flip test "), p.flip),
-      addresses(p.sub_claim_ids),
-      p.noise ? null : renderSources(`adj-${ev.seq}`, p.sources)),
-
-  bias: (p) =>
-    h("div.ev.bias", {},
-      h("div.micro", {}, p.bias),
-      h("div.dim", {}, p.assessment)),
-
-  check: (p, ev) => {
-    // An advisory verdict is not a failure. P16 flags a bold number for a reader to
-    // judge; colouring it like a broken check would teach people to ignore both.
-    const advisory = !p.ok && p.blocking === false;
-    const tone = p.ok ? "var(--pv-green)" : advisory ? "var(--pv-yellow)" : "var(--pv-red)";
-    const fill = p.ok ? ""
-      : advisory ? "background:var(--pv-yellow-fill);border-color:transparent"
-      : "background:var(--pv-red-fill);border-color:var(--pv-red-soft)";
-    return h("div.ev.check", { style: fill },
-      h("div.evhead", {},
-        h("span", { style: `color:${tone}` }, p.ok ? "✓" : advisory ? "!" : "✗"),
-        h("span.k", {}, p.check),
-        advisory ? h("span.chip.warn", {}, "advisory") : null),
-      // Passing checks carry no detail — the validators only produce a message when
-      // something failed, and inventing one would be the UI making things up.
-      p.detail ? h("div.dim", { style: "margin-top:5px" }, p.detail) : null,
-      renderPrinciple(`why-${ev.seq}`, p.name),
-      disclosure(`work-${ev.seq}`, h("span.micro", {}, "show the numbers"),
-        () => renderCheckEvidence(p.name, p.evidence || {}) || h("span.dim", {}, "—")));
-  },
-
-  brief: (p) =>
-    h("div.ev.brief", {},
-      h("div.micro", {}, "What attempt 2 is told"),
-      h("p.dim", { style: "margin:5px 0" },
-        `The decomposition, base rate, and adjustments are unchanged — only the `
-        + `instruction changes. Base rate ${pct(p.anchor)} plus the signed non-noise `
-        + `adjustments implies ${pct(p.implied)}.`),
-      h("pre.prompt", {}, p.correction || p.arithmetic)),
-
-  draft: (p) =>
-    h("div.ev.draft", {},
-      h("div.evhead", {}, h("span.num-strong", {}, pct(p.p)), h("span.micro", {}, p.note))),
-
-  route: (p) => h("div.ev.route", {}, "↩ ", p.text),
+        h("div.micro", {}, domainOf(p.url), p.published_date ? ` \u00b7 ${p.published_date.slice(0, 10)}` : ""))),
 
   error: (p) =>
     h("div.ev.route", {},
@@ -887,29 +993,20 @@ const EVENT_RENDERERS = {
       p.hint ? h("div", { style: "margin-top:5px" }, p.hint) : null,
       p.resumable
         ? h("div.micro", { style: "margin-top:6px" },
-            `${(p.completed_stages || []).length} stage`
-            + `${(p.completed_stages || []).length === 1 ? "" : "s"} already complete`
-            + `${(p.completed_stages || []).length ? " — " + (p.completed_stages || [])
-                .map((s) => STAGE_META[s]?.label || s).join(", ") : ""}`
-            + ". Resuming re-runs only the step that failed.")
+            "Resuming re-runs only the step that failed \u2014 everything before it keeps "
+            + "the result it was already paid for.")
         : null),
 
   resume: (p) =>
     h("div.ev.brief", {},
       h("div.micro", {}, "Resumed"),
-      h("div.dim", {},
-        `Picking up at ${STAGE_META[p.from_node]?.label || p.from_node}. `
-        + `Search depth ${p.max_iterations}. `
-        + `${(p.completed_stages || []).length} earlier stage`
-        + `${(p.completed_stages || []).length === 1 ? "" : "s"} kept.`)),
+      h("div.dim", {}, `Search depth ${p.max_iterations}. Earlier stages kept.`)),
 
   truncated: (p) =>
     h("div.ev.truncated", {}, `${p.count} earlier events were dropped from the buffer.`),
 
-  // Both of these are drawn by the column card that owns them, not inline. Registered
-  // so `renderTrail`'s `if (!renderer) return null` does not silently swallow one that
-  // arrives outside a card.
-  column: () => null,
+  // Drawn by the column card that owns it, not inline. Registered so `renderTrail`'s
+  // `if (!renderer) return null` does not silently swallow one outside a card.
   exhausted: () => null,
 };
 
@@ -920,26 +1017,34 @@ const EVENT_RENDERERS = {
  * that spends four minutes on four concurrent searches is legible for all four of them
  * rather than blank until the barrier.
  */
-function renderColumnCard(group, col) {
+function renderColumnCard(run, group, col) {
   const key = `${group.key}-${col.id}`;
-  const claim = col.claim && col.claim.payload;
-  const rate = claim ? claim.rate : col.anchor;
   const log = col.items;
-  const adjustments = col.adjustments || [];
+
+  // Everything below is derived from the models the graph delivered, not from a payload
+  // the backend shaped for this card. The outside row shows what its cell found; the
+  // inside row shows where the number started and what moved it.
+  const isInside = group.stage === "inside";
+  const classes = isInside ? col.classes : classesFor(col.id, run.models.outside);
+  const adjustments = isInside ? adjustmentsFor(col.id, run.models.inside) : [];
+  const moved = adjustments.reduce((n, a) => n + signedAdjustment(a), 0);
+  const rate = isInside
+    ? (col.anchor == null ? null : Math.min(1, Math.max(0, col.anchor + moved)))
+    : subClaimRate(col.id, run.models.outside);
 
   // One clipped line of whatever the agent is doing right now. The full trail is one
   // click away; this is the part you can watch without opening anything.
   const live = !col.done && log.length ? log[log.length - 1] : null;
   const liveText = live
     ? (live.type === "thought" ? live.payload.delta
-       : live.type === "query" ? `${live.payload.tool} · ${live.payload.q}`
+       : live.type === "query" ? `${live.payload.tool} \u00b7 ${live.payload.q}`
        : live.payload.title || live.payload.domain || "")
     : "";
 
   return h("div.colcard", { class: col.done ? "" : "busy" },
     h("div.evhead", {},
       h("span.num-strong", { style: rate == null ? "color:var(--pv-text-3)" : "" },
-        rate == null ? "—" : pct(rate)),
+        rate == null ? "\u2014" : pct(rate)),
       col.id ? h("span.micro", {}, col.id) : null,
       h("div.spacer", {}),
       col.exhausted ? h("span.chip.warn", {}, "budget spent") : null,
@@ -950,15 +1055,16 @@ function renderColumnCard(group, col) {
     h("div", {}, col.question),
     // The inside row adjusts FROM a rate the row above it found. Showing where the
     // number started is what makes an adjustment readable as a delta.
-    group.stage === "inside" && col.anchor != null
-      ? h("div.micro", {}, `from ${pct(col.anchor)}`)
+    isInside && col.anchor != null
+      ? h("div.micro", {},
+          `from ${pct(col.anchor)}${moved ? ` \u00b7 ${moved > 0 ? "+" : ""}${Math.round(moved * 100)} pts` : ""}`)
       : null,
 
     !col.researching && !log.length
       ? h("div.micro", {},
           col.knowability === "researchable"
-            ? "no reference class found — nothing was researched for this"
-            : "judgment — no base rate to look up")
+            ? "no reference class found \u2014 nothing was researched for this"
+            : "judgment \u2014 no base rate to look up")
       : null,
 
     live ? h("div.collive", {}, liveText) : null,
@@ -967,7 +1073,7 @@ function renderColumnCard(group, col) {
       ? disclosure(`col-log-${key}`,
           h("span.micro", {}, `${log.length} search step${log.length === 1 ? "" : "s"}`),
           () => log.map((ev) => EVENT_RENDERERS[ev.type]?.(ev.payload, ev)).filter(Boolean),
-          // Open while it works, closed once its finding lands — as a default, so a
+          // Open while it works, closed once its finding lands \u2014 as a default, so a
           // reader who collapses it keeps it collapsed.
           !col.done,
           { "data-scroll": `col-log-${key}`, class: "coltail" })
@@ -976,13 +1082,29 @@ function renderColumnCard(group, col) {
     adjustments.length
       ? disclosure(`col-adj-${key}`,
           h("span.micro", {}, `${adjustments.length} modifier${adjustments.length === 1 ? "" : "s"}`),
-          () => adjustments.map((ev) => EVENT_RENDERERS.adj(ev.payload, ev)))
+          () => adjustments.map((a, i) => renderAdjustment(a, `${key}-${i}`)))
       : null,
 
-    claim && (claim.classes || []).length
+    classes.length
       ? h("div", { style: "margin-top:8px" },
-          claim.classes.map((c, i) => renderClass(c, `${key}-${i}`)))
+          classes.map((c, i) => renderClass(run, c, `${key}-${i}`)))
       : null);
+}
+
+/** One signed move away from a column's base rate. */
+function renderAdjustment(a, key) {
+  const delta = signedAdjustment(a);
+  return h("div.ev.adj", {},
+    h("div.evhead", {},
+      h("span.num-strong", { class: delta > 0 ? "up" : delta < 0 ? "down" : "" },
+        `${delta > 0 ? "+" : ""}${Math.round(delta * 100)} pts`),
+      a.is_noise ? h("span.chip", {}, "noise") : null,
+      h("div.spacer", {}),
+      supportChip(claimSupport(a.sources))),
+    h("div", {}, a.evidence),
+    a.flip_test ? h("div.dim", {}, `flip test: ${a.flip_test}`) : null,
+    addresses(a.sub_claim_ids),
+    renderSources(`adjsrc-${key}`, a.sources));
 }
 
 /**
@@ -1001,20 +1123,25 @@ const addresses = (ids) =>
  * emitted as flat sibling events, so which class an analog belonged to was carried only
  * by arrival order — a convention nothing wrote down and the UI could not show.
  */
-function renderClass(c, key) {
+function renderClass(run, c, key) {
+  // Which search produced each cited URL. The agent asserts the URL; the tool records
+  // the query — only the join answers "which search found this base rate".
+  const seen = sourcesSeenIndex(run);
+  const queries = [...new Set((c.sources || [])
+    .map((s) => seen[s.url] && seen[s.url].query)
+    .filter(Boolean))];
+
   return h("div.refcard", {},
     h("div.evhead", {},
-      h("span.num-strong", {}, pct(c.rate)),
-      h("span.micro", {}, `n=${c.n}`),
+      h("span.num-strong", {}, pct(c.base_rate)),
+      h("span.micro", {}, `n=${c.sample_size}`),
       c.weight === undefined ? null : h("span.micro", {}, `weight ${c.weight.toFixed(2)}`),
       h("div.spacer", {}),
-      supportChip(c.support)),
+      supportChip(claimSupport(c.sources))),
     h("div", {}, c.name),
-    h("div.minibar", {}, h("i", { style: `width:${Math.min(100, c.rate * 100)}%` })),
-    (c.queries || []).length
-      ? h("div.micro", {}, `searched: ${c.queries.join(" · ")}`)
-      : null,
-    renderSources(`src-${key}`, c.sources),
+    h("div.minibar", {}, h("i", { style: `width:${Math.min(100, c.base_rate * 100)}%` })),
+    queries.length ? h("div.micro", {}, `searched: ${queries.join(" · ")}`) : null,
+    renderSources(`src-${key}`, c.sources, seen),
     (c.analogs || []).length
       ? disclosure(`analogs-${key}`,
           h("span.micro", {}, `${c.analogs.length} analog${c.analogs.length === 1 ? "" : "s"}`),
@@ -1029,145 +1156,26 @@ function renderClass(c, key) {
 }
 
 /** The graded sources behind one claim, collapsed until asked for. */
-function renderSources(key, sources) {
+function renderSources(key, sources, seen) {
   if (!sources || !sources.length) {
     return h("div.micro", {}, "no sources — judgment call");
   }
   const label = `${sources.length} source${sources.length === 1 ? "" : "s"}`;
   return disclosure(key, h("span.micro", {}, label), () =>
-    sources.map((s) =>
-      h("div.srcrow", {},
+    sources.map((s) => {
+      const record = seen && seen[s.url];
+      return h("div.srcrow", {},
         supportChip(s.confidence),
         h("div", {},
           h("div", {}, link(s.url, sourceLabel(s))),
           s.note ? h("div.dim", {}, s.note) : null,
-          s.query ? h("div.micro", {}, `found by: ${s.query}`) : null,
-          s.retrieved === false ? h("span.chip.against", {}, "not retrieved") : null))));
+          record && record.query ? h("div.micro", {}, `found by: ${record.query}`) : null,
+          // A cited URL no search returned is what `check_citations` fails a forecast
+          // for. Saying so here means a reader sees it without running the check.
+          seen && !record ? h("span.chip.against", {}, "not retrieved") : null));
+    }));
 }
 
-/** What the principle behind a check actually says, collapsed until asked for. */
-function renderPrinciple(key, name) {
-  const text = PRINCIPLES[name];
-  if (!text) return null;
-  return disclosure(key, h("span.micro", {}, "what this principle says"), () =>
-    h("div.dim", {}, text));
-}
-
-/**
- * The material a check reached its verdict on.
- *
- * One renderer per check because the interesting numbers differ: P6 is an arithmetic
- * walk, P7 is a spread against a threshold, P15 is five slots and which were filled.
- * A generic key/value dump would technically show the same data and tell you nothing.
- */
-function renderCheckEvidence(name, e) {
-  const row = (label, value, tone) =>
-    h("div.evrow", {},
-      h("span.lbl", {}, label),
-      h("span", { style: tone ? `color:${tone}` : "" }, value));
-
-  switch (name) {
-    case "derivation":
-      return h("div.work", {},
-        row("anchor", pct(e.anchor)),
-        (e.walk || []).map((w) =>
-          row(w.evidence, w.is_noise ? "noise · 0" : `${signed(w.delta)} → ${pct(w.running)}`,
-              w.is_noise ? "var(--pv-text-3)" : w.delta > 0 ? "var(--pv-green)" : "var(--pv-red)")),
-        row("implied", pct(e.implied)),
-        row("stated", pct(e.stated)),
-        row("drift vs slack", `${(e.drift ?? 0).toFixed(3)} vs ${(e.slack ?? 0).toFixed(3)}`,
-            e.drift > e.slack ? "var(--pv-red)" : "var(--pv-green)"));
-
-    case "dragonfly":
-      return h("div.work", {},
-        (e.classes || []).map((c) =>
-          row(`${(c.sub_claim_ids || []).join(", ") || "—"} · ${c.name}`,
-              `${pct(c.base_rate)} · n=${c.sample_size} · ${c.support || "?"}`)),
-        // Per column. Two lenses on different sub-questions are not disagreeing, so the
-        // whole-view number below is context, not the thing being judged.
-        Object.entries(e.spreads || {}).map(([id, v]) =>
-          row(`spread within ${id || "the question"}`, (v ?? 0).toFixed(3),
-              v > e.threshold ? "var(--pv-red)" : "var(--pv-green)")),
-        row("worst vs threshold", `${(e.spread ?? 0).toFixed(3)} vs ${(e.threshold ?? 0).toFixed(3)}`,
-            e.spread > e.threshold ? "var(--pv-red)" : "var(--pv-green)"),
-        e.whole_view_spread != null
-          ? row("across all columns (not judged)", (e.whole_view_spread).toFixed(3),
-                "var(--pv-text-3)")
-          : null,
-        row("disagreement stated", e.disagreement ? "yes" : "no",
-            e.disagreement ? "var(--pv-green)" : "var(--pv-text-3)"));
-
-    case "aggregation":
-      return h("div.work", {},
-        row("chain rule", e.rule || "—"),
-        (e.chain || []).map((c) =>
-          row(`${c.id} · ${c.question}`, `${pct(c.rate)} · ${c.source}`,
-              c.source === "estimated" ? "var(--pv-yellow)" : "")),
-        row("implied by the chain", pct(e.implied)),
-        row("stated anchor", pct(e.stated)),
-        e.weighted_mean != null
-          ? row("weighted mean of all classes (not the anchor)", pct(e.weighted_mean),
-                "var(--pv-text-3)")
-          : null,
-        row("drift vs slack",
-            `${Math.abs((e.stated ?? 0) - (e.implied ?? 0)).toFixed(3)} vs ${(e.slack ?? 0).toFixed(3)}`,
-            Math.abs((e.stated ?? 0) - (e.implied ?? 0)) > (e.slack ?? 0)
-              ? "var(--pv-red)" : "var(--pv-green)"));
-
-    case "citations":
-      return h("div.work", {},
-        row("overall support", e.support || "—"),
-        (e.cited || []).map((c) =>
-          row(sourceLabel(c), isExternal(c.url) ? domainOf(c.url) : "no link",
-              "var(--pv-text-2)")));
-
-    case "bias_coverage":
-      return h("div.work", {},
-        (e.assessed || []).map((b) => row(b.bias, b.assessment ? "assessed" : "empty",
-                                          b.assessment ? "var(--pv-green)" : "var(--pv-red)")),
-        (e.missing || []).map((b) => row(b, "never addressed", "var(--pv-red)")));
-
-    case "signal_vs_noise":
-      return h("div.work", {},
-        (e.adjustments || []).map((a) =>
-          row(a.evidence, a.flip_test ? (a.is_noise ? "flip test · noise · 0" : "flip test present")
-                                      : "no flip test",
-              a.flip_test ? "var(--pv-green)" : "var(--pv-red)")));
-
-    case "disconfirming":
-      return h("div.work", {},
-        row("steel_man", e.steel_man ? "present" : "empty",
-            e.steel_man ? "var(--pv-green)" : "var(--pv-red)"),
-        row("what_would_change_my_mind", e.what_would_change_my_mind ? "present" : "empty",
-            e.what_would_change_my_mind ? "var(--pv-green)" : "var(--pv-red)"),
-        row("adjustment directions", (e.directions || []).join(", ") || "none",
-            new Set(e.directions || []).size <= 1 && (e.real_adjustments || 0) >= 2
-              ? "var(--pv-red)" : ""));
-
-    case "decomposition":
-      return h("div.work", {},
-        (e.sub_claims || []).map((s) =>
-          row(s.question, `${pct(s.probability)} · ${s.knowability}`
-              + (s.has_rationale ? "" : " · NO RATIONALE"),
-              s.has_rationale ? "" : "var(--pv-red)")),
-        row("researchable", `${e.researchable} of ${(e.sub_claims || []).length}`,
-            e.researchable ? "var(--pv-green)" : "var(--pv-red)"),
-        row("chain_note", e.chain_note || "empty", e.chain_note ? "" : "var(--pv-red)"));
-
-    case "calibration_hygiene":
-      return h("div.work", {},
-        row("probability", pct(e.probability)),
-        row("allowed band", `${pct(e.floor)} – ${pct(e.ceiling)}`),
-        row("class spread vs agreement", `${(e.spread ?? 0).toFixed(3)} vs ${(e.agreement_threshold ?? 0).toFixed(3)}`,
-            e.spread > e.agreement_threshold ? "var(--pv-yellow)" : "var(--pv-green)"),
-        row("justification", e.justification ? "written" : "none",
-            e.justification ? "var(--pv-green)" : "var(--pv-text-3)"),
-        e.justification ? h("div.dim", { style: "margin-top:5px" }, e.justification) : null);
-
-    default:
-      return null;
-  }
-}
 
 // ---------- render ----------
 
@@ -1183,6 +1191,7 @@ function render() {
     ...[
       renderHeader(),
       h("div.shell", {}, renderRail(), renderMain()),
+      renderPrinciplesDrawer(),
       state.toast ? h("div.toast", {}, state.toast) : null,
     ].filter(Boolean),
   );
@@ -1255,6 +1264,7 @@ function renderHeader() {
     h("div.wordmark", {}, "Superforecaster"),
     h("div.spacer", {}),
     h("div.micro", {}, `${MAX_SLOTS - slotsFree()} of ${MAX_SLOTS} slots running`),
+    h("button.btn.tiny.ghost", { onClick: () => openPrinciples(null) }, "Principles"),
     // No web search is not a smaller version of the same forecast — it is one built on
     // Wikipedia alone. Worth one word in the header rather than a surprise in the trail.
     serverConfig.search_enabled ? null
@@ -1306,8 +1316,7 @@ function renderRail() {
                          onClick: () => setState({ phase: "view", openId: r.id }) },
         h("div.evhead", {},
           h("span.num-strong", {}, pct(r.probability)),
-          h("span.chip", { class: r.probability < 0.5 ? "against" : "for" }, r.probability < 0.5 ? "no" : "yes"),
-          r.support ? h("span.micro", {}, r.support) : null),
+          h("span.chip", { class: r.probability < 0.5 ? "against" : "for" }, r.probability < 0.5 ? "no" : "yes")),
         h("div", {}, r.question),
         h("div.micro", {}, r.stamp.slice(0, 10)),
         h("button.del", {
@@ -1470,7 +1479,16 @@ function renderBacklog() {
 function renderRun() {
   const run = state.runs[state.openId];
   const saved = state.saved.find((r) => r.id === state.openId);
-  const result = run?.result || saved;
+  // A live run's `result` event carries the whole `Forecast`; a saved run carries the
+  // flattened record this browser wrote. Normalise once here so the card reads one shape.
+  const result = run?.result
+    ? {
+        probability: run.result.forecast.probability,
+        reasoning: run.result.forecast.reasoning,
+        violations: run.result.violations,
+        anchor: run.models?.outside ? run.models.outside.aggregate_base_rate : null,
+      }
+    : saved;
   const live = run && !isTerminal(run.summary.status);
 
   // Opening a finished run from a previous session: pull its trail back from storage
@@ -1529,10 +1547,6 @@ function renderResultCard(r) {
         h("span", { style: `color:${delta < 0 ? "var(--pv-red)" : delta > 0 ? "var(--pv-green)" : "var(--pv-text-2)"}` },
           `${delta < 0 ? "↓" : delta > 0 ? "↑" : "→"} ${Math.abs(Math.round(delta * 100))} pts`),
         h("span.micro", {}, `vs ${pct(r.anchor)} anchor`)) : null,
-      h("div.stat", {},
-        h("span.micro", {}, "Evidence"),
-        supportChip(r.support),
-        h("span.micro", {}, "from the graded sources")),
     ),
 
     r.violations && r.violations.length
@@ -1544,22 +1558,7 @@ function renderResultCard(r) {
     r.reasoning ? h("div", { style: "margin-top:18px" },
       h("div.micro", {}, "Reasoning"),
       r.reasoning.split(/\n\n+/).map((para) => h("p", {}, para))) : null,
-
-    r.waterfall && r.waterfall.length ? renderWaterfall(r.waterfall) : null,
   );
-}
-
-function renderWaterfall(rows) {
-  const scale = Math.max(...rows.map((w) => w.running)) * 1.3 || 1;
-  return h("div", { style: "margin-top:18px" },
-    h("div.micro", {}, "Anchor → adjustments → stated"),
-    h("div.wf", {}, rows.map((w) =>
-      h("div.wfrow", { class: w.kind },
-        h("div.lbl", { title: w.label }, w.label),
-        h("div", { style: `text-align:right;color:${w.kind === "up" ? "var(--pv-green)" : w.kind === "down" ? "var(--pv-red)" : "var(--pv-text-3)"}` },
-          w.delta === null || w.delta === undefined || w.delta === 0 ? "" : signed(w.delta)),
-        h("div.track", {}, h("i", { style: `width:${(w.running / scale) * 100}%` })),
-        h("div.num-strong", { style: "text-align:right" }, pct(w.running))))));
 }
 
 /** Event types that are the research *log* rather than a finding. */
@@ -1600,15 +1599,21 @@ function renderTrail(run) {
           h("div.pchips", {}, (meta.principles || []).map(principleChip)),
           h("div.spacer", {}),
           busy ? h("span.micro.pulse", {}, "working")
-               : h("span.micro", {}, `${(group.columnOrder || []).length || group.items.length}`)),
+               // Only a fanned-out row has a count worth showing — "one agent per
+               // column, and there were four". The other stages ran once.
+               : (group.columnOrder || []).length
+                 ? h("span.micro", {}, `${group.columnOrder.length} columns`)
+                 : null),
         collapsed ? null : h("div.items", {},
           // A fanned-out row draws its columns as cards, then whatever it emitted for
           // the question as a whole below them — the anchor note, the reflect pass's
           // steel-man and bias sweep. `runsOf` still handles the untagged rows.
           (group.columnOrder || []).length
             ? h("div.cols", {},
-                group.columnOrder.map((id) => renderColumnCard(group, group.columns[id])))
+                group.columnOrder.map((id) => renderColumnCard(run, group, group.columns[id])))
             : null,
+          // What this stage produced, drawn from the typed object it delivered.
+          renderStageBody(run, group),
           runsOf(group.items).map((run_) => {
             const draw = (ev) => {
               const renderer = EVENT_RENDERERS[ev.type];
@@ -1649,3 +1654,114 @@ render();
 loadServerConfig().then(scheduleRender);
 pollRuns();
 window.setInterval(pollRuns, POLL_MS);
+
+/**
+ * What a stage produced, drawn from the model it delivered rather than from events.
+ *
+ * The backend streams the object its agent returned and nothing more, so this is where
+ * "what should a reader see for this stage" is decided — in the layer that owns layout,
+ * next to the CSS it depends on.
+ */
+function renderStageBody(run, group) {
+  const m = run.models || {};
+  switch (group.stage) {
+    case "decompose":
+      return m.decomposition ? renderDecomposition(m.decomposition) : null;
+    case "outside":
+      return m.outside ? renderAnchorNote(m.outside) : null;
+    case "reflect":
+      return m.inside ? renderReflection(m.inside) : null;
+    case "synth": {
+      const draft = (m.drafts || [])[group.attempt - 1];
+      return draft
+        ? h("div.ev.draft", {},
+            h("div.evhead", {},
+              h("span.num-strong", {}, pct(draft.probability)),
+              h("span.micro", {}, `Attempt ${group.attempt}`)))
+        : null;
+    }
+    case "critique":
+      return renderChecks(run, group);
+    default:
+      return null;
+  }
+}
+
+/** P1 + P2 — the sub-claims, and how they combine. */
+function renderDecomposition(d) {
+  return h("div", {},
+    d.sub_claims.map((s) =>
+      h("div.ev.sub", {},
+        h("div.evhead", {},
+          h("span.chip", { class: s.knowability === "researchable" ? "for" : "" }, s.knowability),
+          s.id ? h("span.micro", {}, s.id) : null,
+          h("div.spacer", {}),
+          h("span.micro", {}, pct(s.probability))),
+        h("div", {}, s.question),
+        h("div.dim", {}, s.rationale))),
+    h("div.ev.note", {},
+      h("div.micro", {}, "chain_note"),
+      h("div.dim", {}, d.chain_note)));
+}
+
+/**
+ * P7 — the anchor, and what the classes disagreed about.
+ *
+ * The disagreement sentence is the half of P7 a schema cannot enforce, which is the
+ * whole reason for surfacing it rather than letting it sit inside the model.
+ */
+function renderAnchorNote(o) {
+  return h("div.ev.note", {},
+    h("div.micro", {}, `aggregate_base_rate — ${pct(o.aggregate_base_rate)}`),
+    h("div.dim", {},
+      o.disagreement.trim()
+      || `${o.reference_classes.length} reference classes, broadly in agreement.`));
+}
+
+/** P14 + P15 — the case against, and the bias sweep. Whole-question by construction. */
+function renderReflection(i) {
+  return h("div", {},
+    h("div.ev.note", {},
+      h("div.micro", {}, "steel_man"),
+      h("div.dim", {}, i.steel_man)),
+    h("div.ev.note", {},
+      h("div.micro", {}, "what_would_change_my_mind"),
+      h("div.dim", {}, i.what_would_change_my_mind)),
+    i.bias_checks.map((b) =>
+      h("div.ev.bias", {},
+        h("span.chip", {}, b.bias),
+        h("span.dim", {}, b.assessment))));
+}
+
+/**
+ * The methodology verdict for this attempt.
+ *
+ * Only violations cross the wire now — a check that passed says nothing a reader needs,
+ * and shipping all ten of them plus a per-check evidence payload was the single largest
+ * thing the old projection layer did.
+ */
+function renderChecks(run, group) {
+  const violations = run.models.violations;
+  if (!violations) return null;
+  if (!violations.length) {
+    return h("div.ev.check", {},
+      h("span.chip.for", {}, "✓"),
+      h("span", {}, "Every methodology check passed."));
+  }
+  const blocking = violations.filter((v) => v.blocking);
+  return h("div", {},
+    violations.map((v) =>
+      h("div.ev.check", {},
+        h("div.evhead", {},
+          h("span.chip", { class: v.blocking ? "against" : "" }, v.blocking ? "✗" : "!"),
+          h("span", {}, v.name),
+          h("div.spacer", {}),
+          principleChip(v.principle)),
+        h("div.dim", {}, v.detail))),
+    blocking.length && group.attempt < 2
+      ? h("div.ev.route", {},
+          `↩ ${blocking.length} blocking violation${blocking.length === 1 ? "" : "s"}. `
+          + `Routing back to Synthesize — attempt ${group.attempt + 1} of 2, with the `
+          + `violation in the prompt.`)
+      : null);
+}
