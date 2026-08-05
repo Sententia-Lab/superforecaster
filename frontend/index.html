@@ -91,6 +91,12 @@ textarea::placeholder, input::placeholder { color: var(--pv-text-3); }
   padding:12px 20px; border-bottom:1px solid var(--pv-border);
   background:var(--pv-surface); position:sticky; top:0; z-index:20;
 }
+/* The slot counter is the only header item that can be dropped without losing a
+   control — it is also the one long enough to force the bar past a phone's width. */
+@media (max-width: 640px) {
+  .hdr { gap:10px; padding:10px 14px; }
+  .hdr .micro { display:none; }
+}
 .mark {
   width:26px; height:26px; border-radius:8px; background:var(--pv-brand);
   color:var(--pv-brand-fg); display:grid; place-items:center;
@@ -114,13 +120,25 @@ textarea::placeholder, input::placeholder { color: var(--pv-text-3); }
 .btn.tiny { padding:4px 9px; font-size:var(--pv-fs-xs); }
 
 .shell { display:grid; grid-template-columns: 272px minmax(0,1fr); gap:0; align-items:start; }
-@media (max-width: 900px) { .shell { grid-template-columns: 1fr; } .rail { border-right:none !important; } }
+/* Narrow the rail before dropping it: at ~1100px a fixed 272px rail starts eating the
+   reading column, and the cards are full-width now so the main pane feels it first. */
+@media (max-width: 1100px) { .shell { grid-template-columns: 220px minmax(0,1fr); } }
+/* `minmax(0,1fr)`, not `1fr`: a grid item defaults to `min-width:auto`, so a bare `1fr`
+   track refuses to shrink below its content's min-content width. That is what made the
+   stacked rail 743px wide inside a 375px viewport and pushed the whole page sideways. */
+@media (max-width: 900px) {
+  .shell { grid-template-columns: minmax(0,1fr); }
+  .rail { border-right:none !important; position:static; max-height:none; }
+}
 
 .rail {
-  border-right:1px solid var(--pv-border); padding:18px 16px;
+  border-right:1px solid var(--pv-border); padding:18px 16px; min-width:0;
   position:sticky; top:51px; max-height:calc(100vh - 51px); overflow:auto;
 }
-.main { padding:26px 28px 80px; max-width:900px; }
+/* `margin-inline:auto` is what centers the reading column — without it the pane sits
+   hard left and every pixel past `max-width` becomes dead space on the right. */
+.main { padding:26px 28px 80px; max-width:1100px; width:100%; min-width:0; margin-inline:auto; }
+@media (max-width: 640px) { .main { padding:18px 16px 64px; } }
 
 .card {
   border:1px solid var(--pv-border); border-radius:var(--pv-radius-card);
@@ -173,6 +191,7 @@ p  { margin:0 0 10px; }
 .inp:focus, .ta:focus { outline:2px solid var(--pv-focus); outline-offset:-1px; }
 .inp.bad, .ta.bad { border-color:var(--pv-red-soft); }
 .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+@media (max-width: 640px) { .grid2 { grid-template-columns:1fr; } }
 
 .bar { height:3px; border-radius:2px; background:var(--pv-surface-3); overflow:hidden; margin-top:7px; }
 .bar > i { display:block; height:100%; background:var(--pv-text-3); }
@@ -193,6 +212,9 @@ p  { margin:0 0 10px; }
   display:flex; align-items:center; gap:9px; padding:9px 12px;
   background:var(--pv-surface); cursor:pointer; user-select:none;
 }
+/* The principle chips are the first thing to go when the bar runs out of room — they
+   are a legend, and squeezing them shreds the stage name into one word per line. */
+@media (max-width: 640px) { .stage > header .pchips { display:none; } }
 .stage.busy > header { background:var(--pv-surface-2); }
 .stage .num {
   width:20px; height:20px; border-radius:6px; display:grid; place-items:center;
@@ -267,11 +289,12 @@ p  { margin:0 0 10px; }
 .minibar { height:4px; background:var(--pv-surface-3); border-radius:2px; margin:5px 0 3px; overflow:hidden; }
 .minibar > i { display:block; height:100%; background:var(--pv-text-3); }
 
-/* ---------- the grid: one column per sub-question ---------- */
-/* auto-fill rather than a fixed count: the decomposition produces three to five
-   columns, and the main pane is 900px. Two or three across, one on the existing
-   narrow breakpoint. */
-.cols { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:9px; }
+/* ---------- one card per sub-question ---------- */
+/* A vertical list, not a grid. "Column" here means one agent per sub-question — a
+   fan-out concept, not a layout one. Side-by-side cards were ~260px wide, which wrapped
+   every question into a ragged stack; full width keeps a sub-question on one or two
+   lines and lets the research trail underneath it breathe. */
+.cols { display:flex; flex-direction:column; gap:9px; }
 .colcard {
   border:1px solid var(--pv-border); border-radius:var(--pv-radius-card);
   background:var(--pv-surface); padding:9px 11px; min-width:0;

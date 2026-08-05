@@ -6,17 +6,16 @@ a queue.
 
 The transport is server-sent events rather than WebSockets. The data is one-directional
 (the only client-to-server message is "cancel", which is a DELETE), SSE reconnects
-itself via `Last-Event-ID`, it survives ordinary HTTP proxies, and it needs no
-dependency beyond a `StreamingResponse` over an async generator.
+itself via `Last-Event-ID`, and it survives ordinary HTTP proxies. `sse-starlette`
+supplies the framing, the keep-alive pings, and disconnect detection.
 """
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
 from superforecaster import runs
 from superforecaster.models import (
@@ -88,10 +87,9 @@ def get_run(run_id: str, from_seq: int = Query(default=0, ge=0)) -> RunSnapshot:
 @router.get("/{run_id}/stream")
 async def stream_run(
     run_id: str,
-    request: Request,
     from_seq: int = Query(default=0, ge=0),
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
-) -> StreamingResponse:
+) -> EventSourceResponse:
     """Server-sent events for one run: buffered replay, then the live tail.
 
     `Last-Event-ID` wins over `from_seq` so a browser's automatic reconnect resumes
@@ -110,9 +108,9 @@ async def stream_run(
         except ValueError:
             pass
 
-    return StreamingResponse(
-        _events(run, request, start_at),
-        media_type="text/event-stream",
+    return EventSourceResponse(
+        _events(run, start_at),
+        ping=HEARTBEAT_SECONDS,
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
@@ -159,14 +157,16 @@ def cancel_run(run_id: str, _: None = Depends(require_admin)) -> None:
         )
 
 
-async def _events(
-    run: runs.Run, request: Request, from_seq: int
-) -> AsyncIterator[str]:
+async def _events(run: runs.Run, from_seq: int) -> AsyncIterator[ServerSentEvent]:
     """Replay the buffer, then tail.
 
     Subscribing BEFORE snapshotting the buffer is load-bearing: the other order drops
     any event emitted in the gap between the two, which is exactly the window a busy
     run is most likely to emit in.
+
+    Heartbeats and client-disconnect detection belong to `EventSourceResponse` — it
+    sends a comment every `ping` seconds and cancels this generator when the socket
+    goes, which is what the hand-rolled `wait_for` loop here used to do by hand.
     """
     queue = run.subscribe()
     try:
@@ -179,14 +179,7 @@ async def _events(
             return
 
         while True:
-            if await request.is_disconnected():
-                return
-            try:
-                event = await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_SECONDS)
-            except asyncio.TimeoutError:
-                yield ": heartbeat\n\n"
-                continue
-
+            event = await queue.get()
             if event.seq <= seen:
                 continue  # already replayed from the buffer
             seen = event.seq
@@ -197,15 +190,13 @@ async def _events(
         run.unsubscribe(queue)
 
 
-def _sse(event: RunEvent) -> str:
+def _sse(event: RunEvent) -> ServerSentEvent:
     """One frame.
 
-    `id:` is the sequence number, which is what makes `Last-Event-ID` resumption work.
-    The payload goes through `model_dump_json`, so no newline inside a string can
-    break the framing.
+    `id` is the sequence number, which is what makes `Last-Event-ID` resumption work.
+    The payload goes through `model_dump_json`, so no newline inside a string can break
+    the framing.
     """
-    return (
-        f"id: {event.seq}\n"
-        f"event: run\n"
-        f"data: {event.model_dump_json()}\n\n"
+    return ServerSentEvent(
+        id=str(event.seq), event="run", data=event.model_dump_json()
     )

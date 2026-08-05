@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 from ..deps import ForecastDeps
 from ..models import (
+    Adjustment,
     CheckViolation,
     Decomposition,
     Forecast,
@@ -42,6 +43,12 @@ class ForecastState:
     forecast: Forecast | None = None
     violations: list[CheckViolation] = field(default_factory=list)
     synthesis_attempts: int = 0
+
+    # Written by the inside-view barrier and read by `reflect`, which needs every
+    # column's adjustments and counter-argument together — that is the whole reason it
+    # is a step of its own rather than a tail call inside one column's cell.
+    adjustments: list[Adjustment] = field(default_factory=list)
+    steel_mans: dict[str, str] = field(default_factory=dict)
     # Snapshotted from `deps.sources_seen` by `Critique`, because `check_citations`
     # needs it and the UI re-runs the same checks without access to deps. Two callers
     # reading different inputs is how a UI ends up reporting a pass the graph failed.

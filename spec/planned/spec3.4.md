@@ -159,8 +159,9 @@ Per your display rules:
 - **Live searches keep streaming** — `query` / `source` / `thought` already come from pydantic-ai's own
   `event_stream_handler` at [observability.py:200](backend/superforecaster/observability.py:200).
   That half is already package-driven; it stays untouched and the FE accumulates it.
-- **Grid preserved** — `project_columns` stays (it's the row header emitted at stage start, and it's
-  what stops a four-minute research row from rendering blank).
+- **Per-sub-claim cards preserved** — `project_columns` stays. It's emitted at stage start, before any
+  agent runs, and it's what stops a four-minute research row from rendering blank. Note: "column" here
+  means *one agent per sub-question* (a fan-out concept), **not** a layout column — see workstream F.
 
 `api/runs.py`: replace the `asyncio.wait_for(queue.get(), …)` generator with
 `EventSourceResponse(..., ping=HEARTBEAT_SECONDS)`.
@@ -191,7 +192,47 @@ Delete dead aliases `_signed` (:66) and `_spread` (:97).
 **Not recommended:** data-fying the check predicates. A config DSL would be harder to read than twelve
 functions.
 
-### E. Cheap wins
+### E. Frontend layout — vertical list, centered, responsive
+
+Pure CSS in `frontend/index.html`; no JS logic changes. All four fixes are in the existing stylesheet.
+
+**1. Sub-claim cards become a full-width vertical list.** The current rule packs 2–3 cards across a
+900px pane, which is what forces the cramped wrapping:
+
+```css
+/* index.html:274 — before */
+.cols { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:9px; }
+
+/* after — one card per row, stretched edge to edge */
+.cols { display:flex; flex-direction:column; gap:9px; }
+```
+
+Also update the now-wrong comment at `index.html:270–273` ("the grid: one column per sub-question …
+Two or three across").
+
+**2. Center the main pane.** `.main` has a `max-width` but no auto margin, which is exactly the
+"shunted left with awkward space on the right" symptom:
+
+```css
+/* index.html:123 — before */
+.main { padding:26px 28px 80px; max-width:900px; }
+
+/* after */
+.main { padding:26px 28px 80px; max-width:1100px; width:100%; margin-inline:auto; }
+```
+
+`max-width` also goes up — 900px was sized for 2–3 cards across; full-width cards can use more room.
+
+**3. Responsive.** `.shell` (`:116`) has a single breakpoint at 900px (`:117`). Add an intermediate
+step so the 272px rail doesn't crush the main pane on tablets, and give `.grid2` (`:175`,
+`grid-template-columns:1fr 1fr` with no breakpoint at all) a single-column fallback.
+
+**4. Verify** at 375 / 768 / 1280 / 1920 via the browser preview tools, in both light and dark
+(the stylesheet defines both `--pv-*` sets).
+
+Deferred: `renderColumnCard`'s internals are untouched — this is layout only.
+
+### F. Cheap wins
 
 - `run_baseline.py` → `questions.json` + ~20-line loader. **Deletes ~600 lines.**
 - `__main__.py` → typer; `_build_parser()` (:425–533) evaporates.
@@ -206,7 +247,8 @@ functions.
 1. **Spike A's DBOS-under-parallel-graph determinism** — everything else depends on it.
 2. A — graph rebuild + Reflect node.
 3. B — `runs.py` split, projection cut, sse-starlette.
-4. C, D, E — independent, any order.
+4. C, D, E, F — independent, any order. **E (FE layout) is standalone CSS and can land immediately**,
+   before any backend work, since it touches nothing the other workstreams touch.
 
 ---
 
@@ -223,7 +265,9 @@ functions.
 5. **Stream:** `POST /runs` → `GET /runs/{id}/stream` → strictly increasing `seq`, heartbeats when idle,
    `?from_seq=` replay after reconnect, live search events arriving during research.
 6. Frontend smoke test in a browser — no build step and no types, so nothing catches a rename but the eye.
-7. `uv run superforecaster diagram` renders the 6-node graph.
+7. **Layout:** screenshot at 375 / 768 / 1280 / 1920 px, light and dark. Sub-claim cards stack one per
+   row at full width with no cramped wrapping; the main pane is centered with balanced margins.
+8. `uv run superforecaster diagram` renders the 6-node graph.
 
 ---
 

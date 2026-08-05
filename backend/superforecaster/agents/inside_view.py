@@ -10,13 +10,12 @@ sub-question's** rate rather than the whole-question anchor. For a decomposed qu
 the global anchor is the wrong reference point: an adjustment about whether the docs get
 filed in time is not a delta from the probability of the whole IPO.
 
-P14 and P15 moved to `reflect`, which runs after this row's barrier — see that module for
+The fan-out is a `.map()` edge in `graphs.forecast`; this module supplies one cell. P14
+and P15 belong to `reflect`, its own step after this row's barrier — see that module for
 why they cannot be asked of one column.
 """
 
 from __future__ import annotations
-
-import asyncio
 
 from config import get_cell_limits, resolve_agent_model
 from pydantic_ai import Agent
@@ -26,9 +25,7 @@ from .. import checks
 from ..deps import ForecastDeps
 from ..models import (
     Adjustment,
-    Decomposition,
     ForecastInput,
-    InsideView,
     OutsideView,
     SubClaimAdjustments,
     SubPrediction,
@@ -36,8 +33,6 @@ from ..models import (
 from ..observability import run_agent
 from ..tools import find_disconfirming_evidence, search_web, search_wikipedia
 from . import as_of_note, attach_budget_pressure, format_question, with_model
-from .outside_view import cell_deps, exhausted_notice
-from .reflect import run_reflect
 
 INSTRUCTIONS = """You supply the INSIDE VIEW for ONE part of a larger question: what
 makes this specific case differ from its reference class. You do not produce a final
@@ -172,91 +167,28 @@ flip test."""
     return result.output
 
 
-async def run_inside_view(
+async def whole_question_adjustments(
     input: ForecastInput,
-    decomposition: Decomposition,
     outside: OutsideView,
     deps: ForecastDeps,
-) -> InsideView:
-    """One concurrent cell per column, then a reflect pass over all of them.
+    errors: list[str],
+) -> tuple[list[Adjustment], dict[str, str]]:
+    """No column produced an adjustment. Fall back, or say why we cannot.
 
-    Cells run for columns that have at least one reference class. A column with nothing
-    researched has no base rate to adjust *from*, which is P5's whole premise — running a
-    cell on it would be asking for an absolute estimate wearing a delta's clothes.
+    Two ways to get here. Either no column carried a reference class — so there was
+    nothing to adjust *from*, which is principle 5's premise — or every column that ran
+    failed. The first adjusts from the whole-question anchor; the second is a run with
+    nothing to stand on, and inventing adjustments would be worse than an error.
     """
-    cells = [
-        s
-        for s in decomposition.sub_claims
-        if s.id and checks.classes_for(s.id, outside)
-    ]
-    if not cells:
-        return await _whole_question_cell(input, decomposition, outside, deps)
-
-    cell_depses = [cell_deps(deps, s.id or "", input.max_iterations) for s in cells]
-
-    async def cell(s: SubPrediction, d: ForecastDeps) -> SubClaimAdjustments | None:
-        try:
-            return await run_inside_view_cell(input, s, outside, d)
-        except UsageLimitExceeded:
-            # This column searched past its wall. Degrade it, keep the row.
-            exhausted_notice(d)
-            return None
-
-    results = await asyncio.gather(
-        *(cell(s, d) for s, d in zip(cells, cell_depses)),
-        return_exceptions=True,
-    )
-    for d in cell_depses:
-        deps.sources_seen.extend(d.sources_seen)
-
-    merged: list[Adjustment] = []
-    steel_mans: dict[str, str] = {}
-    for sub_claim, result in zip(cells, results):
-        if not isinstance(result, SubClaimAdjustments):
-            continue
-        # Stamped by code for the same reason the reference classes are: a cell worked on
-        # exactly one column, and a link it volunteered could point anywhere.
-        merged.extend(
-            a.model_copy(update={"sub_claim_ids": [sub_claim.id]})
-            for a in result.adjustments
-        )
-        steel_mans[sub_claim.id or ""] = result.steel_man
-
-    if not merged:
-        # Nothing to reflect on and nothing for synthesis to add to the anchor. Raising
-        # hands this to ADR 28's resume, which is the right response to "every column ran
-        # out of searches" as well as to "the network was down".
-        first = next((r for r in results if isinstance(r, BaseException)), None)
-        if first is not None:
-            raise first
+    real = [e for e in errors if e]
+    if real and all("UsageLimitExceeded" in e for e in real):
         raise UsageLimitExceeded(
-            "every column exhausted its search budget without returning an adjustment. "
-            "Resume with a higher search depth."
+            f"every column exhausted its search budget without returning an adjustment "
+            f"({'; '.join(real)}). Resume with a higher search depth."
         )
+    if real:
+        raise RuntimeError(f"every inside-view column failed: {'; '.join(real)}")
 
-    reflection = await run_reflect(
-        input, decomposition, outside, merged, steel_mans, deps
-    )
-    return InsideView(
-        adjustments=merged,
-        steel_man=reflection.steel_man,
-        what_would_change_my_mind=reflection.what_would_change_my_mind,
-        bias_checks=reflection.bias_checks,
-    )
-
-
-async def _whole_question_cell(
-    input: ForecastInput,
-    decomposition: Decomposition,
-    outside: OutsideView,
-    deps: ForecastDeps,
-) -> InsideView:
-    """No column carries a reference class, so adjust from the whole-question anchor.
-
-    Reachable when the base-rate row fell back to its own whole-question path, which
-    `check_decomposition`'s P2 arm already makes hard to reach. It exists so an outside
-    view with no per-column attribution still produces something rather than crashing.
-    """
     fallback = SubPrediction(
         question=input.question,
         probability=outside.aggregate_base_rate,
@@ -265,17 +197,4 @@ async def _whole_question_cell(
     ).model_copy(update={"id": None})
 
     result = await run_inside_view_cell(input, fallback, outside, deps)
-    reflection = await run_reflect(
-        input,
-        decomposition,
-        outside,
-        result.adjustments,
-        {"whole question": result.steel_man},
-        deps,
-    )
-    return InsideView(
-        adjustments=result.adjustments,
-        steel_man=reflection.steel_man,
-        what_would_change_my_mind=reflection.what_would_change_my_mind,
-        bias_checks=reflection.bias_checks,
-    )
+    return result.adjustments, {"whole question": result.steel_man}
