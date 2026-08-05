@@ -73,6 +73,63 @@ def test_pending_thought_flushes_before_any_other_event():
     assert types_of(run.events) == ["thought", "query"]
 
 
+def test_two_columns_narrating_at_once_do_not_concatenate():
+    """The whole reason `_thoughts` is keyed. One buffer would interleave these into
+    "The sc1 A sc2 base rate" and hand the reader a sentence neither agent wrote."""
+    run = a_run()
+    run.emit_thought("The base rate ", "sc1")
+    run.emit_thought("A reference class ", "sc2")
+    run.emit_thought("for S-1 filings ", "sc1")
+    run.flush_thought()
+
+    by_column = {e.sub_claim: e.payload["delta"] for e in run.events}
+    assert by_column == {
+        "sc1": "The base rate for S-1 filings ",
+        "sc2": "A reference class ",
+    }
+
+
+def test_an_event_flushes_only_its_own_column():
+    """sc1's tool call must not drag sc2's half-written sentence out in front of it."""
+    run = a_run()
+    run.emit_thought("I should search for ", "sc1")
+    run.emit_thought("this is only half a ", "sc2")
+    run.emit("query", {"tool": "search_web"}, "sc1")
+
+    assert types_of(run.events) == ["thought", "query"]
+    assert [e.sub_claim for e in run.events] == ["sc1", "sc1"]
+
+    run.flush_thought()
+    assert run.events[-1].sub_claim == "sc2"
+
+
+def test_an_untagged_event_does_not_flush_a_column():
+    """None is a real column key, not a wildcard — it is what everything outside a
+    fanned-out stage emits under."""
+    run = a_run()
+    run.emit_thought("mid-sentence ", "sc1")
+    run.emit("note", {"label": "chain_note", "text": "x"})
+
+    assert types_of(run.events) == ["note"]
+
+
+def test_a_stage_boundary_flushes_every_column():
+    run = a_run()
+    run.emit_thought("a", "sc1")
+    run.emit_thought("b", "sc2")
+    run.flush_thought()
+
+    assert types_of(run.events) == ["thought", "thought"]
+
+
+def test_events_carry_no_column_by_default():
+    """Every pre-3.3 caller keeps working, and old buffered events still deserialize."""
+    run = a_run()
+    run.emit("draft", {"p": 0.3})
+
+    assert run.events[0].sub_claim is None
+
+
 def test_ring_buffer_evicts_and_replay_reports_the_gap(monkeypatch):
     monkeypatch.setenv("RUN_EVENT_BUFFER", "3")
     run = a_run()
@@ -163,6 +220,51 @@ def test_decomposition_projects_sub_claims_then_the_chain_note():
     assert run.events[-1].payload["label"] == "chain_note"
 
 
+def test_a_row_opens_one_card_per_column_before_any_agent_runs():
+    """Decompose fixes the grid; the row header is emitted from it, not from research."""
+    run = a_run()
+    d = a_decomposition()
+    state = ForecastState(input=run.input, decomposition=d)
+
+    runs.project_columns(run, "outside", state)
+
+    columns = [e for e in run.events if e.type == "column"]
+    assert [e.sub_claim for e in columns] == [s.id for s in d.sub_claims]
+    assert all(e.payload["question"] for e in columns)
+
+
+def test_a_judgment_column_still_gets_a_card():
+    """It just says there is nothing to look up. A column that vanishes from a row reads
+    as a bug; one that explains itself reads as an answer."""
+    run = a_run()
+    d = a_decomposition()
+    state = ForecastState(input=run.input, decomposition=d)
+
+    runs.project_columns(run, "outside", state)
+
+    by_id = {e.payload["id"]: e.payload for e in run.events if e.type == "column"}
+    for s in d.sub_claims:
+        assert by_id[s.id]["researching"] is (s.knowability == "researchable")
+
+
+def test_the_inside_row_carries_each_column_its_own_anchor():
+    """Not the whole-question anchor — an inside-view cell adjusts from ITS base rate."""
+    run = a_run()
+    d = a_decomposition()
+    o = an_outside_view()
+    o.reference_classes[0].sub_claim_ids = ["sc2"]
+    state = ForecastState(input=run.input, decomposition=d, outside=o)
+
+    runs.project_columns(run, "inside", state)
+
+    by_id = {e.payload["id"]: e.payload for e in run.events if e.type == "column"}
+    assert by_id["sc2"]["anchor"] == pytest.approx(o.reference_classes[0].base_rate)
+    assert by_id["sc2"]["researching"] is True
+    # No class named sc1, so there is nothing to adjust from and no cell runs.
+    assert by_id["sc1"]["anchor"] is None
+    assert by_id["sc1"]["researching"] is False
+
+
 def test_outside_view_groups_its_classes_under_the_sub_claims():
     """One `claim` per sub-claim, not a flat list of reference classes.
 
@@ -174,7 +276,10 @@ def test_outside_view_groups_its_classes_under_the_sub_claims():
     runs.project_outside(run, d, an_outside_view())
 
     claims = [e for e in run.events if e.type == "claim"]
-    assert len(claims) == len(d.sub_claims) + 1  # +1 for the unattributed classes
+    # Exactly one per column. There is no trailing group for classes belonging to no
+    # sub-claim: the merge stamps every class, so that group cannot exist.
+    assert len(claims) == len(d.sub_claims)
+    assert [e.sub_claim for e in claims] == [s.id for s in d.sub_claims]
     assert run.events[-1].payload["label"] == "aggregate_base_rate — 22%"
 
 
@@ -308,6 +413,22 @@ def test_waterfall_skips_noise_adjustments():
 
 
 # ---------- driving a run ----------
+
+
+async def test_a_rows_cards_open_before_its_findings_land(stub_agents):  # noqa: F811
+    """The point of widening `stage_started` to carry state.
+
+    `column` comes from `stage_started` and `claim` from `stage_finished`, so a row that
+    spends four minutes on four concurrent searches is legible for all four of them
+    rather than blank until the barrier.
+    """
+    run = runs.start(forecast_input())
+    await run.task
+
+    outside = [e for e in run.events if e.stage == "outside"]
+    last_column = max(e.seq for e in outside if e.type == "column")
+    first_claim = min(e.seq for e in outside if e.type == "claim")
+    assert last_column < first_claim
 
 
 async def test_a_full_run_emits_every_stage_and_ends_done(stub_agents):  # noqa: F811

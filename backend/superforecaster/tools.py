@@ -172,6 +172,51 @@ def _format_results(results: list[dict]) -> str:
     )
 
 
+# ---------- the search budget ----------
+
+
+def _budget_notice(ctx: RunContext[ForecastDeps]) -> str:
+    """Tell the agent how much search budget is left, appended to every tool result.
+
+    This is the primary channel for the cline, and the reason is timing: it arrives at
+    the exact moment the decision is made. The model just asked for a result and is about
+    to read it; the last line of that result is the budget. There is no attention to
+    compete for and nothing to skim past. It is also the only channel that can say "this
+    is your last tool result", which is the sentence that matters most.
+
+    Its two blind spots — nothing before the first request, silence after the last result
+    while the model may still make several more — are covered by the dynamic instruction
+    in `agents.attach_budget_pressure`.
+
+    Increments at the *result*, not the call, so a search that errored still costs a
+    call. That matches what pydantic-ai's own `UsageLimits` counts.
+
+    Empty when nothing fanned out — the CLI, the update graph, an eval.
+    """
+    b = ctx.deps.budget
+    if b is None:
+        return ""
+
+    b.used += 1
+    if b.used < b.soft_depth:
+        return f"\n\n[SEARCH BUDGET — {b.used} of {b.soft_depth} used.]"
+
+    if b.left > 0:
+        return (
+            f"\n\n[SEARCH BUDGET SPENT — {b.used} of {b.soft_depth}. {b.left} call"
+            f"{'s' if b.left != 1 else ''} remain before it is enforced. Stop searching. "
+            "Write your answer from what you already have, and say in the source notes "
+            "where the evidence is thin rather than looking for more. A thin answer "
+            "graded honestly as thin is worth more than no answer.]"
+        )
+
+    b.exhausted = True
+    return (
+        "\n\n[SEARCH BUDGET EXHAUSTED — this is your last tool result. Return your "
+        "structured answer now, from what you have.]"
+    )
+
+
 # ---------- tools ----------
 
 
@@ -181,6 +226,17 @@ async def search_web(ctx: RunContext[ForecastDeps], query: str) -> str:
     Returns the top results as text, or a message explaining why none are available.
     Missing results mean missing information, not an error — say so in your reasoning
     rather than treating it as a failure.
+    """
+    return await _search_web(ctx, query) + _budget_notice(ctx)
+
+
+async def _search_web(ctx: RunContext[ForecastDeps], query: str) -> str:
+    """The search itself, with no budget accounting.
+
+    Split from the tool so `find_disconfirming_evidence` — which runs three of these
+    inside one tool call — costs one call rather than three. The model made one decision;
+    charging it three would make `SearchBudget.used` and `UsageLimits.tool_calls_limit`
+    count different things.
     """
     as_of = ctx.deps.as_of
     api_key = get_settings().tavily_api_key
@@ -225,6 +281,12 @@ async def search_wikipedia(ctx: RunContext[ForecastDeps], topic: str) -> str:
 
     No API key required.
     """
+    return await _search_wikipedia(ctx, topic) + _budget_notice(ctx)
+
+
+async def _search_wikipedia(ctx: RunContext[ForecastDeps], topic: str) -> str:
+    """The lookup itself. Split from the tool so every return path — including the ones
+    that found nothing — costs exactly one call and carries the budget line."""
     as_of = ctx.deps.as_of
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -314,6 +376,6 @@ async def find_disconfirming_evidence(ctx: RunContext[ForecastDeps], claim: str)
     ]
     sections: list[str] = []
     for angle in angles:
-        result = await search_web(ctx, angle)
+        result = await _search_web(ctx, angle)
         sections.append(f"### {angle}\n{result}")
-    return "\n\n".join(sections)
+    return "\n\n".join(sections) + _budget_notice(ctx)

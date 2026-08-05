@@ -62,6 +62,16 @@ from the buffer with `?from_seq=`, rather than being allowed to stall the graph.
 
 STAGE_ORDER: tuple[str, ...] = ("decompose", "outside", "inside", "synth", "critique")
 
+FANNED_OUT_STAGES: frozenset[str] = frozenset({"outside", "inside"})
+"""Stages that run one agent per column. These are the rows that get cards."""
+
+_EVERY_COLUMN: Any = object()
+"""Sentinel for `flush_thought`: flush every column, not just one.
+
+A distinct object rather than `None`, because `None` is itself a valid column key — it
+is what everything outside a fanned-out stage emits under.
+"""
+
 _TERMINAL: frozenset[str] = frozenset({"done", "error", "cancelled", "lost"})
 
 
@@ -110,8 +120,13 @@ class Run:
     """
 
     _subscribers: set[asyncio.Queue[RunEvent]] = field(default_factory=set)
-    _thought: str = ""
-    _thought_deadline: float = 0.0
+    _thoughts: dict[str | None, tuple[str, float]] = field(default_factory=dict)
+    """Pending token deltas, keyed by column: {sub_claim: (text, deadline)}.
+
+    One buffer per column rather than one for the run. When a stage fans out, several
+    agents narrate at once; a single buffer would interleave their half-written
+    sentences into one unreadable string.
+    """
 
     def __post_init__(self) -> None:
         if self.events.maxlen is None:
@@ -119,7 +134,12 @@ class Run:
 
     # ---------- emit ----------
 
-    def emit(self, type: str, payload: dict[str, Any] | None = None) -> RunEvent:
+    def emit(
+        self,
+        type: str,
+        payload: dict[str, Any] | None = None,
+        sub_claim: str | None = None,
+    ) -> RunEvent:
         """Append an event and fan it out. Synchronous and never blocks.
 
         A slow or dead subscriber cannot stall the graph: the put is non-blocking, and
@@ -127,30 +147,42 @@ class Run:
         client reconnects and replays the gap from the buffer.
         """
         if type != "thought":
-            self.flush_thought()
-        return self._append(type, payload or {})
+            self.flush_thought(sub_claim)
+        return self._append(type, payload or {}, sub_claim)
 
-    def emit_thought(self, delta: str) -> None:
-        """Buffer a token delta, flushing at most every `THOUGHT_FLUSH_SECONDS`."""
+    def emit_thought(self, delta: str, sub_claim: str | None = None) -> None:
+        """Buffer a token delta for one column, flushed every `THOUGHT_FLUSH_SECONDS`."""
         now = time.monotonic()
-        if not self._thought:
-            self._thought_deadline = now + THOUGHT_FLUSH_SECONDS
-        self._thought += delta
-        if now >= self._thought_deadline:
-            self.flush_thought()
+        text, deadline = self._thoughts.get(sub_claim, ("", 0.0))
+        if not text:
+            deadline = now + THOUGHT_FLUSH_SECONDS
+        self._thoughts[sub_claim] = (text + delta, deadline)
+        if now >= deadline:
+            self.flush_thought(sub_claim)
 
-    def flush_thought(self) -> None:
-        """Emit whatever `emit_thought` buffered.
+    def flush_thought(self, sub_claim: str | None = _EVERY_COLUMN) -> None:
+        """Emit whatever `emit_thought` buffered, for one column or for all of them.
 
         Called before every non-thought event as well as on the timer, so narration can
-        never arrive after the tool call or result it preceded.
+        never arrive after the tool call or result it preceded — but *per column*. An
+        event in `sc1` must not flush `sc2`, or sc2's half-written sentence gets spliced
+        in front of sc1's tool call, which is the interleaving this keying exists to
+        prevent. Stage boundaries pass `_EVERY_COLUMN` because a barrier is a real
+        barrier: nothing is still narrating on the far side of it.
         """
-        if not self._thought:
-            return
-        text, self._thought = self._thought, ""
-        self._append("thought", {"delta": text})
+        keys = (
+            list(self._thoughts)
+            if sub_claim is _EVERY_COLUMN
+            else ([sub_claim] if sub_claim in self._thoughts else [])
+        )
+        for key in keys:
+            text, _ = self._thoughts.pop(key, ("", 0.0))
+            if text:
+                self._append("thought", {"delta": text}, key)
 
-    def _append(self, type: str, payload: dict[str, Any]) -> RunEvent:
+    def _append(
+        self, type: str, payload: dict[str, Any], sub_claim: str | None = None
+    ) -> RunEvent:
         self.seq += 1
         if len(self.events) == self.events.maxlen:
             self.dropped += 1
@@ -160,6 +192,7 @@ class Run:
             type=type,
             stage=self.stage,
             attempt=self.attempt,
+            sub_claim=sub_claim,
             ts=utc_now(),
             payload=payload,
         )
@@ -174,21 +207,21 @@ class Run:
 
     # ---------- GraphHooks ----------
 
-    def stage_started(self, stage: str, attempt: int) -> None:
+    def stage_started(self, stage: str, attempt: int, state: ForecastState) -> None:
         self.flush_thought()
         self.stage, self.attempt = stage, attempt
+        self.state = state
         self.emit("stage", {"stage": stage, "attempt": attempt})
 
         # A second synthesis is a correction, not a re-roll — but only if you can see
         # what changed. This emits the actual prompt text attempt 2 receives.
-        if stage == "synth" and attempt > 1 and self.state is not None:
-            if self.state.outside and self.state.inside:
-                self.emit(
-                    "brief",
-                    retry_brief(
-                        self.state.outside, self.state.inside, self.state.violations
-                    ),
-                )
+        if stage == "synth" and attempt > 1 and state.outside and state.inside:
+            self.emit("brief", retry_brief(state.outside, state.inside, state.violations))
+
+        # Open one card per column before any agent starts, so a row that takes four
+        # minutes is legible for all four of them rather than blank until the barrier.
+        if stage in FANNED_OUT_STAGES and state.decomposition is not None:
+            project_columns(self, stage, state)
 
     def stage_finished(self, stage: str, state: ForecastState) -> None:
         """Project whatever field this node just wrote onto the state."""
@@ -454,11 +487,16 @@ def _failure_hint(exc: Exception) -> str:
     A usage-limit failure is the one worth special-casing: resuming with the same
     budget re-runs the same agent into the same wall, so the offer to resume has to
     come with the reason it would otherwise fail again.
+
+    One column running out no longer gets here — it degrades and the row continues. This
+    now means *every* column ran out, so there was no base rate or adjustment to carry
+    forward at all.
     """
     if type(exc).__name__ == "UsageLimitExceeded":
         return (
-            "The research budget ran out mid-node. Resume with a higher search depth, "
-            "or raise RESEARCH_TOOL_CALLS_PER_ITERATION."
+            "Every column ran out of searches, so nothing was researched. Resume with a "
+            "higher search depth, or raise CELL_SOFT_CALLS_PER_ITERATION / "
+            "CELL_HARD_HEADROOM."
         )
 
     if type(exc).__name__ == "ModelHTTPError":
@@ -530,18 +568,60 @@ def _emitter(run: Run):
     """The `deps.emit` callable. Routes thoughts through the coalescing buffer and
     counts tool calls so the header can show a running total."""
 
-    def emit(type: str, payload: dict[str, Any]) -> None:
+    def emit(type: str, payload: dict[str, Any], sub_claim: str | None = None) -> None:
         if type == "thought":
-            run.emit_thought(payload.get("delta", ""))
+            run.emit_thought(payload.get("delta", ""), sub_claim)
             return
         if type == "query":
+            # A plain `+=` from the single event loop thread, so concurrent columns are
+            # still safe — there is no await between the read and the write.
             run.tool_calls += 1
-        run.emit(type, payload)
+        run.emit(type, payload, sub_claim)
 
     return emit
 
 
 # ---------- Projections: typed state -> events ----------
+
+
+def project_columns(run: Run, stage: str, state: ForecastState) -> None:
+    """Open one card per column at the top of a fanned-out row, before any agent runs.
+
+    Decompose fixes the grid; this is the row header. Without it a row is blank until
+    its barrier, which for four concurrent searches is several minutes of nothing.
+
+    Every field is read off state an agent already produced — the sub-claims from
+    `Decomposition`, and on the inside row the incoming anchor and classes from the
+    `OutsideView` the previous node wrote. Nothing was asked of a model to make this
+    event possible, which is the ADR 27 test.
+
+    `researching` is derived from `knowability`, not asserted: a `judgment` column gets a
+    card that reads "no base rate to look up" and never enters research. It still exists,
+    because a column that vanishes from a row looks like a bug rather than an answer.
+    """
+    d = state.decomposition
+    assert d is not None
+    o = state.outside
+    by_url = {ref.url: ref for ref in state.sources_seen if getattr(ref, "url", "")}
+
+    for s in d.sub_claims:
+        payload: dict[str, Any] = {
+            "id": s.id,
+            "question": s.question,
+            "knowability": s.knowability,
+            "rationale": s.rationale,
+            "p": s.probability,
+            "researching": s.knowability == "researchable",
+        }
+        if stage == "inside" and o is not None:
+            payload["anchor"] = checks.sub_claim_rate(s.id, o)
+            payload["classes"] = [
+                _class_payload(rc, by_url) for rc in checks.classes_for(s.id, o)
+            ]
+            # No reference class means no base rate to adjust *from*, which is P5's
+            # premise. The card says so; no agent runs for it.
+            payload["researching"] = bool(payload["classes"])
+        run.emit("column", payload, s.id)
 
 
 def project_decompose(run: Run, d: Decomposition) -> None:
@@ -605,16 +685,19 @@ def group_by_sub_claim(
     projection of `ReferenceClass.sub_claim_ids`, a field the agent fills in, so the UI
     is reading a relationship the backend asserted rather than inventing one.
 
-    `rate` is `checks.sub_claim_rate`, the same weighted arithmetic `check_aggregation`
-    applies to the whole question. A sub-claim nothing researched carries `rate: None`
-    rather than a fabricated number — which for a `judgment` sub-claim is the correct
-    answer, and for a `researchable` one is a visible gap.
+    `rate` is `checks.sub_claim_rate`, the same weighted arithmetic the anchor is built
+    from. A sub-claim nothing researched carries `rate: None` rather than a fabricated
+    number — which for a `judgment` sub-claim is the correct answer, and for a
+    `researchable` one is a visible gap.
 
-    Classes claiming no sub-claim land in a final group with `id: None`: legitimate for a
-    lens on the whole question, and worth seeing when it is really an unattributed rate.
+    There is no group for classes belonging to no sub-claim. `_merge_base_rates` stamps
+    every class with the column its cell researched, so an unattributed class can now
+    only come from a hand-built fixture or the whole-question fallback — and rendering
+    one under "the question as a whole" would be the UI inventing a group the backend
+    never asserted.
     """
     by_url = {ref.url: ref for ref in seen if getattr(ref, "url", "")}
-    groups = [
+    return [
         {
             "id": s.id,
             "question": s.question,
@@ -627,25 +710,6 @@ def group_by_sub_claim(
         }
         for s in d.sub_claims
     ]
-
-    claimed = {cid for rc in o.reference_classes for cid in rc.sub_claim_ids}
-    loose = [
-        rc
-        for rc in o.reference_classes
-        if not rc.sub_claim_ids or not (set(rc.sub_claim_ids) & claimed)
-    ]
-    if loose:
-        groups.append(
-            {
-                "id": None,
-                "question": "The question as a whole",
-                "knowability": "researchable",
-                "rationale": "",
-                "rate": None,
-                "classes": [_class_payload(rc, by_url) for rc in loose],
-            }
-        )
-    return groups
 
 
 def project_outside(
@@ -662,7 +726,7 @@ def project_outside(
     of having demanded it.
     """
     for group in group_by_sub_claim(d, o, seen):
-        run.emit("claim", group)
+        run.emit("claim", group, group["id"])
 
     pct = round(o.aggregate_base_rate * 100)
     run.emit(
@@ -676,7 +740,13 @@ def project_outside(
 
 
 def project_inside(run: Run, i: InsideView) -> None:
-    """P5, P9, P14, P15 — signed moves, the opposing case, and the bias sweep."""
+    """P5, P9, P14, P15 — signed moves, the opposing case, and the bias sweep.
+
+    Each `adj` is tagged with the column that produced it, so it lands inside that
+    card. The two notes and the five biases are deliberately untagged: they come from the
+    reflect pass, which is about the whole question by construction, and they render
+    below the cards.
+    """
     for a in i.adjustments:
         run.emit(
             "adj",
@@ -690,6 +760,7 @@ def project_inside(run: Run, i: InsideView) -> None:
                 "support": checks.claim_support(a.sources),
                 "sources": [s.model_dump() for s in a.sources],
             },
+            a.sub_claim_ids[0] if a.sub_claim_ids else None,
         )
     run.emit("note", {"label": "steel_man", "text": i.steel_man})
     run.emit(

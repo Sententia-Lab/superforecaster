@@ -8,7 +8,52 @@ implements — `P<n>` throughout this document refers to them.
 
 ---
 
-## What changed most recently (2026-08-04)
+## What changed most recently (2026-08-05)
+
+**Research fans out per sub-question.** Decompose fixes a grid — rows are stages, columns are
+sub-questions. `FindBaseRates` and `AdjustInsideView` each run one agent per column concurrently
+and merge at a barrier, inside `run_outside_view` / `run_inside_view`. No graph node was added.
+New per-cell output types `SubClaimBaseRates` and `SubClaimAdjustments`; the merge stamps
+`sub_claim_ids` unconditionally, so a reference class belonging to no column is now impossible
+and `group_by_sub_claim`'s trailing "unattributed" group is deleted. See ADR 30.
+
+**P14 and P15 moved to a new `agents/reflect.py`**, a no-tools pass after the inside-view
+barrier. Five columns cannot produce exactly five bias checks, and three of the five are only
+askable of a final probability a column does not have. See ADR 31.
+
+**The anchor is the chain, not a mean.** `Decomposition.chain_rule` is typed
+(`conjunction` | `disjunction` | `custom`), and `aggregate_base_rate` is that rule applied to the
+per-column rates via `checks.anchor_from` — the product for a conjunction. The old weighted mean
+across all classes inflated every conjunctive question by construction. P7's spread is now
+measured *within* a column (`sub_claim_spreads`), because across columns it measures nothing.
+See ADR 33.
+
+**The search budget is a gradient, per cell.** `SearchBudget` on `ForecastDeps` carries
+`soft_depth` (the cline, where the agent is pushed to converge) and `hard_depth` (the wall).
+Two channels apply the pressure: a notice appended to every tool return, and a dynamic
+`@agent.instructions` function re-fetched per model request. A cell that crosses the wall
+degrades to no result and the run continues. See ADR 32.
+
+**Every event carries a `sub_claim` tag**, and two new types — `column` (opens a card at the top
+of a row, before any agent) and `exhausted`. The frontend renders each research row as a grid of
+cards, one per sub-question, each with its own live tool tail. `spec/planned/spec3.3.md` §3.3 is
+the new schema of record; `spec3.1.md` §3.3 is superseded.
+
+**Schema migrations exist now.** `db.init_db()` runs `_migrate` against `PRAGMA user_version`,
+stepping an existing database through `db.MIGRATIONS`. The first step drops
+`forecast_updates.confidence`, which ADR 29 removed from the code on 2026-08-04 but not from any
+deployed file — a gap that killed every run at its final write while looking like a Critique-stage
+failure. See Known Issues.
+
+**Fixed in passing:** `observability` diffed `deps.sources_seen` by index to detect new sources,
+which under concurrency hands each cell the other's — each cell now gets a private list, merged
+after the barrier. And `evals/components.py` called `run_inside_view` with three arguments to a
+four-argument function, a `TypeError` that had never fired only because the eval corpus ships
+empty.
+
+---
+
+## What changed on 2026-08-04
 
 **Forecast-level `confidence` is gone.** It was self-reported, undefined in the methodology
 doc, and read by exactly one consumer: the P16 gate. That gate could be cleared by *lowering*
@@ -28,9 +73,9 @@ non-blocking check — and keys off the new `Forecast.extreme_justification`.
 adjustments gained `sources`; sub-claims gained `id`, and both classes and adjustments point
 back at them through `sub_claim_ids`.
 
-**The `forecast_updates.confidence` column was dropped.** There is no migration mechanism in
-the repo (only `CREATE TABLE IF NOT EXISTS`), so an existing `superforecaster.db` must be
-deleted and recreated. Alembic remains unbuilt — see Known Issues.
+**The `forecast_updates.confidence` column was dropped.** At the time there was no migration
+mechanism, so an existing `superforecaster.db` kept the column and every run died on its final
+write. Fixed on 2026-08-05 — `init_db` migrates in place and the data survives.
 
 ---
 
@@ -98,7 +143,7 @@ backend/
     __main__.py                  # CLI
     agents/                      # one module per methodology step (9)
       __init__.py                #   with_model, format_question, as_of_note
-      decompose.py  outside_view.py  inside_view.py  synthesize.py
+      decompose.py  outside_view.py  inside_view.py  reflect.py  synthesize.py
       resolution.py  update.py  critic.py  postmortem.py  draft.py
     graphs/                      # orchestration only
       state.py  forecast.py  update.py
@@ -121,8 +166,10 @@ spec/
   implemented/                   # shipped and merged to main
     SPEC_04_26_2026.md           #   v3 — platform, DB, API, frontend, cron
     spec3.md                     #   v4 — agent decomposition + graphs
-    spec3.1.md                   #   streaming + static frontend
+    spec3.1.md                   #   streaming + static frontend (§3.3 superseded by 3.3)
+    spec3.2.md                   #   confidence purge, P16 advisory, legible trail
   planned/
+    spec3.3.md                   #   the grid — per-column research, budgets, lane cards
     spec4.md                     #   end-to-end backtest — needs a corpus
 ```
 
@@ -510,7 +557,7 @@ check_calibration_hygiene(f, o, t=None) -> CheckViolation | None
     and one sitting AT the band edge while the classes span more than
     t.reference_class_agreement. An extreme is justified, not forbidden; see ADR 29.
 
-check_aggregation(o, t=None) -> CheckViolation | None
+check_aggregation(o, d=None, t=None) -> CheckViolation | None
     P7. aggregate_base_rate must equal the weighted mean its own reference-class weights
     imply, within t.aggregate_slack. The anchor of the whole P6 chain used to be a blend
     the agent performed in its head and nothing could recompute.
@@ -537,6 +584,9 @@ aggregate_source_confidence(o, i, t=None) -> SourceConfidence
     and a magnitude are different units.
 
 weighted_base_rate(o) -> float | None
+anchor_from(o, d) -> tuple[float | None, str]          # the anchor, and the rule that made it
+combine_sub_claim_rates(rates, rule) -> float | None   # product / complement-product / None
+chain_inputs(d, o) -> list[dict]                       # every column: researched or estimated
     What the classes and their weights imply the anchor should be. Public so the UI and
     check_aggregation cannot disagree. None when nothing carries weight.
 
@@ -604,7 +654,9 @@ run_update_checks(d, t=None) -> list[CheckViolation]
 blocking(violations) -> list[CheckViolation]
     The subset that should trigger another synthesis attempt.
 
-base_rate_spread(o) -> float
+base_rate_spread(o) -> float                           # whole-view; only one group
+sub_claim_spreads(o) -> dict[str | None, float]        # max-min WITHIN each column
+worst_sub_claim_spread(o) -> float
     max - min base_rate across the reference classes. A RANGE, not a variance — the
     thresholds are calibrated to one, and two classes 0.20 apart have a variance of 0.01.
     Public because the UI reports it as a statistic in its own right. `_spread` is
@@ -716,8 +768,9 @@ run_<n>(...) -> <Out>                               # the seam nodes, tests, eva
 | Module | P | `output_type` | Tools |
 |---|---|---|---|
 | `decompose.py` | 1, 2 | `Decomposition` | — |
-| `outside_view.py` | 4, 7 | `OutsideView` | search_web, search_wikipedia |
-| `inside_view.py` | 5, 9, 14, 15 | `InsideView` | + find_disconfirming_evidence |
+| `outside_view.py` | 4, 7 | `SubClaimBaseRates` per cell, merged to `OutsideView` | search_web, search_wikipedia |
+| `inside_view.py` | 5, 9 | `SubClaimAdjustments` per cell, merged to `InsideView` | + find_disconfirming_evidence |
+| `reflect.py` | 14, 15 | `Reflection` | none — runs after the inside-view barrier |
 | `synthesize.py` | 6, 8, 16 | `Forecast` | — |
 | `resolution.py` | — | `ResolutionCheckResult` | search_web, search_wikipedia |
 | `update.py` | 10, 11, 12 | `UpdateDecision` | search_web, find_disconfirming_evidence |
@@ -736,11 +789,16 @@ synthesize.retry_brief(outside, inside, violations) -> dict
 run_decompose(input, deps) -> Decomposition                            # async
     Break the question into 3-5 labelled sub-claims. No tools — pure analysis.
 
-run_outside_view(input, decomposition, deps) -> OutsideView            # async
+run_outside_view(input, decomposition, deps) -> OutsideView            # async, fans out
+run_base_rate_cell(input, decomposition, sub_claim, deps) -> SubClaimBaseRates   # one column
+cell_deps(deps, sub_claim_id, max_iterations) -> ForecastDeps          # own budget + sources
+exhausted_notice(deps) -> None                                         # degrade one cell
     Find >= 2 reference classes and their base rates. Prioritises sub-claims the
     decomposition labelled researchable. Budget-limited.
 
-run_inside_view(input, outside, deps) -> InsideView                    # async
+run_inside_view(input, decomposition, outside, deps) -> InsideView     # async, fans out
+run_inside_view_cell(input, sub_claim, outside, deps) -> SubClaimAdjustments     # one column
+run_reflect(input, decomposition, outside, adjustments, steel_mans, deps) -> Reflection
     Produce signed adjustments away from outside.aggregate_base_rate, each with a flip
     test, plus a steel-man and all five bias checks. Budget-limited.
 
@@ -1234,8 +1292,10 @@ Backend reads everything through `config.py`. `backend/.env`; see `backend/.env.
 | `RUN_EVENT_BUFFER` | Events retained per run for SSE replay | `5000` |
 | `RUN_RETENTION_MINUTES` | How long a finished run stays in memory | `60` |
 | `RUN_CHECKPOINT_DIR` | Graph snapshots, one JSON per run | `./run_checkpoints` |
-| `RESEARCH_REQUESTS_PER_ITERATION` | LLM requests per `max_iterations` unit | `3` |
-| `RESEARCH_TOOL_CALLS_PER_ITERATION` | Tool calls per `max_iterations` unit | `3` |
+| `RESEARCH_REQUESTS_PER_ITERATION` | LLM requests per `max_iterations` unit (whole-question fallback + evals) | `3` |
+| `RESEARCH_TOOL_CALLS_PER_ITERATION` | Tool calls per `max_iterations` unit (same) | `3` |
+| `CELL_SOFT_CALLS_PER_ITERATION` | The cline — searches per `max_iterations` unit, per cell | `1` |
+| `CELL_HARD_HEADROOM` | Calls between the cline and the wall | `3` |
 | `FRONTEND_DIR` | Static files served at `/`; unset disables the mount | `../frontend` |
 
 Frontend: none. It is same-origin static files; `window.SF_API_URL` overrides the base URL when
@@ -1245,7 +1305,7 @@ the page is opened from somewhere other than the API.
 
 ## What Works
 
-Verified by `cd backend && uv run pytest` — **313 tests, no network, no API keys**:
+Verified by `cd backend && uv run pytest` — **396 tests, no network, no API keys**:
 
 - All eight agents import and build without keys (lazy construction)
 - The forecast graph visits its nodes in methodology order — P4 asserted structurally
@@ -1296,11 +1356,17 @@ touches.
 outside `models.py`. (`ForecastRefreshResult.new_confidence`, dead in the same way, was deleted
 outright on 2026-08-04.)
 
-**There is no schema migration mechanism.** `db.init_db()` is `CREATE TABLE IF NOT EXISTS` and
-nothing else — no Alembic, no `PRAGMA user_version`, no `ALTER TABLE` anywhere. An existing
-`.db` therefore keeps its old columns forever, and dropping one means deleting the file. This
-was acceptable on 2026-08-04 because nothing is deployed; it stops being acceptable the moment
-something is. Alembic is the agreed fix and is not built.
+~~**There is no schema migration mechanism.**~~ **Fixed 2026-08-05.** `db.init_db()` now runs
+`_migrate` after the `CREATE TABLE` block, stepping a database forward through `MIGRATIONS`
+against `PRAGMA user_version`. Still no Alembic — a four-byte version in the file header and a
+dict of numbered steps is the whole thing, and it needs no dependency.
+
+This was not theoretical. It bit on 2026-08-05: ADR 29 dropped `forecast_updates.confidence`
+from the INSERT and from the fresh DDL, but every existing `.db` kept a `NOT NULL` column
+nothing supplied. Runs completed all five stages, produced a real forecast, and died on the
+final write with `IntegrityError`. A schema drift that only surfaces after a full agent run is
+the most expensive kind there is, which is why the guard is now tested
+(`tests/test_db_migrations.py`) rather than remembered.
 
 **`test_forecasting_baseline/run_baseline.py` raises on import** — `datetime.date(2022, 2, 1)`
 after `from datetime import datetime`. Its 66 questions are unusable for clean scoring anyway

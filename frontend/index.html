@@ -267,6 +267,26 @@ p  { margin:0 0 10px; }
 .minibar { height:4px; background:var(--pv-surface-3); border-radius:2px; margin:5px 0 3px; overflow:hidden; }
 .minibar > i { display:block; height:100%; background:var(--pv-text-3); }
 
+/* ---------- the grid: one column per sub-question ---------- */
+/* auto-fill rather than a fixed count: the decomposition produces three to five
+   columns, and the main pane is 900px. Two or three across, one on the existing
+   narrow breakpoint. */
+.cols { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:9px; }
+.colcard {
+  border:1px solid var(--pv-border); border-radius:var(--pv-radius-card);
+  background:var(--pv-surface); padding:9px 11px; min-width:0;
+}
+.colcard.busy { border-color:var(--pv-border-strong); background:var(--pv-surface-2); }
+/* One clipped line of what the agent is doing right now. Fixed height so a card does
+   not jump every time the narration changes length. */
+.collive {
+  font-size:var(--pv-fs-xs); color:var(--pv-text-2); margin-top:5px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-height:1.4em;
+}
+/* `overscroll-behavior` so reaching the end of one column's log does not start
+   scrolling the page behind it. */
+.coltail { max-height:170px; overflow:auto; overscroll-behavior:contain; }
+
 /* ---------- result ---------- */
 
 .bignum { font-size:var(--pv-fs-display); line-height:var(--pv-lh-display); letter-spacing:var(--pv-ls-display); font-weight:var(--pv-fw-bold); font-variant-numeric:tabular-nums; }

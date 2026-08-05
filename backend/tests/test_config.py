@@ -1,5 +1,7 @@
 import pytest
 
+import config
+
 from config import (
     get_research_limits,
     get_synthesis_limits,
@@ -80,3 +82,27 @@ def test_resolve_agent_model_rejects_legacy_gateway_key(monkeypatch):
     monkeypatch.setenv("PYDANTIC_AI_GATEWAY_API_KEY", "paig_old_key")
     with pytest.raises(RuntimeError, match="deprecated legacy gateway key"):
         resolve_agent_model()
+
+
+def test_cell_budget_puts_the_wall_above_the_cline():
+    soft, hard = config.get_cell_budget(5)
+    assert soft == 5
+    assert hard == 8
+    assert hard > soft  # the headroom is where the agent lands its answer
+
+
+def test_cell_budget_respects_both_env_vars(monkeypatch):
+    monkeypatch.setenv("CELL_SOFT_CALLS_PER_ITERATION", "2")
+    monkeypatch.setenv("CELL_HARD_HEADROOM", "1")
+    assert config.get_cell_budget(4) == (8, 9)
+
+
+def test_cell_limits_cap_tool_calls_at_the_hard_depth():
+    assert config.get_cell_limits(5).tool_calls_limit == 8
+
+
+def test_a_headroom_of_zero_makes_the_cline_the_wall(monkeypatch):
+    """The setting the verification step uses to force degradation on purpose."""
+    monkeypatch.setenv("CELL_HARD_HEADROOM", "0")
+    soft, hard = config.get_cell_budget(3)
+    assert soft == hard == 3

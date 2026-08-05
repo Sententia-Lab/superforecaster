@@ -17,9 +17,45 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 
 from ..deps import ForecastDeps
+
+
+def attach_budget_pressure(agent: Agent) -> None:
+    """Register the cline instruction on a research agent.
+
+    The second of the two channels that push a cell to converge. `tools._budget_notice`
+    is the primary one — it lands at the moment the model decides whether to search
+    again — but it has two blind spots this covers:
+
+      - there is no tool result before the first request, so it cannot state the budget
+        up front. The static `SEARCH BUDGET: at most N rounds` line this replaces did
+        state it, but was frozen into request 1 and never updated afterwards.
+      - after the last tool result it goes silent, while the model may still make several
+        more requests: an output-validation retry, a text-only turn.
+
+    Instructions are re-fetched per model request rather than once per run, which is what
+    makes the pressure escalate *within* a run instead of being a fixed sentence.
+
+    Registered on the lazy singleton at construction, so it appends once.
+    """
+
+    @agent.instructions
+    def budget(ctx: RunContext[ForecastDeps]) -> str | None:
+        b = getattr(ctx.deps, "budget", None)
+        if b is None:
+            return None
+        if not b.past_the_cline:
+            return (
+                f"SEARCH BUDGET: {b.used} of {b.soft_depth} searches used. Prefer a few "
+                "well-chosen searches over exhaustive looping."
+            )
+        return (
+            "SEARCH BUDGET SPENT. Do not call another tool. Shorten your reasoning and "
+            "return the structured answer now, from what you already found. Grade thin "
+            "evidence as thin rather than searching for better."
+        )
 
 
 @contextmanager

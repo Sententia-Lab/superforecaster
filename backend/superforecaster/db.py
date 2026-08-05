@@ -103,8 +103,63 @@ def connect() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+SCHEMA_VERSION = 1
+"""Bump this and add a step to `MIGRATIONS` whenever an existing table has to change.
+
+`CREATE TABLE IF NOT EXISTS` covers a fresh database and nothing else. It does not add a
+column, drop one, or relax a constraint — it silently does nothing to a table that already
+exists, which is how `forecast_updates.confidence` survived ADR 29 deleting it everywhere
+else. The INSERT stopped supplying the value; the `NOT NULL` column stayed; every run then
+completed all five stages and died on the last write. A schema drift that only surfaces
+after a full run is the most expensive kind there is.
+"""
+
+MIGRATIONS: dict[int, tuple[str, ...]] = {
+    # ADR 29 deleted forecast-level confidence. Dropping the column rather than recreating
+    # the database keeps every forecast already scored against it.
+    1: ("ALTER TABLE forecast_updates DROP COLUMN confidence;",),
+}
+"""version -> statements that take the schema from `version - 1` to `version`.
+
+Each step must be safe to apply to a database that reached the previous version by *either*
+route: an old database being upgraded, or a fresh one just built by `init_db`'s
+`CREATE TABLE` block. `_migrate` skips a step whose work the fresh schema already did, so
+"drop a column that no longer exists" is a no-op rather than an error.
+"""
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Bring an existing database up to `SCHEMA_VERSION`.
+
+    `PRAGMA user_version` is a four-byte integer SQLite keeps in the file header for
+    exactly this. No extra table, no dependency, and it survives a copy of the file.
+
+    A database created fresh by `init_db` is already at `SCHEMA_VERSION` structurally, but
+    its `user_version` is 0 — so every step still runs, and every step has to tolerate
+    having nothing to do.
+    """
+    current = conn.execute("PRAGMA user_version").fetchone()[0]
+    if current >= SCHEMA_VERSION:
+        return
+
+    for version in range(current + 1, SCHEMA_VERSION + 1):
+        for statement in MIGRATIONS.get(version, ()):
+            try:
+                conn.execute(statement)
+            except sqlite3.OperationalError as e:
+                # The fresh-schema case: the column this step drops was never created.
+                # Anything else is a real failure and has to surface.
+                if "no such column" not in str(e).lower():
+                    raise
+        conn.execute(f"PRAGMA user_version = {version}")
+
+
 def init_db() -> None:
-    """Create tables if they don't exist. Safe to call repeatedly."""
+    """Create tables if they don't exist, then migrate. Safe to call repeatedly."""
     with connect() as conn:
         conn.executescript(
             """
@@ -194,6 +249,7 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS ix_runs_created ON runs(created_at DESC);
             """
         )
+        _migrate(conn)
 
     # A run only ever lives in memory (see `superforecaster.runs`). Anything still
     # marked live after a restart is gone, and saying so beats leaving the UI on a

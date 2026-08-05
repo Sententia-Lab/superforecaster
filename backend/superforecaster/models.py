@@ -210,6 +210,9 @@ class ForecastResearchNotes(BaseModel):
 # ---------- Graph step outputs ----------
 
 
+ChainRule = Literal["conjunction", "disjunction", "custom"]
+
+
 class Decomposition(BaseModel):
     """Output of decompose_agent. P1.
 
@@ -218,6 +221,24 @@ class Decomposition(BaseModel):
     """
 
     sub_claims: list[SubPrediction] = Field(min_length=3, max_length=5)
+    chain_rule: ChainRule = Field(
+        default="custom",
+        description="conjunction = every sub-claim must hold, so the rates multiply; "
+        "disjunction = any one suffices, so 1 - prod(1 - p); custom = neither, and "
+        "`chain_note` has to say what the relationship actually is.",
+    )
+    """How the sub-claims combine, as arithmetic rather than prose.
+
+    `chain_note` has always asked for this distinction — "multiply for a conjunction,
+    take the maximum for alternatives, and say which it is" — and nothing could read the
+    answer. This makes it a field, so `checks.combine_sub_claim_rates` can apply it and
+    the anchor becomes the chain the decomposition describes rather than an average of
+    lenses pointed at different questions.
+
+    Defaults to `custom` so a checkpoint written before this field existed still loads on
+    resume (ADR 28), the same reason `SubPrediction.knowability` defaults to `judgment`.
+    """
+
     chain_note: str = Field(
         description="How the sub-claims combine into the whole question"
     )
@@ -254,15 +275,37 @@ class ReferenceClass(BaseModel):
     analogs: list[HistoricalAnalog] = Field(default_factory=list)
 
 
+class SubClaimBaseRates(BaseModel):
+    """One cell's answer — reference classes for exactly one column of the grid.
+
+    `min_length=2` is P7's dragonfly eye applied where it now belongs: to the
+    sub-question being measured, rather than to a flat list spanning several. That is
+    strictly stronger than the old whole-view minimum, which "two lenses on sc1 and none
+    on sc2 or sc3" satisfied.
+
+    No `rate` field. The column's rate is `checks.sub_claim_rate` over these classes and
+    their weights — computed, not asserted, so the number cannot disagree with the
+    weights that imply it. No `confidence` field either: `checks.claim_support` grades a
+    class by its strongest `GradedSource`, per ADR 29.
+    """
+
+    reference_classes: list[ReferenceClass] = Field(min_length=2, max_length=3)
+    disagreement: str = Field(
+        default="",
+        description="Why these classes disagree about THIS sub-question, and what that "
+        "implies for uncertainty. Empty only when they broadly agree.",
+    )
+
+
 class OutsideView(BaseModel):
     """Output of outside_view_agent. P4 + P7.
 
-    `min_length=2` on `reference_classes` is the half of P7 (dragonfly eye) that a
-    schema can enforce. The other half — that disagreement between lenses gets
-    explained rather than silently averaged away — is `checks.check_dragonfly`.
+    The merge of every cell in the base-rate row. `min_length=2` is a floor rather than
+    the mechanism — the two-lens guarantee now lives on `SubClaimBaseRates`, per column.
+    `max_length` allows five columns times three classes each.
     """
 
-    reference_classes: list[ReferenceClass] = Field(min_length=2, max_length=5)
+    reference_classes: list[ReferenceClass] = Field(min_length=2, max_length=15)
     aggregate_base_rate: float = Field(ge=0.0, le=1.0)
     disagreement: str = Field(
         default="",
@@ -307,10 +350,48 @@ class BiasCheck(BaseModel):
     assessment: str
 
 
-class InsideView(BaseModel):
-    """Output of inside_view_agent. P5, P9, P14, P15."""
+class SubClaimAdjustments(BaseModel):
+    """One cell's answer — signed moves for exactly one column of the grid. P5 + P9.
 
-    adjustments: list[Adjustment] = Field(min_length=1, max_length=8)
+    Scoped to a single sub-question, so `steel_man` and `what_would_change_my_mind` are
+    about that sub-question rather than the forecast. No `bias_checks`: three of the five
+    named biases are only askable of a final probability, which a column does not have.
+    Those come from the reflect pass, after the barrier.
+    """
+
+    adjustments: list[Adjustment] = Field(min_length=1, max_length=3)
+    steel_man: str = Field(
+        description="P14 — strongest case against your conclusion for THIS sub-question"
+    )
+    what_would_change_my_mind: str = Field(
+        description="P14 — for THIS sub-question specifically"
+    )
+
+
+class Reflection(BaseModel):
+    """Output of reflect_agent. P14 + P15, over the whole question.
+
+    Runs after the inside-view barrier with every column's adjustments in front of it and
+    no tools. That is what makes `check_disconfirming`'s "every adjustment points the same
+    direction" evaluable again — no single column can see the others' directions.
+    """
+
+    steel_man: str = Field(
+        description="P14 — strongest case for the opposite conclusion, whole question"
+    )
+    what_would_change_my_mind: str = Field(description="P14")
+    bias_checks: list[BiasCheck] = Field(min_length=5, max_length=5)
+
+
+class InsideView(BaseModel):
+    """The inside-view row, merged. P5, P9, P14, P15.
+
+    `adjustments` is every column's, stamped with the column it came from.
+    `max_length` allows five columns times three adjustments each. The three
+    whole-question fields come from `Reflection`.
+    """
+
+    adjustments: list[Adjustment] = Field(min_length=1, max_length=15)
     steel_man: str = Field(
         description="P14 — strongest case for the opposite conclusion"
     )
@@ -659,9 +740,15 @@ RunStatus = Literal["queued", "running", "done", "error", "cancelled", "lost"]
 class RunEvent(BaseModel):
     """One frame on the SSE wire.
 
-    `payload` is an untyped dict deliberately. Fourteen event models would be fourteen
+    `payload` is an untyped dict deliberately. Sixteen event models would be sixteen
     classes to keep in step with a JavaScript renderer that reads them as JSON
-    regardless; `spec/implemented/spec3.1.md` §3.3 is the schema of record.
+    regardless; `spec/planned/spec3.3.md` §3.3 is the schema of record.
+
+    `sub_claim` sits here beside `stage` and `attempt` rather than inside `payload`
+    because it is a coordinate, not content: the client routes on it before it looks at
+    the payload at all, and `observability` — which builds the `query`/`source`/`thought`
+    payloads and has no idea the grid exists — would otherwise have to inject it into
+    three different payload shapes.
     """
 
     seq: int
@@ -669,6 +756,11 @@ class RunEvent(BaseModel):
     type: str
     stage: str = ""
     attempt: int = 1
+    sub_claim: Optional[str] = Field(
+        default=None,
+        description="Which column of the grid produced this — a sub-claim id like 'sc2' "
+        "— or None for work the stage did as a whole.",
+    )
     ts: datetime
     payload: dict[str, Any] = Field(default_factory=dict)
 

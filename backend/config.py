@@ -25,6 +25,9 @@ DEFAULT_AGENT_TOOL_CALLS_LIMIT = 20
 DEFAULT_RESEARCH_REQUESTS_PER_ITERATION = 3
 DEFAULT_RESEARCH_TOOL_CALLS_PER_ITERATION = 3
 
+DEFAULT_CELL_SOFT_CALLS_PER_ITERATION = 1
+DEFAULT_CELL_HARD_HEADROOM = 3
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -151,13 +154,57 @@ def get_usage_limits(*, max_iterations: int | None = None) -> UsageLimits:
     return UsageLimits(request_limit=request_limit, tool_calls_limit=tool_calls_limit)
 
 
+def get_cell_budget(max_iterations: int) -> tuple[int, int]:
+    """`(soft_depth, hard_depth)` for ONE cell — one column at one research stage.
+
+    Per cell, not per stage. The old `get_research_limits` handed the whole outside view
+    `max_iterations * 3` calls to cover three to five sub-questions, and in practice the
+    single agent spent them all on the most searchable one.
+
+    Two numbers because one is a wall with no warning. `soft_depth` is the cline: past it
+    the agent is told to stop searching and commit. `hard_depth` is
+    `UsageLimits.tool_calls_limit`, and the headroom between them is what the agent gets
+    to actually land its answer in.
+
+    The defaults are the decision, so here is the arithmetic. At `max_iterations=5` a cell
+    gets soft 5 / hard 8. Against today's 15 calls for the whole row:
+
+        3 researchable columns -> 24 worst case (1.6x the calls, ~1/3 the wall-clock)
+        4 researchable columns -> 32 worst case (2.1x, ~1/4)
+        5 researchable columns -> 40 worst case (2.7x, ~1/5)   <- the case to watch
+
+    and they are spent evenly across the question rather than pooled into one column.
+    """
+    soft_per = int(
+        os.getenv(
+            "CELL_SOFT_CALLS_PER_ITERATION", str(DEFAULT_CELL_SOFT_CALLS_PER_ITERATION)
+        )
+    )
+    headroom = int(os.getenv("CELL_HARD_HEADROOM", str(DEFAULT_CELL_HARD_HEADROOM)))
+    soft = max(1, max_iterations * soft_per)
+    return soft, soft + max(0, headroom)
+
+
+def get_cell_limits(max_iterations: int) -> UsageLimits:
+    """Hard limits for one cell. The wall `get_cell_budget`'s cline sits below.
+
+    Exceeding this still raises `UsageLimitExceeded` — but a cell catches its own and
+    degrades to no result, so one greedy column no longer kills the run.
+    """
+    _, hard = get_cell_budget(max_iterations)
+    return UsageLimits(request_limit=hard + 3, tool_calls_limit=hard)
+
+
 def get_research_limits(max_iterations: int) -> UsageLimits:
-    """Budget for the tool-using research phase.
+    """Budget for a research agent covering the whole question at once.
+
+    Now only the fallback path — a decomposition with nothing researchable — plus the
+    component evals. The fanned-out rows use `get_cell_limits`, which is per column.
 
     Scales with `max_iterations` so a caller asking for deeper research gets it. The
     per-iteration rates are configurable because the right number is a guess until a
     backtest says otherwise — and because exceeding it raises `UsageLimitExceeded`,
-    which kills the run rather than degrading it.
+    which on this path still kills the run rather than degrading it.
     """
     requests_per = int(
         os.getenv(

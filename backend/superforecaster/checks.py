@@ -27,6 +27,7 @@ from config import CheckThresholds, get_check_thresholds
 from .models import (
     ALL_BIASES,
     Adjustment,
+    ChainRule,
     CheckViolation,
     Decomposition,
     Forecast,
@@ -85,12 +86,85 @@ def base_rate_spread(o: OutsideView) -> float:
 
     Public because the UI reports it as a statistic in its own right, and re-deriving it
     there would let the number shown and the number checked drift apart.
+
+    Whole-view, so it is only meaningful when every class measures the same thing. Once
+    research fans out per sub-claim that stops being true — use `sub_claim_spreads`.
     """
     rates = [rc.base_rate for rc in o.reference_classes]
     return max(rates) - min(rates) if rates else 0.0
 
 
 _spread = base_rate_spread
+
+
+def sub_claim_spreads(o: OutsideView) -> dict[str | None, float]:
+    """How far apart the lenses are *within each column*: max minus min, per sub-claim.
+
+    Across columns the number means nothing. A 0.15 lens on "will they commit to an IPO"
+    and a 0.80 lens on "will they pick an exchange" are not disagreeing — they are
+    measuring different questions — but `base_rate_spread` reports 0.65 of disagreement
+    and P7 fires on every run.
+
+    Classes naming no sub-claim group under None. After the outside-view merge that can
+    only be a hand-built fixture or an artifact from before the fan-out existed, which is
+    also why every pre-3.3 fixture forms exactly one group here and behaves as it did.
+    """
+    by_column: dict[str | None, list[float]] = {}
+    for rc in o.reference_classes:
+        for key in rc.sub_claim_ids or [None]:
+            by_column.setdefault(key, []).append(rc.base_rate)
+    return {k: max(v) - min(v) for k, v in by_column.items()}
+
+
+def worst_sub_claim_spread(o: OutsideView) -> float:
+    """The widest within-column disagreement. 0.0 when there is nothing to compare."""
+    return max(sub_claim_spreads(o).values(), default=0.0)
+
+
+def combine_sub_claim_rates(rates: list[float], rule: ChainRule) -> float | None:
+    """What the chain the decomposition describes implies, from its parts.
+
+    Public for the same reason as `signed_adjustment` and `weighted_base_rate`:
+    `run_outside_view` records the anchor with this and `check_aggregation` re-derives it
+    with this, so the recorded number and the check cannot tell different stories.
+
+    None for `custom` — there is no formula to apply, so the caller falls back to the
+    weighted mean over all classes, which is what the anchor was before this existed.
+    """
+    if not rates:
+        return None
+    if rule == "conjunction":
+        return math.prod(rates)
+    if rule == "disjunction":
+        return 1.0 - math.prod(1.0 - p for p in rates)
+    return None
+
+
+def chain_inputs(d: Decomposition, o: OutsideView) -> list[dict[str, Any]]:
+    """Each sub-claim's rate and where it came from, in decomposition order.
+
+    Runs over **every** sub-claim, not just the researched ones. A conjunction over only
+    the researched rates silently treats the rest as 1.0:
+
+        prod([0.55, 0.70, 0.60])        = 0.231   sc4 vanishes
+        prod([0.55, 0.70, 0.60, 0.80])  = 0.185   sc4 contributes its own estimate
+
+    So a column nothing researched falls back to `SubPrediction.probability` — the
+    decompose agent's own working estimate, an existing typed field, marked `estimated`
+    so a reader can tell the two apart.
+    """
+    rows: list[dict[str, Any]] = []
+    for s in d.sub_claims:
+        researched = sub_claim_rate(s.id, o) if s.id else None
+        rows.append(
+            {
+                "id": s.id,
+                "question": s.question,
+                "rate": researched if researched is not None else s.probability,
+                "source": "researched" if researched is not None else "estimated",
+            }
+        )
+    return rows
 
 
 _CONFIDENCE_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
@@ -212,18 +286,33 @@ def check_dragonfly(
     agent that silently averages them to 33% has thrown that away. The schema already
     requires at least two reference classes (`min_length=2`); this requires that a
     material disagreement between them gets explained.
+
+    Measured **within a column**. Two lenses only disagree if they were looking at the
+    same thing, and once research fans out per sub-claim most pairs are not — see
+    `sub_claim_spreads`. Fires on the widest column, and names it, so the reader knows
+    which part of the question the sentence they are being asked for is about.
     """
     th = _thresholds(t)
-    spread = _spread(o)
-    if spread > th.reference_class_disagreement and not o.disagreement.strip():
-        rates = ", ".join(f"{rc.name}={rc.base_rate:.2f}" for rc in o.reference_classes)
-        return CheckViolation(
-            principle=7,
-            name="dragonfly",
-            detail=f"reference classes span {spread:.2f} "
-            f"(> {th.reference_class_disagreement:.2f}) but `disagreement` is empty: {rates}",
-        )
-    return None
+    spreads = sub_claim_spreads(o)
+    if not spreads or o.disagreement.strip():
+        return None
+
+    worst_id, spread = max(spreads.items(), key=lambda kv: kv[1])
+    if spread <= th.reference_class_disagreement:
+        return None
+
+    rates = ", ".join(
+        f"{rc.name}={rc.base_rate:.2f}"
+        for rc in o.reference_classes
+        if worst_id in (rc.sub_claim_ids or [None])
+    )
+    where = f"for {worst_id}" if worst_id else "for the question as a whole"
+    return CheckViolation(
+        principle=7,
+        name="dragonfly",
+        detail=f"reference classes {where} span {spread:.2f} "
+        f"(> {th.reference_class_disagreement:.2f}) but `disagreement` is empty: {rates}",
+    )
 
 
 def weighted_base_rate(o: OutsideView) -> float | None:
@@ -264,18 +353,54 @@ def sub_claim_rate(sub_claim_id: str, o: OutsideView) -> float | None:
     return sum(rc.weight * rc.base_rate for rc in classes) / total
 
 
-def check_aggregation(
-    o: OutsideView, t: CheckThresholds | None = None
-) -> CheckViolation | None:
-    """P7. The single anchor has to be what the classes actually say.
+def anchor_from(o: OutsideView, d: Decomposition | None) -> tuple[float | None, str]:
+    """The anchor the outside view implies, and which rule produced it.
 
-    `aggregate_base_rate` is the anchor of the entire P6 chain, and it used to be a
-    weighted blend the agent performed in its head — so classes at 0.10 and 0.90 could
-    produce an anchor of 0.85 and nothing would object. With `weight` on the record the
-    blend is arithmetic, and arithmetic either holds or it does not.
+    With a decomposition carrying a real `chain_rule`, the anchor is that rule applied to
+    the per-column rates. Otherwise it is the weighted mean across all classes — the
+    pre-3.3 arm, and still the honest answer when there is no chain to apply.
+
+    One function so `run_outside_view` and `check_aggregation` cannot disagree about
+    which arm they are in.
+    """
+    if d is not None and d.chain_rule != "custom":
+        rates = [row["rate"] for row in chain_inputs(d, o)]
+        combined = combine_sub_claim_rates(rates, d.chain_rule)
+        if combined is not None:
+            return combined, d.chain_rule
+    return weighted_base_rate(o), "weighted mean"
+
+
+def check_aggregation(
+    o: OutsideView,
+    d: Decomposition | None = None,
+    t: CheckThresholds | None = None,
+) -> CheckViolation | None:
+    """P7. The single anchor has to be what the columns actually say.
+
+    `aggregate_base_rate` is the anchor of the entire P6 chain. It used to be a weighted
+    blend the agent performed in its head — so classes at 0.10 and 0.90 could produce an
+    anchor of 0.85 and nothing would object. Then `weight` went on the record, and the
+    blend became arithmetic this could re-derive.
+
+    It is now the *chain* the decomposition describes: for a conjunction, the product of
+    the per-column rates. A mean of conjunction factors is always ≥ their product, so the
+    old arithmetic inflated every conjunctive question's anchor by construction.
+
+    **What this catches now, stated plainly.** `run_outside_view` computes the anchor with
+    `anchor_from`, and this re-derives it with `anchor_from`, so no model performs the
+    arithmetic and this can no longer catch one performing it badly. It has become a guard
+    on the *artifact*: drift between the merge and the rule, a hand-built fixture, a
+    checkpoint resumed from an older version. That is a real weakening of what ADR 29
+    added, traded for making the failure structurally impossible rather than merely
+    checked — the same move ADR 12 made for "outside view first". Written down here so it
+    is not later discovered as a tautology nobody chose.
+
+    `d` is optional and second so callers that have no decomposition — the component
+    evals, direct unit tests — keep the pre-3.3 behaviour without an edit.
     """
     th = _thresholds(t)
-    implied = weighted_base_rate(o)
+    implied, rule = anchor_from(o, d)
     if implied is None:
         return CheckViolation(
             principle=7,
@@ -286,15 +411,22 @@ def check_aggregation(
 
     drift = abs(o.aggregate_base_rate - implied)
     if drift > th.aggregate_slack:
-        rates = ", ".join(
-            f"{rc.name}={rc.base_rate:.2f}@{rc.weight:.2f}" for rc in o.reference_classes
-        )
+        if d is not None and rule != "weighted mean":
+            parts = ", ".join(
+                f"{row['id']}={row['rate']:.2f}({row['source'][:4]})"
+                for row in chain_inputs(d, o)
+            )
+        else:
+            parts = ", ".join(
+                f"{rc.name}={rc.base_rate:.2f}@{rc.weight:.2f}"
+                for rc in o.reference_classes
+            )
         return CheckViolation(
             principle=7,
             name="aggregation",
             detail=f"aggregate_base_rate {o.aggregate_base_rate:.3f} is {drift:.3f} away "
-            f"from the {implied:.3f} its own class weights imply "
-            f"(slack {th.aggregate_slack:.3f}): {rates}",
+            f"from the {implied:.3f} its own parts imply under `{rule}` "
+            f"(slack {th.aggregate_slack:.3f}): {parts}",
         )
     return None
 
@@ -544,7 +676,10 @@ def check_calibration_hygiene(
     th = _thresholds(t)
     p = f.probability
     justified = bool(f.extreme_justification.strip())
-    spread = base_rate_spread(o)
+    # Within a column, not across. Post-fan-out the whole-view spread is wide by
+    # construction — different columns measure different things — so the second arm below
+    # would fire on nearly every run and this advisory would become noise.
+    spread = worst_sub_claim_spread(o)
 
     if p < th.calibration_floor or p > th.calibration_ceiling:
         if justified:
@@ -807,10 +942,16 @@ def check_evidence(
                     "sample_size": rc.sample_size,
                     "weight": rc.weight,
                     "support": claim_support(rc.sources),
+                    "sub_claim_ids": rc.sub_claim_ids,
                 }
                 for rc in outside.reference_classes
             ],
-            "spread": base_rate_spread(outside),
+            # Both: `spreads` is what the check actually reads, `spread` the worst of
+            # them. The whole-view number is kept because a reader comparing two columns
+            # wants to know it is not the thing being judged.
+            "spreads": {k or "": v for k, v in sub_claim_spreads(outside).items()},
+            "spread": worst_sub_claim_spread(outside),
+            "whole_view_spread": base_rate_spread(outside),
             "threshold": th.reference_class_disagreement,
             "disagreement": outside.disagreement,
         },
@@ -833,7 +974,10 @@ def check_evidence(
                 for rc in outside.reference_classes
             ],
             "stated": outside.aggregate_base_rate,
-            "implied": weighted_base_rate(outside),
+            "implied": anchor_from(outside, decomposition)[0],
+            "rule": anchor_from(outside, decomposition)[1],
+            "chain": chain_inputs(decomposition, outside),
+            "weighted_mean": weighted_base_rate(outside),
             "slack": th.aggregate_slack,
         },
         "citations": {
@@ -879,7 +1023,7 @@ def check_evidence(
             "probability": forecast.probability,
             "floor": th.calibration_floor,
             "ceiling": th.calibration_ceiling,
-            "spread": base_rate_spread(outside),
+            "spread": worst_sub_claim_spread(outside),
             "agreement_threshold": th.reference_class_agreement,
             "justification": forecast.extreme_justification,
         },
@@ -908,7 +1052,7 @@ def run_forecast_checks_detailed(
         check_decomposition(decomposition, th),
         check_linkage(forecast, decomposition, outside, inside, th),
         check_dragonfly(outside, th),
-        check_aggregation(outside, th),
+        check_aggregation(outside, decomposition, th),
         check_citations(outside, inside, sources_seen),
         check_signal_vs_noise(inside, th),
         check_disconfirming(inside, th),
