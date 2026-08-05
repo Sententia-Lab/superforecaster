@@ -64,7 +64,7 @@ class Settings:
     run_max_concurrent: int
     run_event_buffer: int
     run_retention_minutes: int
-    run_checkpoint_dir: str
+    dbos_database_url: str
     frontend_dir: str
 
 
@@ -129,7 +129,7 @@ def get_settings() -> Settings:
         run_max_concurrent=int(os.getenv("RUN_MAX_CONCURRENT", "5")),
         run_event_buffer=int(os.getenv("RUN_EVENT_BUFFER", "5000")),
         run_retention_minutes=int(os.getenv("RUN_RETENTION_MINUTES", "60")),
-        run_checkpoint_dir=os.getenv("RUN_CHECKPOINT_DIR", "./run_checkpoints"),
+        dbos_database_url=os.getenv("DBOS_DATABASE_URL", "sqlite:///./run_durability.sqlite"),
         frontend_dir=os.getenv("FRONTEND_DIR", str(_BACKEND_ROOT.parent / "frontend")),
     )
 

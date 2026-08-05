@@ -25,8 +25,6 @@ from typing import Any, Callable
 from .. import checks
 from ..agents.critic import run_critique
 from ..agents.decompose import run_decompose
-from ..agents.inside_view import run_inside_view
-from ..agents.outside_view import run_outside_view
 from ..agents.postmortem import run_postmortem
 from ..agents.resolution import run_resolution_check
 from ..agents.synthesize import run_synthesize
@@ -278,6 +276,51 @@ SCORERS: dict[str, Callable[[Any, dict], ComponentScore]] = {
 # ---------- running ----------
 
 
+async def _score_outside_row(input, decomposition, deps):
+    """One research row, run for scoring rather than for a forecast.
+
+    Sequential on purpose. In the pipeline this row is a `.map()` fan-out in
+    `graphs.forecast`; here the only thing that matters is the merged view a scorer
+    reads, and a plain loop is the version you can single-step through.
+    """
+    from ..agents.outside_view import merge_base_rates, run_base_rate_cell
+
+    cells = [s for s in decomposition.sub_claims if s.knowability == "researchable"]
+    results = [
+        await run_base_rate_cell(input, decomposition, s, deps) for s in cells
+    ]
+    return merge_base_rates(cells, results, decomposition)
+
+
+async def _score_inside_row(input, decomposition, outside, deps):
+    """The inside-view row plus its reflect pass, run for scoring. See above."""
+    from ..agents.inside_view import run_inside_view_cell
+    from ..agents.reflect import run_reflect
+    from ..models import InsideView
+
+    cells = [
+        s for s in decomposition.sub_claims if s.id and checks.classes_for(s.id, outside)
+    ]
+    adjustments = []
+    steel_mans = {}
+    for s in cells:
+        result = await run_inside_view_cell(input, s, outside, deps)
+        adjustments.extend(
+            a.model_copy(update={"sub_claim_ids": [s.id]}) for a in result.adjustments
+        )
+        steel_mans[s.id or ""] = result.steel_man
+
+    reflection = await run_reflect(
+        input, decomposition, outside, adjustments, steel_mans, deps
+    )
+    return InsideView(
+        adjustments=adjustments,
+        steel_man=reflection.steel_man,
+        what_would_change_my_mind=reflection.what_would_change_my_mind,
+        bias_checks=reflection.bias_checks,
+    )
+
+
 async def _dispatch(case: ComponentCase, deps: ForecastDeps) -> Any:
     """Call the agent this case targets, with its inputs reconstructed from JSON."""
     from ..models import (
@@ -292,7 +335,7 @@ async def _dispatch(case: ComponentCase, deps: ForecastDeps) -> Any:
     if case.agent == "decompose":
         return await run_decompose(ForecastInput.model_validate(data["input"]), deps)
     if case.agent == "outside_view":
-        return await run_outside_view(
+        return await _score_outside_row(
             ForecastInput.model_validate(data["input"]),
             Decomposition.model_validate(data["decomposition"]),
             deps,
@@ -301,7 +344,7 @@ async def _dispatch(case: ComponentCase, deps: ForecastDeps) -> Any:
         # An `inside_view` case needs a decomposition as well as an outside view: the
         # row fans out per sub-question, and each cell adjusts from its own column's
         # rate rather than the whole-question anchor.
-        return await run_inside_view(
+        return await _score_inside_row(
             ForecastInput.model_validate(data["input"]),
             Decomposition.model_validate(data["decomposition"]),
             OutsideView.model_validate(data["outside"]),

@@ -1,17 +1,19 @@
 """Tests for the streaming seam on the forecast graph.
 
-The regression that matters: adding `hooks` must not have changed what the graph does
-when nobody passes them. `run_forecast_graph` drives `.iter()` with hooks and
-`.run()` without, and those two paths have to agree on every node visited.
+Streaming used to be a `GraphHooks` protocol the caller passed in, with the graph driven
+node-by-node to fire it. It is now ordinary events: each step announces its own stage
+through `deps.emit`, the same sink the agents already write tool calls and token deltas
+to. There is one mechanism instead of two, and a run that nobody is watching simply has
+`emit=None`.
+
+What has to stay true: stages arrive in methodology order, a stage opens before it
+closes, the retry shows up as a second `synth` with a higher attempt number, and a
+hookless run is byte-identical to what the CLI and evals have always got.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
-
 from superforecaster.graphs import forecast as fg
-from superforecaster.graphs.state import ForecastState
 from tests.test_graph_forecast import (  # noqa: F401 — stub_agents is a fixture
     a_decomposition,
     a_forecast,
@@ -20,31 +22,42 @@ from tests.test_graph_forecast import (  # noqa: F401 — stub_agents is a fixtu
 )
 
 
-@dataclass
-class RecordingHooks:
-    """A `GraphHooks` that writes down what it saw."""
+class Recorder:
+    """Collects everything a run emits, and the stage timeline out of it."""
 
-    started: list[tuple[str, int]] = field(default_factory=list)
-    finished: list[str] = field(default_factory=list)
-    order: list[str] = field(default_factory=list)
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict, str | None]] = []
 
-    def stage_started(self, stage: str, attempt: int, state: ForecastState) -> None:
-        self.started.append((stage, attempt))
-        self.order.append(f"start:{stage}")
+    def __call__(self, type: str, payload: dict, sub_claim: str | None = None) -> None:
+        self.events.append((type, payload, sub_claim))
 
-    def stage_finished(self, stage: str, state: ForecastState) -> None:
-        self.finished.append(stage)
-        self.order.append(f"finish:{stage}")
+    @property
+    def stages(self) -> list[str]:
+        return [p["stage"] for t, p, _ in self.events if t == "stage"]
+
+    @property
+    def attempts(self) -> list[tuple[str, int]]:
+        return [(p["stage"], p["attempt"]) for t, p, _ in self.events if t == "stage"]
+
+    @property
+    def timeline(self) -> list[str]:
+        return [
+            f"{'start' if t == 'stage' else 'finish'}:{p['stage']}"
+            for t, p, _ in self.events
+            if t in ("stage", "stage_end")
+        ]
 
 
-async def test_hookless_run_visits_the_same_nodes_as_before(stub_agents):  # noqa: F811
-    """The regression guard. Without hooks nothing about the graph changed."""
+async def test_a_run_nobody_watches_is_unchanged(stub_agents):  # noqa: F811
+    """The regression guard. Without `emit` nothing about the graph changed."""
     forecast, violations = await fg.run_forecast_graph(forecast_input())
 
     assert stub_agents == {
         "decompose": 1,
-        "outside": 1,
-        "inside": 1,
+        # One cell per column, and the decomposition has three.
+        "outside": 3,
+        "inside": 3,
+        "reflect": 1,
         "synthesize": 1,
         "violations_seen": [[]],
     }
@@ -52,35 +65,35 @@ async def test_hookless_run_visits_the_same_nodes_as_before(stub_agents):  # noq
     assert violations == []
 
 
-async def test_hooks_and_no_hooks_agree_on_the_result(stub_agents):  # noqa: F811
+async def test_emitting_does_not_change_the_result(stub_agents):  # noqa: F811
     plain, _ = await fg.run_forecast_graph(forecast_input())
-    hooked, _ = await fg.run_forecast_graph(forecast_input(), hooks=RecordingHooks())
+    watched, _ = await fg.run_forecast_graph(forecast_input(), emit=Recorder())
 
-    assert plain.probability == hooked.probability
-    assert plain.question == hooked.question
+    assert plain.probability == watched.probability
+    assert plain.question == watched.question
 
 
-async def test_hooks_see_all_five_stages_in_methodology_order(stub_agents):  # noqa: F811
-    hooks = RecordingHooks()
-    await fg.run_forecast_graph(forecast_input(), hooks=hooks)
+async def test_all_six_stages_arrive_in_methodology_order(stub_agents):  # noqa: F811
+    rec = Recorder()
+    await fg.run_forecast_graph(forecast_input(), emit=rec)
 
-    assert [s for s, _ in hooks.started] == [
+    assert rec.stages == [
         "decompose",
         "outside",
         "inside",
+        "reflect",
         "synth",
         "critique",
     ]
-    assert hooks.finished == [s for s, _ in hooks.started]
 
 
-async def test_a_stage_starts_before_it_finishes(stub_agents):  # noqa: F811
-    """The ordering a UI depends on: a stage must be able to render as busy while it
-    works, which only holds if `stage_started` fires before the node's agent runs."""
-    hooks = RecordingHooks()
-    await fg.run_forecast_graph(forecast_input(), hooks=hooks)
+async def test_a_stage_opens_before_it_closes(stub_agents):  # noqa: F811
+    """The ordering a UI depends on: a stage must render as busy while it works, which
+    only holds if the stage event precedes the agent rather than following it."""
+    rec = Recorder()
+    await fg.run_forecast_graph(forecast_input(), emit=rec)
 
-    assert hooks.order[:4] == [
+    assert rec.timeline[:4] == [
         "start:decompose",
         "finish:decompose",
         "start:outside",
@@ -88,9 +101,19 @@ async def test_a_stage_starts_before_it_finishes(stub_agents):  # noqa: F811
     ]
 
 
-async def test_the_retry_edge_shows_up_as_a_second_synthesize(monkeypatch, stub_agents):  # noqa: F811
-    """Synthesize is simply yielded twice, and the attempt number distinguishes them —
-    the UI needs no special knowledge of the retry to render it."""
+async def test_every_stage_is_a_known_stage(stub_agents):  # noqa: F811
+    """A step that announced a stage `STAGE_ORDER` does not know about would sort to the
+    front of the run header, which is a bad place to find out."""
+    rec = Recorder()
+    await fg.run_forecast_graph(forecast_input(), emit=rec)
+
+    assert set(rec.stages) <= set(fg.STAGE_ORDER)
+    assert rec.stages == [s for s in fg.STAGE_ORDER if s in rec.stages]
+
+
+async def test_the_retry_shows_up_as_a_second_synth(monkeypatch, stub_agents):  # noqa: F811
+    """The attempt number is what distinguishes them — the UI needs no special
+    knowledge of the retry to render it."""
 
     async def wandering_synthesize(input, d, o, i, violations, deps):
         stub_agents["synthesize"] += 1
@@ -99,26 +122,27 @@ async def test_the_retry_edge_shows_up_as_a_second_synthesize(monkeypatch, stub_
 
     monkeypatch.setattr(fg, "run_synthesize", wandering_synthesize)
 
-    hooks = RecordingHooks()
-    await fg.run_forecast_graph(forecast_input(), hooks=hooks)
+    rec = Recorder()
+    await fg.run_forecast_graph(forecast_input(), emit=rec)
 
-    assert [s for s, _ in hooks.started] == [
+    assert rec.stages == [
         "decompose",
         "outside",
         "inside",
+        "reflect",
         "synth",
         "critique",
         "synth",
         "critique",
     ]
-    attempts = [(s, n) for s, n in hooks.started if s in ("synth", "critique")]
-    assert attempts == [("synth", 1), ("critique", 1), ("synth", 2), ("critique", 2)]
+    retried = [(s, n) for s, n in rec.attempts if s in ("synth", "critique")]
+    assert retried == [("synth", 1), ("critique", 1), ("synth", 2), ("critique", 2)]
 
 
 async def test_emit_reaches_the_agents_through_deps(monkeypatch, stub_agents):  # noqa: F811
     """`emit` rides on ForecastDeps rather than a parameter, which is what lets the
     agents' own event stream handler reach it without any agent knowing about it."""
-    emitted: list[tuple[str, dict, str | None]] = []
+    rec = Recorder()
 
     async def spying_decompose(input, deps):
         assert deps.emit is not None
@@ -126,11 +150,9 @@ async def test_emit_reaches_the_agents_through_deps(monkeypatch, stub_agents):  
         return a_decomposition()
 
     monkeypatch.setattr(fg, "run_decompose", spying_decompose)
-    await fg.run_forecast_graph(
-        forecast_input(), emit=lambda t, p, sc=None: emitted.append((t, p, sc))
-    )
+    await fg.run_forecast_graph(forecast_input(), emit=rec)
 
-    assert emitted == [("thought", {"delta": "hello"}, None)]
+    assert ("thought", {"delta": "hello"}, None) in rec.events
 
 
 async def test_no_emit_means_deps_carries_none(monkeypatch, stub_agents):  # noqa: F811
@@ -147,8 +169,15 @@ async def test_no_emit_means_deps_carries_none(monkeypatch, stub_agents):  # noq
     assert captured["emit"] is None
 
 
-def test_every_node_class_maps_to_a_stage_key():
-    """A node added without a STAGE_KEYS entry would KeyError mid-run, which is a bad
-    place to find out."""
-    node_names = {n.__name__ for n in fg.forecast_graph.get_nodes()}
-    assert node_names == set(fg.STAGE_KEYS)
+async def test_the_stage_result_is_the_model_the_agent_returned(stub_agents):  # noqa: F811
+    """The backend does no reshaping. What lands on the wire for a stage is the typed
+    object its agent produced, dumped — so the UI and the methodology cannot drift."""
+    rec = Recorder()
+    await fg.run_forecast_graph(forecast_input(), emit=rec)
+
+    decompose = next(p for t, p, _ in rec.events if t == "decompose")
+    assert [s["id"] for s in decompose["sub_claims"]] == ["sc1", "sc2", "sc3"]
+    assert decompose["chain_note"] == "multiply"
+
+    outside = next(p for t, p, _ in rec.events if t == "outside")
+    assert "reference_classes" in outside and "aggregate_base_rate" in outside

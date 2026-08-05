@@ -4,8 +4,8 @@ These test routing, not agent quality. The agents are stubbed out — what is be
 verified is that the graph visits nodes in the right order and takes the retry edge
 the right number of times.
 
-Node order is the point of the whole exercise: principle 4 ("outside view first") is
-enforced by `FindBaseRates` preceding `AdjustInsideView` in the graph rather than by
+Stage order is the point of the whole exercise: principle 4 ("outside view first") is
+enforced by the base-rate row preceding the inside-view row in the graph rather than by
 asking a model nicely. If that edge ever reverses, this file is what catches it.
 """
 
@@ -24,7 +24,10 @@ from superforecaster.models import (
     ForecastInput,
     InsideView,
     OutsideView,
+    Reflection,
     ResearchSummary,
+    SubClaimAdjustments,
+    SubClaimBaseRates,
 )
 from tests.test_checks import (  # reuse the model factories
     adjustment,
@@ -89,22 +92,52 @@ def a_forecast(probability: float = 0.28) -> Forecast:
 def stub_agents(monkeypatch):
     """Replace every agent with a canned, methodology-clean result.
 
-    Returns a dict recording how many times each step ran, so the retry loop is
-    observable.
+    The research rows are stubbed at the *cell* — one agent per sub-question — because
+    that is the seam the graph maps over. `outside` and `inside` therefore count cells,
+    not rows: a three-column decomposition runs three of each.
     """
-    calls = {"decompose": 0, "outside": 0, "inside": 0, "synthesize": 0}
+    calls = {
+        "decompose": 0,
+        "outside": 0,
+        "inside": 0,
+        "reflect": 0,
+        "synthesize": 0,
+    }
 
     async def fake_decompose(input, deps):
         calls["decompose"] += 1
         return a_decomposition()
 
-    async def fake_outside(input, decomposition, deps):
+    async def fake_base_rate_cell(input, decomposition, sub_claim, deps):
         calls["outside"] += 1
-        return an_outside_view()
+        return SubClaimBaseRates(
+            reference_classes=[ref("a", 0.20), ref("b", 0.24)], disagreement=""
+        )
 
-    async def fake_inside(input, decomposition, outside, deps):
+    async def fake_inside_cell(input, sub_claim, outside, deps):
+        # Only the first column moves the number; the others return evidence they
+        # judged to be noise. Net effect is +0.06 on a 0.22 anchor, which is the 0.28
+        # `a_forecast` states — so a clean pass really is clean and does not trip
+        # `check_derivation` into a retry.
         calls["inside"] += 1
-        return an_inside_view()
+        moves = (
+            [adjustment("up", 0.10), adjustment("down", 0.04)]
+            if sub_claim.id == "sc1"
+            else [adjustment("neutral", 0.0, is_noise=True)]
+        )
+        return SubClaimAdjustments(
+            adjustments=moves,
+            steel_man="regulators could block it",
+            what_would_change_my_mind="a second request",
+        )
+
+    async def fake_reflect(input, d, o, adjustments, steel_mans, deps):
+        calls["reflect"] += 1
+        return Reflection(
+            steel_man="regulators could block it",
+            what_would_change_my_mind="a second request",
+            bias_checks=all_bias_checks(),
+        )
 
     async def fake_synthesize(input, d, o, i, violations, deps):
         calls["synthesize"] += 1
@@ -112,18 +145,29 @@ def stub_agents(monkeypatch):
         return a_forecast()
 
     monkeypatch.setattr(fg, "run_decompose", fake_decompose)
-    monkeypatch.setattr(fg, "run_outside_view", fake_outside)
-    monkeypatch.setattr(fg, "run_inside_view", fake_inside)
+    monkeypatch.setattr(fg, "run_base_rate_cell", fake_base_rate_cell)
+    monkeypatch.setattr(fg, "run_inside_view_cell", fake_inside_cell)
+    monkeypatch.setattr(fg, "run_reflect", fake_reflect)
     monkeypatch.setattr(fg, "run_synthesize", fake_synthesize)
     return calls
 
 
-async def visited_nodes(state: ForecastState, deps: ForecastDeps) -> list[str]:
-    """Walk the graph and record the class name of every node it enters."""
+async def visited_steps(state: ForecastState, deps: ForecastDeps) -> list[str]:
+    """Run the graph and record the stage each step announced, in order.
+
+    The beta graph runs tasks concurrently, so there is no single "current node" to read
+    the way the old sequential walk did. The stages the steps emit are the real
+    observable — and they are what the UI orders on too, so testing them tests the thing
+    that actually has to stay correct.
+    """
     seen: list[str] = []
-    async with fg.forecast_graph.iter(fg.Decompose(), state=state, deps=deps) as run:
-        async for node in run:
-            seen.append(type(node).__name__)
+
+    def record(type: str, payload: dict, sub_claim=None) -> None:
+        if type == "stage":
+            seen.append(payload["stage"])
+
+    deps.emit = record
+    await fg.forecast_graph.run(state=state, deps=deps)
     return seen
 
 
@@ -155,31 +199,27 @@ async def test_run_decompose_stamps_stable_ids(monkeypatch):
 async def test_visits_nodes_in_methodology_order(stub_agents):
     """Principle 4 is this assertion. The base rate is found before it is adjusted."""
     state = ForecastState(input=forecast_input())
-    seen = await visited_nodes(state, ForecastDeps())
+    seen = await visited_steps(state, ForecastDeps())
 
-    assert seen[:5] == [
-        "Decompose",
-        "FindBaseRates",
-        "AdjustInsideView",
-        "Synthesize",
-        "Critique",
-    ]
+    assert seen == ["decompose", "outside", "inside", "reflect", "synth", "critique"]
 
 
 async def test_outside_view_runs_before_inside_view(stub_agents):
     """The same guarantee stated as an ordering, in case the list above is edited."""
     state = ForecastState(input=forecast_input())
-    seen = await visited_nodes(state, ForecastDeps())
-    assert seen.index("FindBaseRates") < seen.index("AdjustInsideView")
+    seen = await visited_steps(state, ForecastDeps())
+    assert seen.index("outside") < seen.index("inside")
 
 
 async def test_each_research_step_runs_once_on_a_clean_pass(stub_agents):
     state = ForecastState(input=forecast_input())
-    await visited_nodes(state, ForecastDeps())
+    await visited_steps(state, ForecastDeps())
 
     assert stub_agents["decompose"] == 1
-    assert stub_agents["outside"] == 1
-    assert stub_agents["inside"] == 1
+    # One cell per column, not one call per row — the decomposition has three.
+    assert stub_agents["outside"] == 3
+    assert stub_agents["inside"] == 3
+    assert stub_agents["reflect"] == 1
     assert stub_agents["synthesize"] == 1
 
 
@@ -188,9 +228,9 @@ async def test_each_research_step_runs_once_on_a_clean_pass(stub_agents):
 
 async def test_clean_forecast_ends_without_retrying(stub_agents):
     state = ForecastState(input=forecast_input())
-    seen = await visited_nodes(state, ForecastDeps())
+    seen = await visited_steps(state, ForecastDeps())
 
-    assert seen.count("Synthesize") == 1
+    assert seen.count("synth") == 1
     assert state.violations == []
 
 
@@ -208,10 +248,10 @@ async def test_violation_routes_back_to_synthesize_exactly_once(
         ],
     )
     state = ForecastState(input=forecast_input())
-    seen = await visited_nodes(state, ForecastDeps())
+    seen = await visited_steps(state, ForecastDeps())
 
-    assert seen.count("Synthesize") == 2
-    assert seen.count("Critique") == 2
+    assert seen.count("synth") == 2
+    assert seen.count("critique") == 2
     assert stub_agents["synthesize"] == 2
 
 
@@ -226,10 +266,11 @@ async def test_retry_does_not_redo_the_research(monkeypatch, stub_agents):
             )
         ],
     )
-    await visited_nodes(ForecastState(input=forecast_input()), ForecastDeps())
+    await visited_steps(ForecastState(input=forecast_input()), ForecastDeps())
 
-    assert stub_agents["outside"] == 1
-    assert stub_agents["inside"] == 1
+    assert stub_agents["outside"] == 3
+    assert stub_agents["inside"] == 3
+    assert stub_agents["reflect"] == 1
 
 
 async def test_retry_tells_the_agent_what_failed(monkeypatch, stub_agents):
@@ -243,7 +284,7 @@ async def test_retry_tells_the_agent_what_failed(monkeypatch, stub_agents):
             )
         ],
     )
-    await visited_nodes(ForecastState(input=forecast_input()), ForecastDeps())
+    await visited_steps(ForecastState(input=forecast_input()), ForecastDeps())
 
     first, second = stub_agents["violations_seen"]
     assert first == []
@@ -261,10 +302,10 @@ async def test_ends_after_two_attempts_even_if_still_failing(monkeypatch, stub_a
         ],
     )
     state = ForecastState(input=forecast_input())
-    seen = await visited_nodes(state, ForecastDeps())
+    seen = await visited_steps(state, ForecastDeps())
 
-    assert seen.count("Synthesize") == fg.MAX_SYNTHESIS_ATTEMPTS
-    assert "End" in seen[-1]
+    assert seen.count("synth") == fg.MAX_SYNTHESIS_ATTEMPTS
+    assert seen[-1] == "critique"
 
 
 async def test_non_blocking_violation_does_not_retry(monkeypatch, stub_agents):
@@ -276,8 +317,8 @@ async def test_non_blocking_violation_does_not_retry(monkeypatch, stub_agents):
         ],
     )
     state = ForecastState(input=forecast_input())
-    seen = await visited_nodes(state, ForecastDeps())
-    assert seen.count("Synthesize") == 1
+    seen = await visited_steps(state, ForecastDeps())
+    assert seen.count("synth") == 1
 
 
 # ---------- entry point ----------
@@ -337,6 +378,11 @@ async def test_deps_carry_both_clamps_into_the_run(stub_agents, monkeypatch):
 def test_mermaid_shows_the_retry_edge():
     """The docs render from this, so the loop has to be visible in it."""
     code = fg.forecast_mermaid()
-    assert "Decompose --> FindBaseRates" in code
-    assert "FindBaseRates --> AdjustInsideView" in code
-    assert "Critique --> Synthesize" in code
+    # Each research row forks through a decision, so an empty row can bypass the
+    # map rather than stalling in it.
+    assert "decompose --> decision" in code
+    assert "--> base_rate_cell" in code
+    assert "--> inside_cell" in code
+    # The retry cycle: critique routes through a decision back to synthesize.
+    assert "critique --> decision" in code
+    assert "--> synthesize" in code

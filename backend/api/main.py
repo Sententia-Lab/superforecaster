@@ -18,7 +18,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from superforecaster import cron, db
+from superforecaster import cron, db, durability
 
 from .admin import router as admin_router
 from .deps import is_local_mode
@@ -61,6 +61,9 @@ def _preflight() -> list[str]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+    # Only the server checkpoints runs. A one-shot CLI forecast or an eval has nothing
+    # to resume into, so it runs the same graph without the workflow layer.
+    durability.configure()
     cron.start_scheduler()
     print("\nSuperforecaster", flush=True)
     for line in _preflight():

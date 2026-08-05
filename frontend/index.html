@@ -91,6 +91,12 @@ textarea::placeholder, input::placeholder { color: var(--pv-text-3); }
   padding:12px 20px; border-bottom:1px solid var(--pv-border);
   background:var(--pv-surface); position:sticky; top:0; z-index:20;
 }
+/* The slot counter is the only header item that can be dropped without losing a
+   control — it is also the one long enough to force the bar past a phone's width. */
+@media (max-width: 640px) {
+  .hdr { gap:10px; padding:10px 14px; }
+  .hdr .micro { display:none; }
+}
 .mark {
   width:26px; height:26px; border-radius:8px; background:var(--pv-brand);
   color:var(--pv-brand-fg); display:grid; place-items:center;
@@ -114,13 +120,25 @@ textarea::placeholder, input::placeholder { color: var(--pv-text-3); }
 .btn.tiny { padding:4px 9px; font-size:var(--pv-fs-xs); }
 
 .shell { display:grid; grid-template-columns: 272px minmax(0,1fr); gap:0; align-items:start; }
-@media (max-width: 900px) { .shell { grid-template-columns: 1fr; } .rail { border-right:none !important; } }
+/* Narrow the rail before dropping it: at ~1100px a fixed 272px rail starts eating the
+   reading column, and the cards are full-width now so the main pane feels it first. */
+@media (max-width: 1100px) { .shell { grid-template-columns: 220px minmax(0,1fr); } }
+/* `minmax(0,1fr)`, not `1fr`: a grid item defaults to `min-width:auto`, so a bare `1fr`
+   track refuses to shrink below its content's min-content width. That is what made the
+   stacked rail 743px wide inside a 375px viewport and pushed the whole page sideways. */
+@media (max-width: 900px) {
+  .shell { grid-template-columns: minmax(0,1fr); }
+  .rail { border-right:none !important; position:static; max-height:none; }
+}
 
 .rail {
-  border-right:1px solid var(--pv-border); padding:18px 16px;
+  border-right:1px solid var(--pv-border); padding:18px 16px; min-width:0;
   position:sticky; top:51px; max-height:calc(100vh - 51px); overflow:auto;
 }
-.main { padding:26px 28px 80px; max-width:900px; }
+/* `margin-inline:auto` is what centers the reading column — without it the pane sits
+   hard left and every pixel past `max-width` becomes dead space on the right. */
+.main { padding:26px 28px 80px; max-width:1100px; width:100%; min-width:0; margin-inline:auto; }
+@media (max-width: 640px) { .main { padding:18px 16px 64px; } }
 
 .card {
   border:1px solid var(--pv-border); border-radius:var(--pv-radius-card);
@@ -173,6 +191,7 @@ p  { margin:0 0 10px; }
 .inp:focus, .ta:focus { outline:2px solid var(--pv-focus); outline-offset:-1px; }
 .inp.bad, .ta.bad { border-color:var(--pv-red-soft); }
 .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+@media (max-width: 640px) { .grid2 { grid-template-columns:1fr; } }
 
 .bar { height:3px; border-radius:2px; background:var(--pv-surface-3); overflow:hidden; margin-top:7px; }
 .bar > i { display:block; height:100%; background:var(--pv-text-3); }
@@ -193,6 +212,9 @@ p  { margin:0 0 10px; }
   display:flex; align-items:center; gap:9px; padding:9px 12px;
   background:var(--pv-surface); cursor:pointer; user-select:none;
 }
+/* The principle chips are the first thing to go when the bar runs out of room — they
+   are a legend, and squeezing them shreds the stage name into one word per line. */
+@media (max-width: 640px) { .stage > header .pchips { display:none; } }
 .stage.busy > header { background:var(--pv-surface-2); }
 .stage .num {
   width:20px; height:20px; border-radius:6px; display:grid; place-items:center;
@@ -217,6 +239,9 @@ p  { margin:0 0 10px; }
 }
 .ev.source { display:flex; gap:9px; align-items:baseline; }
 .ev.route { color:var(--pv-red); background:var(--pv-red-fill); border-radius:var(--pv-radius-chip); padding:8px 10px; }
+/* A bias row is a chip and its assessment; without a gap they read as one word. */
+.ev.bias { display:flex; gap:9px; align-items:baseline; flex-wrap:wrap; }
+.ev.check { display:block; }
 .ev.brief {
   border:1px solid var(--pv-yellow); background:var(--pv-yellow-fill);
   border-radius:var(--pv-radius-chip); padding:9px 11px;
@@ -264,14 +289,60 @@ p  { margin:0 0 10px; }
 .evhead { display:flex; align-items:baseline; gap:8px; margin-bottom:3px; }
 .evhead .k { font-weight:var(--pv-fw-semibold); }
 .num-strong { font-variant-numeric:tabular-nums; font-weight:var(--pv-fw-semibold); }
+/* A signed move reads as a direction before it reads as a number. */
+.num-strong.up { color:var(--pv-green); }
+.num-strong.down { color:var(--pv-red); }
 .minibar { height:4px; background:var(--pv-surface-3); border-radius:2px; margin:5px 0 3px; overflow:hidden; }
 .minibar > i { display:block; height:100%; background:var(--pv-text-3); }
 
-/* ---------- the grid: one column per sub-question ---------- */
-/* auto-fill rather than a fixed count: the decomposition produces three to five
-   columns, and the main pane is 900px. Two or three across, one on the existing
-   narrow breakpoint. */
-.cols { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:9px; }
+/* ---------- the principles drawer ---------- */
+/* A P-chip is a reference, so it behaves like one: hovering lights up every other
+   mention of the same principle, clicking opens the drawer at it. `data-focus-p` is
+   stamped on the root by JS rather than re-rendering, because the trail rebuilds
+   several times a second while a run streams. */
+.pchip { cursor:help; }
+:root[data-focus-p="1"]  .pchip[data-p="1"],
+:root[data-focus-p="2"]  .pchip[data-p="2"],
+:root[data-focus-p="3"]  .pchip[data-p="3"],
+:root[data-focus-p="4"]  .pchip[data-p="4"],
+:root[data-focus-p="5"]  .pchip[data-p="5"],
+:root[data-focus-p="6"]  .pchip[data-p="6"],
+:root[data-focus-p="7"]  .pchip[data-p="7"],
+:root[data-focus-p="8"]  .pchip[data-p="8"],
+:root[data-focus-p="9"]  .pchip[data-p="9"],
+:root[data-focus-p="10"] .pchip[data-p="10"],
+:root[data-focus-p="11"] .pchip[data-p="11"],
+:root[data-focus-p="12"] .pchip[data-p="12"],
+:root[data-focus-p="13"] .pchip[data-p="13"],
+:root[data-focus-p="14"] .pchip[data-p="14"],
+:root[data-focus-p="15"] .pchip[data-p="15"],
+:root[data-focus-p="16"] .pchip[data-p="16"] {
+  background:var(--pv-brand); color:var(--pv-brand-fg); border-color:var(--pv-brand);
+}
+
+.drawer-scrim {
+  position:fixed; inset:0; background:rgba(0,0,0,.34); z-index:40;
+  display:flex; justify-content:flex-end;
+}
+.drawer {
+  background:var(--pv-surface); border-left:1px solid var(--pv-border);
+  width:min(460px, 100%); height:100%; overflow:auto; padding:20px 22px 40px;
+}
+.drawer-head { display:flex; align-items:baseline; gap:10px; margin-bottom:6px; }
+.plist { margin-top:14px; display:flex; flex-direction:column; gap:10px; }
+.prow {
+  border:1px solid var(--pv-border); border-radius:var(--pv-radius-card);
+  padding:9px 11px; background:var(--pv-bg);
+}
+.prow.on { border-color:var(--pv-brand); background:var(--pv-brand-fill); }
+@media (max-width: 640px) { .drawer { width:100%; border-left:none; } }
+
+/* ---------- one card per sub-question ---------- */
+/* A vertical list, not a grid. "Column" here means one agent per sub-question — a
+   fan-out concept, not a layout one. Side-by-side cards were ~260px wide, which wrapped
+   every question into a ragged stack; full width keeps a sub-question on one or two
+   lines and lets the research trail underneath it breathe. */
+.cols { display:flex; flex-direction:column; gap:9px; }
 .colcard {
   border:1px solid var(--pv-border); border-radius:var(--pv-radius-card);
   background:var(--pv-surface); padding:9px 11px; min-width:0;
@@ -291,13 +362,6 @@ p  { margin:0 0 10px; }
 
 .bignum { font-size:var(--pv-fs-display); line-height:var(--pv-lh-display); letter-spacing:var(--pv-ls-display); font-weight:var(--pv-fw-bold); font-variant-numeric:tabular-nums; }
 .stat { display:flex; flex-direction:column; gap:2px; }
-.wf { display:flex; flex-direction:column; gap:6px; margin-top:12px; }
-.wfrow { display:grid; grid-template-columns: minmax(0,1fr) 54px 96px 44px; gap:9px; align-items:center; font-size:var(--pv-fs-xs); }
-.wfrow .track { height:9px; background:var(--pv-surface-3); border-radius:3px; overflow:hidden; }
-.wfrow .track > i { display:block; height:100%; background:var(--pv-text-3); }
-.wfrow.final .track > i { background:var(--pv-brand); }
-.wfrow .lbl { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--pv-text-2); }
-.wfrow.anchor .lbl, .wfrow.final .lbl { color:var(--pv-text); font-weight:var(--pv-fw-medium); }
 
 .toast {
   position:fixed; bottom:18px; left:50%; transform:translateX(-50%);

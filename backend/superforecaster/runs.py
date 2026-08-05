@@ -1,76 +1,43 @@
-"""Live forecast runs — registry, event buffer, and the projection of graph state
-into the events a UI renders.
+"""Live forecast runs — registry, lifecycle, and the wire.
 
 Three things happen here and nothing else does them:
 
 1. **A run is a background task**, not a blocked HTTP request. `POST /runs` returns in
    milliseconds; the graph keeps going whether or not anyone is watching.
-2. **Typed state becomes events.** Every `project_*` function below reads a field an
-   agent already returns — `Decomposition.sub_claims`, `InsideView.adjustments`,
-   `OutsideView.reference_classes`. No prompt was changed to make the UI possible, so
-   what is displayed is what the methodology produced, not a second narration of it.
-3. **Events fan out to subscribers** over an in-memory queue per SSE connection.
+2. **A run is durable.** Every agent call goes through `durability.agent_step`, which
+   makes it a DBOS step, so a failed run resumes from the agent that died rather than
+   re-paying for the whole graph. Resuming *forks* the workflow at the failed step —
+   `resume_workflow` would replay the recorded error and run nothing.
+3. **Events fan out to subscribers**, buffered for replay. See `eventstream`.
 
-Runs are memory-resident on purpose. The final `Forecast` persists through the
-existing `db.save_forecast`; the reasoning trail does not persist at all. A restart
-therefore loses every in-flight run, and `db.init_db` marks those rows `lost` on boot
-so the UI can say so instead of hanging on a stream that will never produce a frame.
+What is deliberately *not* here any more: a projection layer. The graph emits the typed
+objects its agents already returned — a whole `Decomposition`, a whole `OutsideView` —
+and the frontend decides what to draw. Reshaping those into display dicts was six
+hundred lines of backend code encoding layout decisions, and every one of them was a
+place the UI and the methodology could drift apart.
+
+Runs are memory-resident on purpose. The final `Forecast` persists through
+`db.save_forecast`; the reasoning trail does not persist server-side at all. A restart
+therefore loses every in-flight run, and `db.init_db` marks those rows `lost` on boot so
+the UI can say so instead of hanging on a stream that will never produce a frame.
 """
 
 from __future__ import annotations
 
 import asyncio
-import time
 import uuid
-from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable
+from typing import Any
 
 from config import get_settings, resolve_agent_model
+from dbos import DBOS, SetWorkflowID
 
-from . import checkpoints, checks, db
-from .agents.synthesize import retry_brief
-from .graphs.forecast import (
-    MAX_SYNTHESIS_ATTEMPTS,
-    STAGE_KEYS,
-    run_forecast_graph,
-)
+from . import db, durability
+from .eventstream import SUBSCRIBER_QUEUE_SIZE, EventStream
+from .graphs.forecast import STAGE_ORDER
 from .graphs.state import ForecastState
-from .models import (
-    Decomposition,
-    Forecast,
-    ForecastInput,
-    InsideView,
-    OutsideView,
-    RunEvent,
-    RunSnapshot,
-    RunStatus,
-    RunSummary,
-)
-
-THOUGHT_FLUSH_SECONDS = 0.08
-"""Token deltas are coalesced into at most one frame per interval.
-
-Un-coalesced, a run emits one SSE frame per token — thousands of frames each carrying
-three bytes of payload inside ninety bytes of envelope.
-"""
-
-SUBSCRIBER_QUEUE_SIZE = 512
-"""Per-connection backlog. A client that falls this far behind is dropped and resumes
-from the buffer with `?from_seq=`, rather than being allowed to stall the graph."""
-
-STAGE_ORDER: tuple[str, ...] = ("decompose", "outside", "inside", "synth", "critique")
-
-FANNED_OUT_STAGES: frozenset[str] = frozenset({"outside", "inside"})
-"""Stages that run one agent per column. These are the rows that get cards."""
-
-_EVERY_COLUMN: Any = object()
-"""Sentinel for `flush_thought`: flush every column, not just one.
-
-A distinct object rather than `None`, because `None` is itself a valid column key — it
-is what everything outside a fanned-out stage emits under.
-"""
+from .models import ForecastInput, RunEvent, RunSnapshot, RunStatus, RunSummary
 
 _TERMINAL: frozenset[str] = frozenset({"done", "error", "cancelled", "lost"})
 
@@ -88,11 +55,7 @@ def utc_now() -> datetime:
 
 @dataclass
 class Run:
-    """One forecast graph execution, its event buffer, and its subscribers.
-
-    Also the `GraphHooks` implementation — `stage_started` / `stage_finished` are why
-    this class is what gets handed to `run_forecast_graph`.
-    """
+    """One forecast execution: its status, its event stream, and its graph state."""
 
     id: str
     input: ForecastInput
@@ -100,37 +63,31 @@ class Run:
     status: RunStatus = "queued"
     stage: str = ""
     attempt: int = 1
-    seq: int = 0
-    dropped: int = 0
     tool_calls: int = 0
     forecast_id: str | None = None
     error: str | None = None
     created_at: datetime = field(default_factory=utc_now)
     ended_at: datetime | None = None
-    events: deque[RunEvent] = field(default_factory=deque)
     task: asyncio.Task[None] | None = None
 
+    workflow_id: str | None = None
+    """The DBOS workflow currently backing this run.
+
+    Not derivable from `id`: resuming forks the workflow, which mints a new id, and a
+    second failure has to fork from the fork rather than from the original.
+    """
+
     state: ForecastState | None = None
-    """The graph state, kept so the final `result` event can build its waterfall.
+    """The graph state, held so a resumed run keeps writing to the same object."""
 
-    `run_forecast_graph` returns the forecast and its violations but not the state, and
-    the waterfall needs the outside view's anchor and the inside view's adjustments.
-    Holding the reference the hooks are already handed is cheaper than widening that
-    return type for one caller.
-    """
-
-    _subscribers: set[asyncio.Queue[RunEvent]] = field(default_factory=set)
-    _thoughts: dict[str | None, tuple[str, float]] = field(default_factory=dict)
-    """Pending token deltas, keyed by column: {sub_claim: (text, deadline)}.
-
-    One buffer per column rather than one for the run. When a stage fans out, several
-    agents narrate at once; a single buffer would interleave their half-written
-    sentences into one unreadable string.
-    """
+    stream: EventStream[RunEvent] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
-        if self.events.maxlen is None:
-            self.events = deque(self.events, maxlen=get_settings().run_event_buffer)
+        if self.stream is None:
+            self.stream = EventStream(
+                buffer=get_settings().run_event_buffer,
+                queue_size=SUBSCRIBER_QUEUE_SIZE,
+            )
 
     # ---------- emit ----------
 
@@ -140,54 +97,23 @@ class Run:
         payload: dict[str, Any] | None = None,
         sub_claim: str | None = None,
     ) -> RunEvent:
-        """Append an event and fan it out. Synchronous and never blocks.
-
-        A slow or dead subscriber cannot stall the graph: the put is non-blocking, and
-        a full queue costs that one connection rather than the event. The dropped
-        client reconnects and replays the gap from the buffer.
-        """
-        if type != "thought":
-            self.flush_thought(sub_claim)
-        return self._append(type, payload or {}, sub_claim)
+        """Append an event and fan it out. Synchronous and never blocks."""
+        return self.stream.publish(
+            lambda seq: self._event(seq, type, payload or {}, sub_claim), sub_claim
+        )
 
     def emit_thought(self, delta: str, sub_claim: str | None = None) -> None:
-        """Buffer a token delta for one column, flushed every `THOUGHT_FLUSH_SECONDS`."""
-        now = time.monotonic()
-        text, deadline = self._thoughts.get(sub_claim, ("", 0.0))
-        if not text:
-            deadline = now + THOUGHT_FLUSH_SECONDS
-        self._thoughts[sub_claim] = (text + delta, deadline)
-        if now >= deadline:
-            self.flush_thought(sub_claim)
-
-    def flush_thought(self, sub_claim: str | None = _EVERY_COLUMN) -> None:
-        """Emit whatever `emit_thought` buffered, for one column or for all of them.
-
-        Called before every non-thought event as well as on the timer, so narration can
-        never arrive after the tool call or result it preceded — but *per column*. An
-        event in `sc1` must not flush `sc2`, or sc2's half-written sentence gets spliced
-        in front of sc1's tool call, which is the interleaving this keying exists to
-        prevent. Stage boundaries pass `_EVERY_COLUMN` because a barrier is a real
-        barrier: nothing is still narrating on the far side of it.
-        """
-        keys = (
-            list(self._thoughts)
-            if sub_claim is _EVERY_COLUMN
-            else ([sub_claim] if sub_claim in self._thoughts else [])
+        self.stream.publish_delta(
+            delta,
+            sub_claim,
+            lambda seq, text, key: self._event(seq, "thought", {"delta": text}, key),
         )
-        for key in keys:
-            text, _ = self._thoughts.pop(key, ("", 0.0))
-            if text:
-                self._append("thought", {"delta": text}, key)
 
-    def _append(
-        self, type: str, payload: dict[str, Any], sub_claim: str | None = None
+    def _event(
+        self, seq: int, type: str, payload: dict[str, Any], sub_claim: str | None
     ) -> RunEvent:
-        self.seq += 1
-        if len(self.events) == self.events.maxlen:
-            self.dropped += 1
-        event = RunEvent(
-            seq=self.seq,
+        return RunEvent(
+            seq=seq,
             run_id=self.id,
             type=type,
             stage=self.stage,
@@ -196,60 +122,14 @@ class Run:
             ts=utc_now(),
             payload=payload,
         )
-        self.events.append(event)
-
-        for q in list(self._subscribers):
-            try:
-                q.put_nowait(event)
-            except asyncio.QueueFull:
-                self._subscribers.discard(q)
-        return event
-
-    # ---------- GraphHooks ----------
-
-    def stage_started(self, stage: str, attempt: int, state: ForecastState) -> None:
-        self.flush_thought()
-        self.stage, self.attempt = stage, attempt
-        self.state = state
-        self.emit("stage", {"stage": stage, "attempt": attempt})
-
-        # A second synthesis is a correction, not a re-roll — but only if you can see
-        # what changed. This emits the actual prompt text attempt 2 receives.
-        if stage == "synth" and attempt > 1 and state.outside and state.inside:
-            self.emit("brief", retry_brief(state.outside, state.inside, state.violations))
-
-        # Open one card per column before any agent starts, so a row that takes four
-        # minutes is legible for all four of them rather than blank until the barrier.
-        if stage in FANNED_OUT_STAGES and state.decomposition is not None:
-            project_columns(self, stage, state)
-
-    def stage_finished(self, stage: str, state: ForecastState) -> None:
-        """Project whatever field this node just wrote onto the state."""
-        self.flush_thought()
-        self.state = state
-        if stage == "decompose" and state.decomposition is not None:
-            project_decompose(self, state.decomposition)
-        elif stage == "outside" and state.outside is not None:
-            assert state.decomposition is not None
-            project_outside(
-                self, state.decomposition, state.outside, state.sources_seen
-            )
-        elif stage == "inside" and state.inside is not None:
-            project_inside(self, state.inside)
-        elif stage == "synth" and state.forecast is not None:
-            project_synth(self, state, state.synthesis_attempts)
-        elif stage == "critique":
-            project_critique(self, state)
 
     # ---------- subscribers ----------
 
     def subscribe(self) -> asyncio.Queue[RunEvent]:
-        q: asyncio.Queue[RunEvent] = asyncio.Queue(maxsize=SUBSCRIBER_QUEUE_SIZE)
-        self._subscribers.add(q)
-        return q
+        return self.stream.subscribe()
 
     def unsubscribe(self, q: asyncio.Queue[RunEvent]) -> None:
-        self._subscribers.discard(q)
+        self.stream.unsubscribe(q)
 
     def replay(self, from_seq: int = 0) -> list[RunEvent]:
         """Buffered events with `seq >= from_seq`.
@@ -258,20 +138,40 @@ class Run:
         so a reconnecting client learns it has a hole rather than silently rendering a
         timeline that is missing its middle.
         """
-        buffered = [e for e in self.events if e.seq >= from_seq]
-        oldest = self.events[0].seq if self.events else from_seq
-        if self.dropped and from_seq < oldest:
+        buffered = list(self.stream.replay(from_seq, lambda e: e.seq))
+        oldest = self.stream.oldest_seq(lambda e: e.seq) or from_seq
+        if self.stream.dropped and from_seq < oldest:
             gap = RunEvent(
                 seq=max(0, from_seq),
                 run_id=self.id,
                 type="truncated",
                 ts=utc_now(),
-                payload={"dropped_before_seq": oldest, "count": self.dropped},
+                payload={"dropped_before_seq": oldest, "count": self.stream.dropped},
             )
             return [gap, *buffered]
         return buffered
 
     # ---------- views ----------
+
+    @property
+    def seq(self) -> int:
+        return self.stream.seq
+
+    def flush_thought(self, sub_claim=None) -> None:
+        """Emit whatever narration is buffered. No argument means every column."""
+        if sub_claim is None:
+            self.stream.flush()
+        else:
+            self.stream.flush(sub_claim)
+
+    @property
+    def dropped(self) -> int:
+        return self.stream.dropped
+
+    @property
+    def events(self):
+        """The buffered events, oldest first. Read-only view for tests and snapshots."""
+        return self.stream.events
 
     @property
     def is_terminal(self) -> bool:
@@ -288,7 +188,7 @@ class Run:
             ),
             attempt=self.attempt,
             tool_calls=self.tool_calls,
-            last_seq=self.seq,
+            last_seq=self.stream.seq,
             forecast_id=self.forecast_id,
             error=self.error,
             created_at=self.created_at,
@@ -306,10 +206,9 @@ class Run:
 class RunRegistry:
     """Process-wide run table.
 
-    In-memory, which means one uvicorn worker. Two workers would each see half the
-    runs, and a stream opened on the wrong one would replay nothing. The fix when that
-    becomes real is a shared bus behind `Run.emit` / `Run.subscribe`, not a different
-    shape here.
+    In-memory, which means one uvicorn worker. Two workers would each see half the runs,
+    and a stream opened on the wrong one would replay nothing. The fix when that becomes
+    real is a shared bus behind `Run.emit` / `Run.subscribe`, not a different shape here.
     """
 
     def __init__(self) -> None:
@@ -318,7 +217,7 @@ class RunRegistry:
     def create(self, input: ForecastInput, resolution_source: str = "") -> Run:
         """Allocate a run and record it. Does not start it.
 
-        Raises `SlotsFullError` past `RUN_MAX_CONCURRENT` — a run is five agent
+        Raises `SlotsFullError` past `RUN_MAX_CONCURRENT` — a run is six agent
         invocations with a live search budget, so the cap is about cost, not memory.
         """
         self.reap()
@@ -367,11 +266,7 @@ class RunRegistry:
         return True
 
     def reap(self) -> int:
-        """Drop finished runs past `RUN_RETENTION_MINUTES`.
-
-        Called from `create` rather than on a timer — a dict cleanup does not need its
-        own scheduler job, and the only moment it matters is when a new run arrives.
-        """
+        """Drop finished runs past `RUN_RETENTION_MINUTES`."""
         cutoff = utc_now() - timedelta(minutes=get_settings().run_retention_minutes)
         stale = [
             rid
@@ -404,10 +299,10 @@ def start(input: ForecastInput, resolution_source: str = "") -> Run:
 def _finalize_if_orphaned(run: Run) -> None:
     """Close a run whose task ended without `execute` reaching its `finally`.
 
-    A task cancelled before the event loop ever gives it a slice has its coroutine
-    closed rather than entered, so no cleanup inside `execute` runs. Without this the
-    run sits `queued` forever and every stream opened on it waits for an `end` frame
-    that is never coming.
+    A task cancelled before the event loop ever gives it a slice has its coroutine closed
+    rather than entered, so no cleanup inside `execute` runs. Without this the run sits
+    `queued` forever and every stream opened on it waits for an `end` frame that is never
+    coming.
     """
     if run.is_terminal:
         return
@@ -418,38 +313,70 @@ def _finalize_if_orphaned(run: Run) -> None:
     run.emit("end", {"status": run.status, "forecast_id": None})
 
 
+async def _run_forecast(run_id: str) -> None:
+    """Drive the graph for one run.
+
+    Takes only the run id because everything else — the emit sink, the graph state — is
+    live objects that cannot be serialized. That is also why resume is in-process; see
+    `durability`.
+    """
+    from .graphs.forecast import run_forecast_graph
+
+    run = registry.get(run_id)
+    assert run is not None, f"workflow for unknown run {run_id}"
+
+    if run.state is None:
+        run.state = ForecastState(input=run.input)
+
+    forecast, violations = await run_forecast_graph(
+        run.input, emit=_emitter(run), state=run.state
+    )
+    forecast_id = db.save_forecast(forecast, resolution_source=run.resolution_source)
+    run.forecast_id = forecast_id
+    run.emit(
+        "result",
+        {
+            "forecast_id": forecast_id,
+            "forecast": forecast.model_dump(),
+            "violations": [v.model_dump() for v in violations],
+        },
+    )
+
+
+_forecast_workflow = DBOS.workflow()(_run_forecast)
+"""The durable wrapper. The agent calls inside it are steps — see `durability.agent_step`.
+
+Kept separate from `_run_forecast` because the decorator refuses to be *called* at all
+before DBOS is initialized, so the un-durable path needs the undecorated function rather
+than a flag checked inside it.
+"""
+
+
 async def execute(run: Run, *, resume: bool = False) -> None:
     """Drive the graph, persist the forecast, close the stream.
 
-    Terminal in every branch. A client cannot tell a hung server from a silently
-    crashed one, so this always emits a last frame saying which happened.
-
-    Every run is checkpointed around each node. On failure the checkpoint is left in
-    place, which is what lets `resume_run` re-run only the agent that died instead of
-    paying for the whole graph again.
+    Terminal in every branch. A client cannot tell a hung server from a silently crashed
+    one, so this always emits a last frame saying which happened.
     """
     run.status = "running"
     run.error = None
     try:
-        forecast, violations = await run_forecast_graph(
-            run.input,
-            hooks=run,
-            emit=_emitter(run),
-            persistence=checkpoints.persistence_for(run.id),
-            resume=resume,
-        )
-        forecast_id = db.save_forecast(
-            forecast, resolution_source=run.resolution_source
-        )
-        run.forecast_id = forecast_id
+        if not durability.is_active():
+            # No checkpointing configured — same graph, one less layer. See
+            # `durability.is_active`.
+            await _run_forecast(run.id)
+        elif resume:
+            assert run.workflow_id is not None, "resume with nothing to resume from"
+            run.workflow_id, handle = await durability.resume_from_failure(
+                run.workflow_id
+            )
+            await handle.get_result()
+        else:
+            run.workflow_id = durability.workflow_id(run.id)
+            with SetWorkflowID(run.workflow_id):
+                await _forecast_workflow(run.id)
         run.status = "done"
         run.stage = ""
-        # Nothing can need the checkpoint once the forecast is saved.
-        checkpoints.drop_checkpoint(run.id)
-        run.emit(
-            "result",
-            result_payload(run, forecast, violations, forecast_id),
-        )
     except asyncio.CancelledError:
         run.status = "cancelled"
         run.emit("error", {"message": "run cancelled"})
@@ -461,12 +388,8 @@ async def execute(run: Run, *, resume: bool = False) -> None:
             "error",
             {
                 "message": run.error,
-                # What survived, so the offer to resume is concrete rather than a
-                # button the user has to trust.
-                "resumable": checkpoints.has_checkpoint(run.id),
-                "completed_stages": [
-                    STAGE_KEYS.get(n, n) for n in checkpoints.completed_stages(run.id)
-                ],
+                # DBOS keeps the completed steps, so resuming re-runs only what failed.
+                "resumable": durability.is_active(),
                 "hint": _failure_hint(exc),
             },
         )
@@ -484,13 +407,9 @@ async def execute(run: Run, *, resume: bool = False) -> None:
 def _failure_hint(exc: Exception) -> str:
     """What a caller should change before resuming, when the failure says so.
 
-    A usage-limit failure is the one worth special-casing: resuming with the same
-    budget re-runs the same agent into the same wall, so the offer to resume has to
-    come with the reason it would otherwise fail again.
-
-    One column running out no longer gets here — it degrades and the row continues. This
-    now means *every* column ran out, so there was no base rate or adjustment to carry
-    forward at all.
+    A usage-limit failure is the one worth special-casing: resuming with the same budget
+    re-runs the same agent into the same wall, so the offer to resume has to come with
+    the reason it would otherwise fail again.
     """
     if type(exc).__name__ == "UsageLimitExceeded":
         return (
@@ -503,13 +422,13 @@ def _failure_hint(exc: Exception) -> str:
         status = getattr(exc, "status_code", None)
         model = getattr(exc, "model_name", "") or resolve_agent_model()
         if status == 404:
-            # Not a bad model id, usually. The gateway routes per-model, so a model
-            # that exists upstream still 404s when this account has no route for it.
+            # Not a bad model id, usually. The gateway routes per-model, so a model that
+            # exists upstream still 404s when this account has no route for it.
             return (
-                f"The provider has no route for '{model}'. This is a gateway or "
-                f"account configuration problem rather than a bad run — the model id "
-                f"can be valid and still 404 if your gateway has no route enabled for "
-                f"it. Set AGENT_MODEL to a model your account can reach, then resume."
+                f"The provider has no route for '{model}'. This is a gateway or account "
+                f"configuration problem rather than a bad run — the model id can be "
+                f"valid and still 404 if your gateway has no route enabled for it. Set "
+                f"AGENT_MODEL to a model your account can reach, then resume."
             )
         if status in (401, 403):
             return (
@@ -524,10 +443,7 @@ def _failure_hint(exc: Exception) -> str:
 
 
 def resume_run(run_id: str, *, max_iterations: int | None = None) -> Run:
-    """Re-run a failed run from its last completed node.
-
-    Raises `LookupError` when there is no checkpoint to resume from — a run that
-    finished, or one whose checkpoint was cleaned up.
+    """Re-run a failed run from its last completed step.
 
     `max_iterations` overrides the search budget, because the most common reason to be
     here is that the old one was too small.
@@ -537,390 +453,48 @@ def resume_run(run_id: str, *, max_iterations: int | None = None) -> Run:
         raise LookupError(f"unknown run {run_id}")
     if not run.is_terminal:
         raise ValueError("run is still going")
-
-    node = checkpoints.rewind_for_resume(run_id)
-    if node is None:
+    if durability.is_active() and run.workflow_id is None:
         raise LookupError("no checkpoint to resume from")
 
     if max_iterations is not None:
         run.input = run.input.model_copy(update={"max_iterations": max_iterations})
+        if run.state is not None:
+            # The graph reads the budget off `state.input`, not the caller's. Without
+            # this, resuming with a higher depth re-runs into the same wall while the UI
+            # reports the depth that was asked for.
+            run.state.input = run.input
 
     # The trail continues rather than restarting: seq keeps counting, so a client
     # watching from `?from_seq=` sees the resume as more of the same run.
     run.status = "queued"
     run.ended_at = None
-    run.emit(
-        "resume",
-        {
-            "from_node": STAGE_KEYS.get(node, node),
-            "completed_stages": [
-                STAGE_KEYS.get(n, n) for n in checkpoints.completed_stages(run_id)
-            ],
-            "max_iterations": run.input.max_iterations,
-        },
-    )
+    run.emit("resume", {"max_iterations": run.input.max_iterations})
     run.task = asyncio.create_task(execute(run, resume=True))
     run.task.add_done_callback(lambda _t: _finalize_if_orphaned(run))
     return run
 
 
 def _emitter(run: Run):
-    """The `deps.emit` callable. Routes thoughts through the coalescing buffer and
-    counts tool calls so the header can show a running total."""
+    """The `deps.emit` callable handed down to the graph and its agents.
+
+    Stage boundaries are events like any other; this is the only place that reads them,
+    because the run header needs to know which stage is live.
+    """
 
     def emit(type: str, payload: dict[str, Any], sub_claim: str | None = None) -> None:
         if type == "thought":
             run.emit_thought(payload.get("delta", ""), sub_claim)
             return
-        if type == "query":
+        if type == "stage":
+            run.stream.flush()
+            run.stage = payload.get("stage", "")
+            run.attempt = int(payload.get("attempt", 1))
+        elif type == "stage_end":
+            run.stream.flush()
+        elif type == "query":
             # A plain `+=` from the single event loop thread, so concurrent columns are
             # still safe — there is no await between the read and the write.
             run.tool_calls += 1
         run.emit(type, payload, sub_claim)
 
     return emit
-
-
-# ---------- Projections: typed state -> events ----------
-
-
-def project_columns(run: Run, stage: str, state: ForecastState) -> None:
-    """Open one card per column at the top of a fanned-out row, before any agent runs.
-
-    Decompose fixes the grid; this is the row header. Without it a row is blank until
-    its barrier, which for four concurrent searches is several minutes of nothing.
-
-    Every field is read off state an agent already produced — the sub-claims from
-    `Decomposition`, and on the inside row the incoming anchor and classes from the
-    `OutsideView` the previous node wrote. Nothing was asked of a model to make this
-    event possible, which is the ADR 27 test.
-
-    `researching` is derived from `knowability`, not asserted: a `judgment` column gets a
-    card that reads "no base rate to look up" and never enters research. It still exists,
-    because a column that vanishes from a row looks like a bug rather than an answer.
-    """
-    d = state.decomposition
-    assert d is not None
-    o = state.outside
-    by_url = {ref.url: ref for ref in state.sources_seen if getattr(ref, "url", "")}
-
-    for s in d.sub_claims:
-        payload: dict[str, Any] = {
-            "id": s.id,
-            "question": s.question,
-            "knowability": s.knowability,
-            "rationale": s.rationale,
-            "p": s.probability,
-            "researching": s.knowability == "researchable",
-        }
-        if stage == "inside" and o is not None:
-            payload["anchor"] = checks.sub_claim_rate(s.id, o)
-            payload["classes"] = [
-                _class_payload(rc, by_url) for rc in checks.classes_for(s.id, o)
-            ]
-            # No reference class means no base rate to adjust *from*, which is P5's
-            # premise. The card says so; no agent runs for it.
-            payload["researching"] = bool(payload["classes"])
-        run.emit("column", payload, s.id)
-
-
-def project_decompose(run: Run, d: Decomposition) -> None:
-    """P1 + P2 — one `sub` per sub-claim, then how they combine."""
-    for s in d.sub_claims:
-        run.emit(
-            "sub",
-            {
-                "id": s.id,
-                "question": s.question,
-                "p": s.probability,
-                "knowability": s.knowability,
-                "rationale": s.rationale,
-            },
-        )
-    run.emit("note", {"label": "chain_note", "text": d.chain_note})
-
-
-def _class_payload(rc: Any, seen: dict[str, Any]) -> dict[str, Any]:
-    """One reference class, with each cited source resolved against what was fetched.
-
-    `seen` maps URL -> SourceRef. The join is what makes "which search found this base
-    rate" answerable: a class cites a URL, and the retrieved record for that URL knows
-    the query that returned it and the title the result gave itself. Neither is
-    something the agent could assert — it is recorded by the tool.
-    """
-    sources = []
-    for s in rc.sources:
-        ref = seen.get(s.url or "")
-        sources.append(
-            {
-                **s.model_dump(),
-                "title": getattr(ref, "title", "") if ref else "",
-                "query": getattr(ref, "query", "") if ref else "",
-                "retrieved": ref is not None,
-            }
-        )
-    queries = sorted({d["query"] for d in sources if d["query"]})
-    return {
-        "name": rc.name,
-        "rate": rc.base_rate,
-        "n": rc.sample_size,
-        "weight": rc.weight,
-        "support": checks.claim_support(rc.sources),
-        "sources": sources,
-        "queries": queries,
-        "analogs": [
-            {"description": a.description, "outcome": a.outcome, "relevance": a.relevance}
-            for a in rc.analogs
-        ],
-    }
-
-
-def group_by_sub_claim(
-    d: Decomposition, o: OutsideView, seen: Iterable[Any] = ()
-) -> list[dict[str, Any]]:
-    """The outside view arranged under the sub-claims it was sent to research.
-
-    A flat list of reference classes cannot answer the question a reader actually has —
-    *which part of this did you look up, and what did you find?* The grouping is a
-    projection of `ReferenceClass.sub_claim_ids`, a field the agent fills in, so the UI
-    is reading a relationship the backend asserted rather than inventing one.
-
-    `rate` is `checks.sub_claim_rate`, the same weighted arithmetic the anchor is built
-    from. A sub-claim nothing researched carries `rate: None` rather than a fabricated
-    number — which for a `judgment` sub-claim is the correct answer, and for a
-    `researchable` one is a visible gap.
-
-    There is no group for classes belonging to no sub-claim. `_merge_base_rates` stamps
-    every class with the column its cell researched, so an unattributed class can now
-    only come from a hand-built fixture or the whole-question fallback — and rendering
-    one under "the question as a whole" would be the UI inventing a group the backend
-    never asserted.
-    """
-    by_url = {ref.url: ref for ref in seen if getattr(ref, "url", "")}
-    return [
-        {
-            "id": s.id,
-            "question": s.question,
-            "knowability": s.knowability,
-            "rationale": s.rationale,
-            "rate": checks.sub_claim_rate(s.id, o),
-            "classes": [
-                _class_payload(rc, by_url) for rc in checks.classes_for(s.id, o)
-            ],
-        }
-        for s in d.sub_claims
-    ]
-
-
-def project_outside(
-    run: Run, d: Decomposition, o: OutsideView, seen: Iterable[Any] = ()
-) -> None:
-    """P4 + P7 — what was researched for each sub-claim, and the anchor.
-
-    Grouped rather than flat: see `group_by_sub_claim`. Everything here still lands in
-    one burst, because this runs on `stage_finished` — the live progress a reader sees
-    during research is the `query` and `source` events, not these.
-
-    `disagreement` is what the aggregate note says when it is non-empty. That sentence
-    is the half of P7 the schema cannot enforce, and putting it in the UI is the point
-    of having demanded it.
-    """
-    for group in group_by_sub_claim(d, o, seen):
-        run.emit("claim", group, group["id"])
-
-    pct = round(o.aggregate_base_rate * 100)
-    run.emit(
-        "note",
-        {
-            "label": f"aggregate_base_rate — {pct}%",
-            "text": o.disagreement.strip()
-            or f"{len(o.reference_classes)} reference classes, broadly in agreement.",
-        },
-    )
-
-
-def project_inside(run: Run, i: InsideView) -> None:
-    """P5, P9, P14, P15 — signed moves, the opposing case, and the bias sweep.
-
-    Each `adj` is tagged with the column that produced it, so it lands inside that
-    card. The two notes and the five biases are deliberately untagged: they come from the
-    reflect pass, which is about the whole question by construction, and they render
-    below the cards.
-    """
-    for a in i.adjustments:
-        run.emit(
-            "adj",
-            {
-                "evidence": a.evidence,
-                "dir": a.direction,
-                "mag": 0.0 if a.is_noise else a.magnitude,
-                "flip": a.flip_test,
-                "noise": a.is_noise,
-                "sub_claim_ids": a.sub_claim_ids,
-                "support": checks.claim_support(a.sources),
-                "sources": [s.model_dump() for s in a.sources],
-            },
-            a.sub_claim_ids[0] if a.sub_claim_ids else None,
-        )
-    run.emit("note", {"label": "steel_man", "text": i.steel_man})
-    run.emit(
-        "note",
-        {"label": "what_would_change_my_mind", "text": i.what_would_change_my_mind},
-    )
-    for b in i.bias_checks:
-        run.emit("bias", {"bias": b.bias, "assessment": b.assessment})
-
-
-def project_synth(run: Run, state: ForecastState, attempt: int) -> None:
-    """P6, P8, P16 — the number.
-
-    `ok` is None: whether this draft survives is the critique's verdict, which lands as
-    the `check` events immediately after.
-
-    `support` is derived from the graded sources behind the reference classes and
-    adjustments, not read off the forecast — the model has no field to assert it in,
-    which is the point.
-    """
-    f = state.forecast
-    assert f is not None
-    support = (
-        checks.aggregate_source_confidence(state.outside, state.inside)
-        if state.outside and state.inside
-        else None
-    )
-    run.emit(
-        "draft",
-        {
-            "p": f.probability,
-            "ok": None,
-            "support": support,
-            "note": f"Attempt {attempt}"
-            + (f" · {support} evidential support." if support else "."),
-        },
-    )
-
-
-def project_critique(run: Run, state: ForecastState) -> None:
-    """Every check, passes included, then the retry banner when routing back.
-
-    `retrying` is derived from the same condition the `Critique` node itself uses, not
-    guessed — if the two ever disagree the UI would claim a retry that never happened.
-    """
-    if state.forecast is None or state.outside is None or state.inside is None:
-        return
-    assert state.decomposition is not None
-
-    results = checks.run_forecast_checks_detailed(
-        state.forecast,
-        state.decomposition,
-        state.outside,
-        state.inside,
-        sources_seen=state.sources_seen,
-    )
-    for r in results:
-        run.emit(
-            "check",
-            {
-                "check": r.label,
-                "name": r.name,
-                "ok": r.passed,
-                "principle": r.principle,
-                # False marks an advisory verdict — worth reading, but it did not send
-                # the forecast back. Without it the UI cannot tell a warning from a
-                # failure, since both arrive as ok=false.
-                "blocking": r.violation.blocking if r.violation else None,
-                "detail": r.violation.detail if r.violation else "",
-                # The numbers the verdict was reached on, pass or fail — so the check
-                # can be argued with rather than only believed.
-                "evidence": r.evidence,
-            },
-        )
-
-    blocking = [r for r in results if r.violation and r.violation.blocking]
-    if blocking and state.synthesis_attempts < MAX_SYNTHESIS_ATTEMPTS:
-        n = len(blocking)
-        run.emit(
-            "route",
-            {
-                "text": f"{n} blocking violation{'s' if n != 1 else ''}. Routing back "
-                f"to Synthesize — attempt {state.synthesis_attempts + 1} of "
-                f"{MAX_SYNTHESIS_ATTEMPTS}, with the violation in the prompt."
-            },
-        )
-
-
-# ---------- The result ----------
-
-
-def build_waterfall(
-    o: OutsideView, i: InsideView, f: Forecast
-) -> list[dict[str, Any]]:
-    """Anchor -> signed adjustments -> stated, as running totals.
-
-    Uses `checks.signed_adjustment`, so this chart and `check_derivation` can never
-    disagree about what the evidence implies. The gap between the last adjustment's
-    running total and the final row is the derivation slack the critique measured — it
-    is visible here rather than explained.
-    """
-    rows: list[dict[str, Any]] = [
-        {
-            "label": f"Outside view anchor — {len(o.reference_classes)} reference "
-            f"class{'es' if len(o.reference_classes) != 1 else ''}",
-            "delta": None,
-            "running": o.aggregate_base_rate,
-            "kind": "anchor",
-        }
-    ]
-
-    running = o.aggregate_base_rate
-    for a in i.adjustments:
-        delta = checks.signed_adjustment(a)
-        if delta == 0.0:
-            continue
-        running = min(1.0, max(0.0, running + delta))
-        rows.append(
-            {
-                "label": a.evidence,
-                "delta": delta,
-                "running": running,
-                "kind": "up" if delta > 0 else "down",
-            }
-        )
-
-    rows.append(
-        {
-            "label": "Stated probability",
-            "delta": round(f.probability - running, 4),
-            "running": f.probability,
-            "kind": "final",
-        }
-    )
-    return rows
-
-
-def result_payload(
-    run: Run,
-    forecast: Forecast,
-    violations: Iterable[Any],
-    forecast_id: str,
-) -> dict[str, Any]:
-    """The `result` event. Everything the saved-forecast card needs, in one frame."""
-    outside = run.state.outside if run.state else None
-    inside = run.state.inside if run.state else None
-    waterfall = build_waterfall(outside, inside, forecast) if outside and inside else []
-    return {
-        "forecast_id": forecast_id,
-        "question": forecast.question,
-        "probability": forecast.probability,
-        "anchor": outside.aggregate_base_rate if outside else None,
-        "support": (
-            checks.aggregate_source_confidence(outside, inside)
-            if outside and inside
-            else None
-        ),
-        "reasoning": forecast.reasoning,
-        "waterfall": waterfall,
-        "violations": [
-            v.model_dump() if hasattr(v, "model_dump") else v for v in violations
-        ],
-    }

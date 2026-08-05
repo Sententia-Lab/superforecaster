@@ -175,7 +175,7 @@ def test_a_full_subscriber_is_dropped_rather_than_stalling_the_run(monkeypatch):
         run.emit("note", {"i": i})
 
     assert run.seq == 5  # every event still recorded
-    assert run._subscribers == set()  # the slow subscriber was dropped
+    assert run.stream._subscribers == set()  # the slow subscriber was dropped
 
 
 # ---------- the registry ----------
@@ -209,248 +209,45 @@ def test_create_writes_a_queued_db_row():
     assert row["resolution_source"] == "SEC EDGAR"
 
 
-# ---------- projections ----------
-
-
-def test_decomposition_projects_sub_claims_then_the_chain_note():
-    run = a_run()
-    runs.project_decompose(run, a_decomposition())
-
-    assert types_of(run.events) == ["sub", "sub", "sub", "note"]
-    assert run.events[-1].payload["label"] == "chain_note"
-
-
-def test_a_row_opens_one_card_per_column_before_any_agent_runs():
-    """Decompose fixes the grid; the row header is emitted from it, not from research."""
-    run = a_run()
-    d = a_decomposition()
-    state = ForecastState(input=run.input, decomposition=d)
-
-    runs.project_columns(run, "outside", state)
-
-    columns = [e for e in run.events if e.type == "column"]
-    assert [e.sub_claim for e in columns] == [s.id for s in d.sub_claims]
-    assert all(e.payload["question"] for e in columns)
-
-
-def test_a_judgment_column_still_gets_a_card():
-    """It just says there is nothing to look up. A column that vanishes from a row reads
-    as a bug; one that explains itself reads as an answer."""
-    run = a_run()
-    d = a_decomposition()
-    state = ForecastState(input=run.input, decomposition=d)
-
-    runs.project_columns(run, "outside", state)
-
-    by_id = {e.payload["id"]: e.payload for e in run.events if e.type == "column"}
-    for s in d.sub_claims:
-        assert by_id[s.id]["researching"] is (s.knowability == "researchable")
-
-
-def test_the_inside_row_carries_each_column_its_own_anchor():
-    """Not the whole-question anchor — an inside-view cell adjusts from ITS base rate."""
-    run = a_run()
-    d = a_decomposition()
-    o = an_outside_view()
-    o.reference_classes[0].sub_claim_ids = ["sc2"]
-    state = ForecastState(input=run.input, decomposition=d, outside=o)
-
-    runs.project_columns(run, "inside", state)
-
-    by_id = {e.payload["id"]: e.payload for e in run.events if e.type == "column"}
-    assert by_id["sc2"]["anchor"] == pytest.approx(o.reference_classes[0].base_rate)
-    assert by_id["sc2"]["researching"] is True
-    # No class named sc1, so there is nothing to adjust from and no cell runs.
-    assert by_id["sc1"]["anchor"] is None
-    assert by_id["sc1"]["researching"] is False
-
-
-def test_outside_view_groups_its_classes_under_the_sub_claims():
-    """One `claim` per sub-claim, not a flat list of reference classes.
-
-    A reader's question is "which part of this did you look up, and what did you find" —
-    a flat list cannot answer it.
-    """
-    run = a_run()
-    d = a_decomposition()
-    runs.project_outside(run, d, an_outside_view())
-
-    claims = [e for e in run.events if e.type == "claim"]
-    # Exactly one per column. There is no trailing group for classes belonging to no
-    # sub-claim: the merge stamps every class, so that group cannot exist.
-    assert len(claims) == len(d.sub_claims)
-    assert [e.sub_claim for e in claims] == [s.id for s in d.sub_claims]
-    assert run.events[-1].payload["label"] == "aggregate_base_rate — 22%"
-
-
-def test_a_sub_claim_nobody_researched_carries_no_rate():
-    """None, not a fabricated number — for a judgment sub-claim that is the right answer."""
-    run = a_run()
-    runs.project_outside(run, a_decomposition(), an_outside_view())
-
-    by_id = {e.payload["id"]: e.payload for e in run.events if e.type == "claim"}
-    assert by_id["sc1"]["rate"] is None
-    assert by_id["sc1"]["classes"] == []
-
-
-def test_a_researched_sub_claim_carries_the_weighted_rate_of_its_classes():
-    run = a_run()
-    d = a_decomposition()
-    o = an_outside_view()
-    o.reference_classes[0].sub_claim_ids = ["sc1"]
-    o.reference_classes[1].sub_claim_ids = ["sc1"]
-    runs.project_outside(run, d, o)
-
-    sc1 = next(e.payload for e in run.events if e.payload.get("id") == "sc1")
-    assert sc1["rate"] == pytest.approx(0.22)
-    assert len(sc1["classes"]) == 2
-
-
-def test_the_anchor_note_carries_the_disagreement_when_there_is_one():
-    """P7's required sentence is what the UI shows, not a restatement of it."""
-    run = a_run()
-    outside = an_outside_view().model_copy(
-        update={"disagreement": "the narrow class binds"}
-    )
-    runs.project_outside(run, a_decomposition(), outside)
-
-    assert run.events[-1].payload["text"] == "the narrow class binds"
-
-
-def test_inside_view_projects_adjustments_notes_and_all_five_biases():
-    run = a_run()
-    runs.project_inside(run, an_inside_view())
-
-    assert types_of(run.events) == ["adj", "adj", "note", "note"] + ["bias"] * 5
-
-
-def test_a_noise_adjustment_is_projected_as_moving_nothing():
-    run = a_run()
-    inside = an_inside_view()
-    inside.adjustments[0].is_noise = True
-    runs.project_inside(run, inside)
-
-    assert run.events[0].payload["mag"] == 0.0
-    assert run.events[0].payload["noise"] is True
-
-
-def test_critique_projects_every_check_including_passes():
-    run = a_run()
-    state = ForecastState(input=forecast_input())
-    state.decomposition = a_decomposition()
-    state.outside = an_outside_view()
-    state.inside = an_inside_view()
-    state.forecast = a_forecast(0.28)
-    state.synthesis_attempts = 1
-
-    runs.project_critique(run, state)
-
-    checks_emitted = [e for e in run.events if e.type == "check"]
-    assert len(checks_emitted) == len(checks.FORECAST_CHECK_LABELS)
-    assert all(e.payload["ok"] for e in checks_emitted)
-    assert not [e for e in run.events if e.type == "route"]
-
-
-def test_a_blocking_violation_on_attempt_one_emits_a_route_event():
-    run = a_run()
-    state = ForecastState(input=forecast_input())
-    state.decomposition = a_decomposition()
-    state.outside = an_outside_view()
-    state.inside = an_inside_view()
-    state.forecast = a_forecast(0.95)  # nowhere near the implied 0.28
-    state.synthesis_attempts = 1
-
-    runs.project_critique(run, state)
-
-    route = [e for e in run.events if e.type == "route"]
-    assert len(route) == 1
-    assert "attempt 2 of 2" in route[0].payload["text"]
-
-
-def test_no_route_event_once_the_retry_budget_is_spent():
-    run = a_run()
-    state = ForecastState(input=forecast_input())
-    state.decomposition = a_decomposition()
-    state.outside = an_outside_view()
-    state.inside = an_inside_view()
-    state.forecast = a_forecast(0.95)
-    state.synthesis_attempts = fg.MAX_SYNTHESIS_ATTEMPTS
-
-    runs.project_critique(run, state)
-    assert not [e for e in run.events if e.type == "route"]
-
-
-# ---------- the waterfall ----------
-
-
-def test_waterfall_walks_the_anchor_to_the_stated_probability():
-    outside, inside = an_outside_view(), an_inside_view()
-    forecast = a_forecast(0.28)
-    rows = runs.build_waterfall(outside, inside, forecast)
-
-    assert [r["kind"] for r in rows] == ["anchor", "up", "down", "final"]
-    assert rows[0]["running"] == pytest.approx(0.22)
-    assert rows[-1]["running"] == pytest.approx(0.28)
-
-
-def test_waterfall_and_check_derivation_agree_on_the_implied_value():
-    """The chart and the check must never tell different stories about the evidence."""
-    outside, inside = an_outside_view(), an_inside_view()
-    rows = runs.build_waterfall(outside, inside, a_forecast(0.28))
-
-    last_adjustment_total = rows[-2]["running"]
-    assert last_adjustment_total == pytest.approx(
-        checks.implied_probability(outside, inside)
-    )
-
-
-def test_waterfall_skips_noise_adjustments():
-    outside, inside = an_outside_view(), an_inside_view()
-    inside.adjustments[0].is_noise = True
-    rows = runs.build_waterfall(outside, inside, a_forecast(0.18))
-
-    assert [r["kind"] for r in rows] == ["anchor", "down", "final"]
-
-
 # ---------- driving a run ----------
-
-
-async def test_a_rows_cards_open_before_its_findings_land(stub_agents):  # noqa: F811
-    """The point of widening `stage_started` to carry state.
-
-    `column` comes from `stage_started` and `claim` from `stage_finished`, so a row that
-    spends four minutes on four concurrent searches is legible for all four of them
-    rather than blank until the barrier.
-    """
-    run = runs.start(forecast_input())
-    await run.task
-
-    outside = [e for e in run.events if e.stage == "outside"]
-    last_column = max(e.seq for e in outside if e.type == "column")
-    first_claim = min(e.seq for e in outside if e.type == "claim")
-    assert last_column < first_claim
 
 
 async def test_a_full_run_emits_every_stage_and_ends_done(stub_agents):  # noqa: F811
     run = runs.start(forecast_input())
     await run.task
 
-    assert run.status == "done"
+    assert run.status == "done", run.error
     assert run.forecast_id is not None
 
     stages = [e.payload["stage"] for e in run.events if e.type == "stage"]
-    assert stages == ["decompose", "outside", "inside", "synth", "critique"]
+    assert stages == ["decompose", "outside", "inside", "reflect", "synth", "critique"]
     assert types_of(run.events)[-2:] == ["result", "end"]
 
 
-async def test_the_result_event_carries_a_waterfall_and_an_anchor(stub_agents):  # noqa: F811
+async def test_stage_results_are_the_models_the_agents_returned(stub_agents):  # noqa: F811
+    """The backend does no reshaping. A stage's result event is its typed object dumped,
+    so the UI reads what the methodology produced rather than a second telling of it."""
+    run = runs.start(forecast_input())
+    await run.task
+
+    by_type = {e.type: e.payload for e in run.events}
+
+    assert [s["id"] for s in by_type["decompose"]["sub_claims"]] == ["sc1", "sc2", "sc3"]
+    assert "reference_classes" in by_type["outside"]
+    assert "aggregate_base_rate" in by_type["outside"]
+    assert "adjustments" in by_type["inside"]
+    assert len(by_type["inside"]["bias_checks"]) == 5
+    assert by_type["synth"]["probability"] == pytest.approx(0.28)
+
+
+async def test_the_result_event_carries_the_forecast_and_its_violations(stub_agents):  # noqa: F811
     run = runs.start(forecast_input())
     await run.task
 
     result = [e for e in run.events if e.type == "result"][0].payload
-    assert result["anchor"] == pytest.approx(0.22)
-    assert result["probability"] == pytest.approx(0.28)
-    assert result["waterfall"][-1]["kind"] == "final"
+    assert result["forecast_id"] == run.forecast_id
+    assert result["forecast"]["probability"] == pytest.approx(0.28)
+    assert result["violations"] == []
 
 
 async def test_a_finished_run_is_recorded_in_the_db(stub_agents):  # noqa: F811
@@ -471,7 +268,7 @@ async def test_a_crashing_run_emits_error_then_end(monkeypatch, stub_agents):  #
     async def boom(*a, **kw):
         raise RuntimeError("provider exploded")
 
-    monkeypatch.setattr(fg, "run_outside_view", boom)
+    monkeypatch.setattr(fg, "run_decompose", boom)
 
     run = runs.start(forecast_input())
     await run.task
@@ -479,6 +276,25 @@ async def test_a_crashing_run_emits_error_then_end(monkeypatch, stub_agents):  #
     assert run.status == "error"
     assert "provider exploded" in run.error
     assert types_of(run.events)[-2:] == ["error", "end"]
+
+
+async def test_a_failed_run_reports_whether_it_can_be_resumed(monkeypatch, stub_agents):  # noqa: F811
+    """The offer to resume has to be real rather than a button the operator has to
+    trust, so it reports whether this process is actually checkpointing. Tests run
+    without durability, so it is False here and True under the server."""
+    from superforecaster import durability
+
+    async def boom(*a, **kw):
+        raise RuntimeError("provider exploded")
+
+    monkeypatch.setattr(fg, "run_synthesize", boom)
+
+    run = runs.start(forecast_input())
+    await run.task
+
+    error = [e for e in run.events if e.type == "error"][0].payload
+    assert error["resumable"] is durability.is_active()
+    assert error["message"].startswith("RuntimeError")
 
 
 async def test_a_cancelled_run_still_closes_its_stream(stub_agents):  # noqa: F811
@@ -505,76 +321,12 @@ async def test_a_subscriber_sees_the_run_live(stub_agents):  # noqa: F811
     assert seen[-1].type == "end"
 
 
-# ---------- what attempt 2 is told ----------
-
-
-def test_retry_brief_is_the_real_prompt_text_not_a_description():
-    """Built from the same formatters run_synthesize uses, so the two cannot drift."""
-    from superforecaster.agents import synthesize
-    from superforecaster.models import CheckViolation
-
-    outside, inside = an_outside_view(), an_inside_view()
-    violation = CheckViolation(
-        principle=6, name="derivation", detail="stated 0.120 vs implied 0.280"
-    )
-    brief = synthesize.retry_brief(outside, inside, [violation])
-
-    assert brief["anchor"] == 0.22
-    assert brief["implied"] == pytest.approx(0.28)
-    assert "Principle 6 (derivation)" in brief["correction"]
-    assert "stated 0.120 vs implied 0.280" in brief["correction"]
-    # The prompt's own promise, verbatim — this is what makes it a correction and not
-    # a re-roll, so it has to be what the user sees.
-    assert "Do not start over" in brief["correction"]
-    assert brief["correction"] in synthesize._violation_block([violation])
-
-
-async def test_the_second_synthesis_emits_a_brief(monkeypatch, stub_agents):  # noqa: F811
-    async def wandering(input, d, o, i, violations, deps):
-        stub_agents["synthesize"] += 1
-        return a_forecast(0.95 if stub_agents["synthesize"] == 1 else 0.28)
-
-    monkeypatch.setattr(fg, "run_synthesize", wandering)
+async def test_the_run_header_tracks_the_live_stage(stub_agents):  # noqa: F811
+    """`stage` events are the only thing that moves the header, which is why the graph
+    emits them rather than a caller inferring them."""
     run = runs.start(forecast_input())
     await run.task
 
-    briefs = [e for e in run.events if e.type == "brief"]
-    assert len(briefs) == 1
-    assert briefs[0].attempt == 2
-    assert briefs[0].stage == "synth"
-    assert "Principle 6" in briefs[0].payload["correction"]
-
-
-async def test_the_brief_arrives_before_the_corrected_draft(monkeypatch, stub_agents):  # noqa: F811
-    """It explains the attempt it precedes, so ordering is the whole point."""
-
-    async def wandering(input, d, o, i, violations, deps):
-        stub_agents["synthesize"] += 1
-        return a_forecast(0.95 if stub_agents["synthesize"] == 1 else 0.28)
-
-    monkeypatch.setattr(fg, "run_synthesize", wandering)
-    run = runs.start(forecast_input())
-    await run.task
-
-    second_attempt = [e for e in run.events if e.attempt == 2 and e.stage == "synth"]
-    assert types_of(second_attempt) == ["stage", "brief", "draft"]
-
-
-async def test_a_clean_run_emits_no_brief(stub_agents):  # noqa: F811
-    run = runs.start(forecast_input())
-    await run.task
-
-    assert not [e for e in run.events if e.type == "brief"]
-
-
-async def test_check_events_carry_their_evidence(stub_agents):  # noqa: F811
-    run = runs.start(forecast_input())
-    await run.task
-
-    derivation = [
-        e
-        for e in run.events
-        if e.type == "check" and e.payload["name"] == "derivation"
-    ][0]
-    assert derivation.payload["evidence"]["anchor"] == 0.22
-    assert derivation.payload["evidence"]["walk"]
+    # Cleared on success — a finished run is not sitting in a stage.
+    assert run.stage == ""
+    assert run.summary().status == "done"

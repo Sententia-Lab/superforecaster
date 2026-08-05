@@ -1048,3 +1048,167 @@ does, every time.
 Wikipedia alone is shaped exactly like one with web search behind it — same checks, same
 confidence, thinner reference classes — so the difference has to be stated rather than
 inferred. It also appears as a header chip in the UI.
+
+---
+
+## ADR 36 — The fan-out is a graph edge, not an `asyncio.gather`
+
+**Supersedes ADR 30**, which put the per-column fan-out *inside* `run_outside_view` /
+`run_inside_view` on the reasoning that "a parallel map of one agent over N inputs is a
+row's internal shape, not an edge."
+
+The reasoning held right up until you had to read it. What ADR 30 bought was a stable
+`run_<agent>` seam; what it cost was orchestration written by hand in a leaf function —
+`asyncio.gather(..., return_exceptions=True)`, a `zip(cells, results)` to re-pair inputs
+with outputs, `isinstance(r, BaseException)` filtering, and a manual re-raise of the first
+exception. Four mechanisms to express "run these, wait, keep the ones that worked."
+
+`pydantic_graph.beta`'s `GraphBuilder` expresses that as one edge:
+
+```python
+g.edge_from(decompose).map().to(base_rate_cell)
+g.edge_from(base_rate_cell).to(collect_base_rates)
+```
+
+**What this changes.** `forecast_graph` is now a `GraphBuilder` graph of six steps with two
+`map`/join pairs and a decision-node retry cycle. `run_outside_view` and `run_inside_view`
+are gone; the modules supply `run_base_rate_cell` / `run_inside_view_cell` and the merge.
+`asyncio.gather` no longer appears in production code at all.
+
+**Isolation is now structural.** A cell returns a `Cell` carrying its own `sources` list,
+which the merge step folds in after the join. ADR 30 achieved the same thing by convention
+— a private `sources_seen` that the row remembered to merge. The docs for the beta API warn
+that "all parallel tasks share the same graph state", so the convention would have been the
+only thing standing between two columns and each other's citations.
+
+**Rules out.** Keeping `gather` behind a `fan_out()` helper. It removes the duplication and
+none of the hand-rolled concurrency, which was the actual complaint.
+
+**Known cost — this is a beta API.** It lives at `pydantic_graph.beta` and its import path
+will move. The exposure is one module. Two limitations found and worked around:
+
+- **An empty `.map()` stalls the runner** — "Graph run completed, but no result was
+  produced." Each research row therefore routes through a decision, so a row with no
+  columns bypasses the fork entirely (`no_base_rate_cells` / `no_inside_cells`). Worth
+  reporting upstream.
+- **Decision branches match by `isinstance`**, so a parameterized generic like
+  `list[SubPrediction]` is not a valid branch source. The branches match bare `list`.
+
+**Related.** `reflect` becomes its own step in the same change. It was a tail call at the
+end of `run_inside_view` — an agent run hidden inside a leaf function, invisible to the UI,
+to the trace, and to the checkpoint. Every agent run is a node now.
+
+---
+
+## ADR 37 — Durability is DBOS, not a checkpoint file
+
+**Supersedes ADR 28**, which resumed a failed run from `pydantic_graph`'s
+`FileStatePersistence`.
+
+ADR 28 worked, but `checkpoints.py` existed almost entirely to defeat the library it wrapped:
+`FileStatePersistence` marks a snapshot `'error'` when its node raises, and `load_next` only
+returns snapshots with status `'created'`. A failed run was therefore not resumable as-is,
+and `rewind_for_resume` flipped the status back by editing the JSON. A checkpoint you have to
+repair before using is a post-mortem.
+
+Independently, ADR 36's move to `GraphBuilder` settles it: the beta graph builder has no state
+persistence at all, and says why — "the complexity of achieving consistent snapshotting with
+parallel execution." Snapshot-the-whole-state was never going to survive a fan-out.
+
+**DBOS instead.** It runs fully in-process as a library — no server — and checkpoints to
+SQLite. Every agent call inside the workflow is a step, so resuming re-runs only the step that
+failed. `checkpoints.py` is deleted; `durability.py` is 71 lines of configuration.
+
+**Verified, including the case that would have killed it.** A parallel `GraphBuilder` graph
+inside a `@DBOS.workflow()` resumes correctly, memoizing durably-completed steps — and does
+**not** cross-wire results when the replay's completion order differs from the original run's.
+That was the real risk: DBOS documents that parallel tool execution "cannot guarantee
+deterministic ordering", and agent latencies vary, so replay order will differ in production.
+
+**Resume is in-process, deliberately.** `executor_id` is unique per process, so a restart does
+not adopt the previous process's pending workflows. `RunRegistry` is in-memory (ADR 26), so a
+recovered run would have no event stream and no subscribers — nothing to report to. `db.init_db`
+marks those rows `lost`, which is the honest answer. Cross-restart recovery means giving the
+workflow serializable arguments and rebuilding the run from its database row; it is a change to
+`durability.py` and `runs.execute`, and nothing else.
+
+**Durability is a capability, not a requirement.** `durability.configure()` is called from the
+API lifespan only. A one-shot CLI forecast, an eval, and a test have nothing to resume into and
+run the same graph one layer thinner. `@DBOS.workflow()` refuses to be *called* before DBOS
+initializes, so `_run_forecast` (plain) and `_forecast_workflow` (wrapped) are separate objects
+rather than one function checking a flag.
+
+**Known cost.** DBOS depends on `sqlalchemy` and `psycopg`, and is Postgres-first — SQLite is
+a development-oriented extra. We run SQLite anyway: single worker, two database files, no
+migration of live data. Revisit at multiple workers, where Postgres and SQLAlchemy Core become
+the natural move regardless, since the raw SQL in `db.py` is SQLite-dialect.
+
+---
+
+## ADR 38 — The backend streams typed objects; the frontend decides what to draw
+
+**Amends ADR 27**, which said the UI projects typed state and never asks for narration. That
+principle stands. What changed is where the projecting happens.
+
+`runs.py` had ~340 lines of `project_*` functions turning `Decomposition`, `OutsideView`, and
+`InsideView` into small display dicts — renaming `magnitude` to `mag`, `base_rate` to `rate`,
+grouping reference classes under sub-claims, folding three models into a waterfall. That is
+layout encoded in Python, 600 lines from the CSS it serves, and every rename was a place the
+UI and the methodology could drift apart silently.
+
+**Now:** each step emits the object its agent returned, dumped. `decompose`, `outside`,
+`inside`, `synth` carry a whole `model_dump()`. The frontend groups, renames, and charts.
+
+**What did not change.** Live progress — `query`, `source`, `thought` — still comes from
+pydantic-ai's own `event_stream_handler` in `observability.py`. Those are inherently
+incremental and have no whole-model equivalent. Stage boundaries are ordinary events too now
+(`stage` / `stage_end`), which is what let the `GraphHooks` protocol and the node-by-node
+driver in `run_forecast_graph` be deleted: one mechanism instead of two.
+
+**Cut outright.** The waterfall (`build_waterfall`) and the per-check evidence payload. The
+first is a chart the frontend can compute; the second becomes a static principles drawer with
+hover-highlight, which is a frontend feature and needs no backend logic.
+
+**Cost, stated plainly.** Some of what was deleted was not reshaping but *cross-model
+computation* — the waterfall folds outside + inside + forecast; `_class_payload` joined cited
+URLs against `sources_seen` to answer "which search found this base rate". That work does not
+vanish, it relocates to a frontend with no build step, no types, and no tests, where a field
+rename fails silently as blank DOM. Accepted deliberately: the backend should not own layout.
+
+**Related.** `api/runs.py` now uses `sse-starlette` for framing, keep-alive pings, and
+disconnect detection, replacing a hand-rolled `asyncio.wait_for` loop. The buffer, replay, and
+subscriber fan-out moved to a generic `eventstream.py` that knows nothing about forecasting.
+
+**Correction (the first implementation of this was broken).** ADR 37 shipped with the run
+wrapped in a workflow and *nothing inside it registered as a step*. The docstrings claimed
+"every agent call is a DBOS step"; the only matches for that phrase in the codebase were
+the docstrings. Two consequences, both silent:
+
+- A workflow with no steps has nothing to replay, so a resume re-ran the entire graph.
+- `DBOS.resume_workflow` on a workflow that reached a terminal error replays the recorded
+  exception and executes nothing at all, so a failed run could never recover — strictly
+  worse than the `checkpoints.py` it replaced.
+
+No test caught it because `durability.configure()` is called from the API lifespan only,
+so the whole suite ran with `is_active() == False` and exercised the un-checkpointed
+branch. **The production path had zero coverage.** That is the real defect; the rest
+followed from it.
+
+The fix rests on two non-obvious facts, both verified rather than assumed:
+
+- **DBOS steps do not serialize their arguments, only their return values.** That is what
+  lets `durability.agent_step` wrap an agent call whose arguments include a live `emit`
+  callable and a model client. The return value is a Pydantic model, which serializes.
+- **`fork_workflow(id, start_step)` takes a `function_id`, not a list index**, and keeps
+  every checkpoint with `function_id < start_step`. Ids are 1-based; reading the id off
+  the failed step's record is correct, counting list positions is off by one.
+
+Forking mints a new workflow id, so `Run.workflow_id` tracks the current one — a second
+failure forks from the fork.
+
+`tests/test_durability.py` now covers the durable path, counting real agent invocations,
+because a workflow that replays a recorded result and one that re-executes are
+indistinguishable from the outside. It holds one event loop for the module and calls
+`durability.shutdown()` on teardown: DBOS is process-global and binds its thread pool to
+the loop that launched it, so leaving it running makes every later test take the durable
+branch against a closed loop.

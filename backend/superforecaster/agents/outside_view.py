@@ -3,15 +3,13 @@
 Find reference classes and their base rates BEFORE any case-specific detail is
 considered. The graph enforces the ordering; these agents supply the anchor.
 
-One agent per column: decompose fixes a grid of sub-questions, and this row runs a cell
-for each researchable one concurrently, then merges. `run_outside_view` keeps its
-signature — the fan-out is this row's internal shape, not a graph edge, which is what
-keeps `forecast_graph.get_nodes()` and every monkeypatch of this function intact.
+One agent per column. The fan-out itself is a `.map()` edge in `graphs.forecast`, so
+this module supplies the single-cell function and the merge, and knows nothing about how
+many cells run or when they finish.
 """
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import replace
 
 from config import (
@@ -298,9 +296,9 @@ Return an OutsideView with at least two reference classes."""
     return result.output
 
 
-def _merge_base_rates(
+def merge_base_rates(
     cells: list[SubPrediction],
-    results: list[SubClaimBaseRates | BaseException | None],
+    results: list[SubClaimBaseRates],
     decomposition: Decomposition,
 ) -> OutsideView:
     """Fold every cell's classes into one OutsideView, stamped with their columns.
@@ -335,63 +333,27 @@ def _merge_base_rates(
     return view
 
 
-async def run_outside_view(
+async def whole_question_outside(
     input: ForecastInput,
-    decomposition: Decomposition,
+    decomposition: Decomposition | None,
     deps: ForecastDeps,
+    errors: list[str],
 ) -> OutsideView:
-    """Find reference classes and base rates, one concurrent cell per column.
+    """No column produced a base rate. Fall back, or say why we cannot.
 
-    Cells run for the `researchable` columns only. A `judgment` column has, by its own
-    label, no base rate to look up; a cell on it would either return nothing — violating
-    `SubClaimBaseRates.min_length` — or invent one, which is exactly what
-    `check_decomposition`'s P2 arm exists to discourage. It still gets a card, and it
-    still contributes its own working estimate to the chain via `checks.chain_inputs`.
+    Two ways to get here. Either the decomposition labelled nothing researchable — rare,
+    `check_decomposition`'s P2 arm discourages it — or every column that ran failed. The
+    first is a legitimate fallback; the second is a run that has nothing to stand on, and
+    an invented anchor would be worse than an error.
     """
-    cells = [s for s in decomposition.sub_claims if s.knowability == "researchable"]
-    if not cells:
-        return await _whole_question_cell(input, decomposition, deps)
-
-    cell_depses = [cell_deps(deps, s.id or "", input.max_iterations) for s in cells]
-
-    async def cell(s: SubPrediction, d: ForecastDeps) -> SubClaimBaseRates | None:
-        try:
-            return await run_base_rate_cell(input, decomposition, s, d)
-        except UsageLimitExceeded:
-            # This column searched past its wall. Degrade it, keep the row.
-            exhausted_notice(d)
-            return None
-
-    results = await asyncio.gather(
-        *(cell(s, d) for s, d in zip(cells, cell_depses)),
-        # One cell throwing for any *other* reason must not cancel its siblings
-        # mid-search either. A failed column contributes no classes and falls back to
-        # its own estimate in the chain.
-        return_exceptions=True,
-    )
-    for d in cell_depses:
-        deps.sources_seen.extend(d.sources_seen)
-
-    if all(isinstance(r, BaseException) for r in results) and results:
-        # Nothing was researched at all, and not because of the budget. Raising hands this
-        # to ADR 28's checkpoint, which is the right place for "the network was down" —
-        # unlike one column failing, or every column merely running out of searches.
-        first = next(r for r in results if isinstance(r, BaseException))
-        raise first
-
-    if not any(isinstance(r, SubClaimBaseRates) for r in results):
-        # Every column degraded, so there is no outside view to build — `OutsideView`
-        # requires two classes and there are none. This is the one case a degraded cell
-        # cannot absorb, and it is exactly what ADR 28's resume-with-a-higher-depth is
-        # for, so say that rather than inventing an anchor from nothing.
-        spent = ", ".join(
-            f"{d.budget.sub_claim}={d.budget.used}"
-            for d in cell_depses
-            if d.budget is not None
-        )
+    real = [e for e in errors if e]
+    if real and all("UsageLimitExceeded" in e for e in real):
         raise UsageLimitExceeded(
             f"every column exhausted its search budget without returning a base rate "
-            f"({spent}). Resume with a higher search depth."
+            f"({'; '.join(real)}). Resume with a higher search depth."
         )
+    if real:
+        raise RuntimeError(f"every base-rate column failed: {'; '.join(real)}")
 
-    return _merge_base_rates(cells, list(results), decomposition)
+    assert decomposition is not None
+    return await _whole_question_cell(input, decomposition, deps)

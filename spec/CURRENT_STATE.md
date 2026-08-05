@@ -10,16 +10,43 @@ implements — `P<n>` throughout this document refers to them.
 
 ## What changed most recently (2026-08-05)
 
-**Research fans out per sub-question.** Decompose fixes a grid — rows are stages, columns are
-sub-questions. `FindBaseRates` and `AdjustInsideView` each run one agent per column concurrently
-and merge at a barrier, inside `run_outside_view` / `run_inside_view`. No graph node was added.
-New per-cell output types `SubClaimBaseRates` and `SubClaimAdjustments`; the merge stamps
-`sub_claim_ids` unconditionally, so a reference class belonging to no column is now impossible
-and `group_by_sub_claim`'s trailing "unattributed" group is deleted. See ADR 30.
+**The forecast graph is built on `pydantic_graph.beta`'s `GraphBuilder`.** The fan-out is now a
+`.map()` edge and a join per research row rather than an `asyncio.gather` inside the agent
+module — `asyncio.gather` no longer appears anywhere in production code. Six steps:
+`decompose → base_rate_cell⑂⑃ → merge_outside → inside_cell⑂⑃ → merge_inside → reflect →
+synthesize → critique`, with `critique` routing back through a decision node.
 
-**P14 and P15 moved to a new `agents/reflect.py`**, a no-tools pass after the inside-view
-barrier. Five columns cannot produce exactly five bias checks, and three of the five are only
-askable of a final probability a column does not have. See ADR 31.
+**`reflect` is its own graph step.** It was a tail call inside `run_inside_view`, which hid an
+agent run inside a leaf function. It now gets its own stage, span, and checkpoint.
+
+**`checkpoints.py` is deleted; durability is DBOS.** Every agent call goes through
+`durability.agent_step`, which registers it as a workflow step — wrapping the run in a
+workflow is not enough on its own, since a workflow with no steps has nothing to replay.
+Resuming *forks* the workflow at the failed step (`fork_workflow`); `resume_workflow`
+replays a recorded terminal error and executes nothing. `tests/test_durability.py` covers
+this path by counting real agent invocations. `pydantic_graph`'s `FileStatePersistence`
+marked a failed snapshot `'error'` and then refused to load it, which is the whole reason that
+module existed. DBOS records every agent call as a workflow step. Resume is **in-process** —
+`executor_id` is unique per process, because `RunRegistry` is in-memory and a recovered run
+would have nothing to report to. Durability is a capability: the server configures it, while the
+CLI, evals, and tests run the same graph one layer thinner (`durability.is_active()`).
+
+**`runs.py` 926 → 486 lines.** The ~340-line projection layer is gone. The graph emits the typed
+object each agent returned (`decompose`, `outside`, `inside`, `synth` events carry a whole
+`model_dump()`) and the frontend decides what to draw. The event buffer moved to a generic
+`eventstream.py`; `api/runs.py` uses `sse-starlette` for framing, pings, and disconnects.
+
+**Known upstream bug:** `pydantic_graph.beta` stalls on an empty `.map()` ("Graph run completed,
+but no result was produced"). Each research row routes through a decision so an empty row
+bypasses the fork — see `no_base_rate_cells` / `no_inside_cells`.
+
+**The frontend holds the models and does the projecting.** `applyEvent` stores whole objects
+(`run.models.decomposition` / `.outside` / `.inside` / `.forecast` / `.violations`); the column
+cards, per-column rates, signed adjustments, source-to-search join, and check list are all
+derived in `app.js`. Five small helpers there mirror `checks.py` on purpose — the check and the
+picture have to agree about what the evidence implies. The waterfall chart and the per-check
+evidence renderers are gone; a static principles drawer with P-chip hover-highlight replaces
+"what this principle says", and it needs no backend involvement at all.
 
 **The anchor is the chain, not a mean.** `Decomposition.chain_rule` is typed
 (`conjunction` | `disjunction` | `custom`), and `aggregate_base_rate` is that rule applied to the
@@ -96,11 +123,12 @@ flowchart TD
     UI[frontend/<br/>static, no build] -->|SSE| RUNS
     RUNS[runs.py<br/>registry + event buffer] --> FG
 
-    subgraph FG["graphs/forecast.py — ForecastGraph"]
-        D[Decompose<br/>P1, P2] --> B[FindBaseRates<br/>P4, P7]
-        B --> I[AdjustInsideView<br/>P5, P9, P14, P15]
-        I --> S[Synthesize<br/>P6, P8, P16]
-        S --> C{Critique}
+    subgraph FG["graphs/forecast.py — GraphBuilder"]
+        D[decompose<br/>P1, P2] --> B["base_rate_cell ⑂⑃<br/>one per column · P4, P7"]
+        B --> I["inside_cell ⑂⑃<br/>one per column · P5, P9"]
+        I --> RF[reflect<br/>P14, P15]
+        RF --> S[synthesize<br/>P6, P8, P16]
+        S --> C{critique}
         C -->|blocking violation, attempt 1| S
         C -->|clean, or attempt 2| EF([Forecast])
     end
@@ -143,8 +171,9 @@ backend/
     model_garden.py              # model registry by training cutoff  (clamp 2)
     model_garden.json            # registry data
     db.py                        # SQLite layer + scoring math
-    runs.py                      # live-run registry, event buffer, state -> UI events
-    checkpoints.py               # graph snapshots; resume a failed run mid-graph
+    runs.py                      # live-run registry + lifecycle
+    eventstream.py               # generic bounded buffer, replay, subscriber fan-out
+    durability.py                # DBOS config; makes a run resumable
     cron.py                      # APScheduler jobs + orchestrators
     observability.py             # Logfire config + run_agent wrapper
     __main__.py                  # CLI
@@ -160,7 +189,7 @@ backend/
     fixtures/                    # JSON inputs for manual CLI runs
   api/
     main.py  deps.py  forecasts.py  questions.py  calibration.py  admin.py  runs.py
-  tests/                         # 288 tests, no network required
+  tests/                         # 374 tests, no network required
   test_forecasting_baseline/     # 66 legacy questions; raises on import, never run
 
 frontend/                        # static, zero build — served by FastAPI at /
@@ -1022,9 +1051,9 @@ trail is not persisted anywhere (ADR 26).
 
 ### `superforecaster/runs.py` — live runs
 
-In-process registry, per-run event ring buffer, and the projection of typed graph state into
-the events the UI renders. Nothing here changes an agent or a prompt: every event is derived
-from a field an agent already returns, or from an existing `pydantic_ai` stream event.
+In-process registry and run lifecycle. **No projection layer** — the graph emits the typed
+object each agent returned and the frontend decides what to draw. The buffer, replay, and
+subscriber fan-out live in `eventstream.py`; durability lives in `durability.py`.
 
 ```
 Run                                # one execution + its buffer + its subscribers
@@ -1089,28 +1118,38 @@ utc_now() -> datetime
 SlotsFullError
 ```
 
-### `superforecaster/checkpoints.py` — resume a failed run
+### `superforecaster/eventstream.py` — the wire
 
-Wraps `pydantic_graph.FileStatePersistence`, one JSON file per run under
-`RUN_CHECKPOINT_DIR`. A graph node is one agent call, so snapshot granularity is exactly
-"re-run only the agent that failed".
+Generic and forecast-agnostic: a bounded ring buffer, a sequence counter, and a set of
+per-connection queues. Publishing never blocks — a full subscriber queue is dropped rather
+than allowed to stall the producer.
 
 ```
-persistence_for(run_id) -> FileStatePersistence
-checkpoint_path(run_id) / has_checkpoint(run_id) / drop_checkpoint(run_id)
-
-completed_stages(run_id) -> list[str]
-    Node names that already ran successfully. Read from the raw JSON rather than
-    through `load_all`, which needs the graph's types bound and would make this import
-    `graphs` — the dependency runs the other way.
-
-rewind_for_resume(run_id) -> str | None
-    Resets the newest snapshot in a non-terminal state back to 'created', and returns
-    the node that will re-run. This function is the whole difference between a
-    checkpoint and a post-mortem: `FileStatePersistence` marks a raised node 'error',
-    and `load_next` only returns 'created', so a failed run is otherwise not resumable
-    at all. Also catches 'pending' and 'running' — what a process death leaves behind.
+EventStream(buffer, queue_size)
+  .publish(build, key) -> T          # build receives the next seq
+  .publish_delta(delta, key, build)  # coalesce token narration, one frame per 80ms
+  .flush(key)                        # no key means every key
+  .subscribe() / .unsubscribe(q)
+  .replay(from_seq, seq_of) / .oldest_seq(seq_of)
+  seq, dropped, events
 ```
+
+### `superforecaster/durability.py` — resume a failed run
+
+Configures DBOS, which records every agent call as a workflow step, so resuming re-runs only
+the step that failed. Replaces the hand-rolled `checkpoints.py`.
+
+```
+configure()            # idempotent; called from the API lifespan only
+is_active() -> bool    # False for CLI, evals, tests — they run the graph one layer thinner
+workflow_id(run_id)    # one workflow per run, named after it
+```
+
+Resume is **in-process**: `executor_id` is unique per process, so a restart does not adopt the
+previous process's pending workflows. `RunRegistry` is in-memory, so a recovered run would have
+no event stream and no subscribers; `db.init_db` marks those rows `lost` instead. Making
+recovery survive a restart means giving the workflow serializable arguments and rebuilding the
+run from its database row.
 
 ### `superforecaster/cron.py` — scheduled jobs
 
@@ -1231,12 +1270,14 @@ is what the frontend uses.
 ```
 CLI: superforecaster forecast   |   API: POST /forecasts, POST /questions/{id}/forecast
   -> graphs.forecast.run_forecast_graph(input)
-       Decompose        -> agents.decompose.run_decompose
-       FindBaseRates    -> agents.outside_view.run_outside_view  -> tools.search_web
-                                                                 -> tools.search_wikipedia
-       AdjustInsideView -> agents.inside_view.run_inside_view    -> tools.find_disconfirming_evidence
-       Synthesize       -> agents.synthesize.run_synthesize
-       Critique         -> checks.run_forecast_checks     (loops to Synthesize once)
+       decompose        -> agents.decompose.run_decompose
+       base_rate_cell   -> agents.outside_view.run_base_rate_cell   -> tools.search_web
+         (one per column, .map/join)                                -> tools.search_wikipedia
+       inside_cell      -> agents.inside_view.run_inside_view_cell  -> tools.find_disconfirming_evidence
+         (one per column, .map/join)
+       reflect          -> agents.reflect.run_reflect
+       synthesize       -> agents.synthesize.run_synthesize
+       critique         -> checks.run_forecast_checks     (loops to synthesize once)
   -> db.save_forecast
 
 cron.run_daily_refresh   |   API: POST /forecasts/{id}/refresh
@@ -1301,7 +1342,7 @@ Backend reads everything through `config.py`. `backend/.env`; see `backend/.env.
 | `RUN_MAX_CONCURRENT` | Live forecast runs allowed at once | `5` |
 | `RUN_EVENT_BUFFER` | Events retained per run for SSE replay | `5000` |
 | `RUN_RETENTION_MINUTES` | How long a finished run stays in memory | `60` |
-| `RUN_CHECKPOINT_DIR` | Graph snapshots, one JSON per run | `./run_checkpoints` |
+| `DBOS_DATABASE_URL` | DBOS workflow checkpoints | `sqlite:///./run_durability.sqlite` |
 | `RESEARCH_REQUESTS_PER_ITERATION` | LLM requests per `max_iterations` unit (whole-question fallback + evals) | `3` |
 | `RESEARCH_TOOL_CALLS_PER_ITERATION` | Tool calls per `max_iterations` unit (same) | `3` |
 | `CELL_SOFT_CALLS_PER_ITERATION` | The cline — searches per `max_iterations` unit, per cell | `1` |
@@ -1315,11 +1356,14 @@ the page is opened from somewhere other than the API.
 
 ## What Works
 
-Verified by `cd backend && uv run pytest` — **402 tests, no network, no API keys**:
+Verified by `cd backend && uv run pytest` — **374 tests, no network, no API keys**:
 
 - All eight agents import and build without keys (lazy construction)
-- The forecast graph visits its nodes in methodology order — P4 asserted structurally
-- `Critique` routes back to `Synthesize` exactly once on a blocking violation, then ends
+- The forecast graph runs its stages in methodology order — P4 asserted structurally
+- `critique` routes back to `synthesize` exactly once on a blocking violation, then ends
+- The research rows fan out one cell per column and merge at a join; a failed or budget-blown
+  cell degrades its column without taking the row down, and each cell's sources stay private
+  until the barrier
 - `CheckResolved` short-circuits, making the probability update unreachable for a resolved forecast
 - `GuardUpdate` routes through `VerifyLargeMove` exactly once, never twice
 - Every `checks.py` validator has a passing and a failing case; thresholds tested as tunable
@@ -1329,7 +1373,7 @@ Verified by `cd backend && uv run pytest` — **402 tests, no network, no API ke
 - All eight component scorers tested, including false-positive weighting and outcome-bias resistance
 - Time-weighted Brier matches the spec example; rate-limit, vote toggle, soft-delete, IP-gated edits enforced
 - FastAPI loads with 34 routes; CLI `--help`, `models list`, `diagram`, `test component all` all run
-- The forecast graph streams: five stage groups, seven check events per critique attempt, and
+- The forecast graph streams: six stage groups, whole typed models per stage result, and
   a `route` event on the retry — with the hookless path asserted node-for-node unchanged
 - `build_waterfall` and `check_derivation` agree on the implied probability, by construction
 - Thought deltas coalesce and always flush before the next non-thought event
