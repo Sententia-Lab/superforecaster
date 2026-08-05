@@ -1255,12 +1255,21 @@ function renderHeader() {
     h("div.wordmark", {}, "Superforecaster"),
     h("div.spacer", {}),
     h("div.micro", {}, `${MAX_SLOTS - slotsFree()} of ${MAX_SLOTS} slots running`),
-    h("button.btn.tiny.ghost", {
-      onClick: () => {
-        const token = window.prompt("Admin token (needed to start a run):", getAdminToken() || "");
-        if (token !== null) { setAdminToken(token.trim() || null); toast(token.trim() ? "Token saved." : "Token cleared."); }
-      },
-    }, getAdminToken() ? "Admin ✓" : "Admin"),
+    // No web search is not a smaller version of the same forecast — it is one built on
+    // Wikipedia alone. Worth one word in the header rather than a surprise in the trail.
+    serverConfig.search_enabled ? null
+      : h("span.chip.warn", { title: "TAVILY_API_KEY is not set. Wikipedia still works, but base rates will be thinner." },
+          "no web search"),
+    // Hidden entirely on a local server with no ADMIN_API_KEY — there is no token to set,
+    // and offering the button implies the run will fail without one.
+    serverConfig.auth_required
+      ? h("button.btn.tiny.ghost", {
+          onClick: () => {
+            const token = window.prompt("Admin token (needed to start a run):", getAdminToken() || "");
+            if (token !== null) { setAdminToken(token.trim() || null); toast(token.trim() ? "Token saved." : "Token cleared."); }
+          },
+        }, getAdminToken() ? "Admin ✓" : "Admin")
+      : null,
     h("button.btn.tiny", {
       onClick: () => {
         const theme = state.theme === "dark" ? "light" : "dark";
@@ -1634,5 +1643,9 @@ state.backlog = loadLocal(BACKLOG_KEY, []);
 state.theme = loadLocal(THEME_KEY, window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light");
 
 render();
+// Re-render once the server has said whether it wants a token and whether search is on.
+// Not awaited before the first paint: the page is useful immediately, and the two things
+// this changes are a header chip and a button.
+loadServerConfig().then(scheduleRender);
 pollRuns();
 window.setInterval(pollRuns, POLL_MS);

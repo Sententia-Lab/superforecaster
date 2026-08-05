@@ -1,359 +1,240 @@
-# Superforecasting Agent
+# Superforecaster
 
-A forecasting platform that implements Tetlock's superforecasting methodology using Pydantic AI. The backend runs nine agents behind two graphs, a FastAPI API, and a CLI. The frontend is a zero-build static app served by the API — you submit a question in plain prose, watch the forecast graph reason through it live over SSE, and get a probability with the anchor-to-stated walk that produced it.
+Forecasting agents that implement Tetlock's superforecasting methodology, in Pydantic AI.
 
-## Prerequisites
+You write a question in plain prose. The system breaks it into sub-questions, researches a
+base rate for each one concurrently, adjusts each from its own evidence, and commits to a
+probability — showing you the whole walk from anchor to answer while it happens.
 
-| Tool | Version | Used for |
-| --- | --- | --- |
-| [uv](https://docs.astral.sh/uv/) | latest | Python deps and backend commands |
-| Python | ≥ 3.12 | Backend + agents |
-| Docker + Compose | optional | Full-stack deployment |
+The 16 principles are enforced as **checks over typed output**, not as prompt instructions.
+A forecast that skips the outside view, or lands on a number its own adjustments do not
+imply, gets sent back. See [`spec/superforecasting_methodology.md`](spec/superforecasting_methodology.md).
 
 ---
 
-## Setup
+## Run it
 
-### 1. Install backend dependencies
+Two keys and [uv](https://docs.astral.sh/uv/):
+
+| | | |
+|---|---|---|
+| **LLM** | [console.anthropic.com](https://console.anthropic.com/) | the model |
+| **Tavily** | [tavily.com](https://tavily.com) | web search — free tier is enough |
 
 ```bash
-cd backend
+git clone <this repo> && cd superforecaster/backend
 uv sync
+
+export ANTHROPIC_API_KEY=sk-ant-...
+export TAVILY_API_KEY=tvly-...
+
+uv run python -m superforecaster serve
 ```
 
-### 2. Configure environment
+Open **http://localhost:8000**. That is the whole setup — no `.env` to write, no admin
+token to invent, no database to create.
 
-Copy the example env files and fill in keys:
+The startup banner tells you exactly what you got:
+
+```
+Superforecaster
+  model         anthropic:claude-sonnet-4-6
+  web search    Tavily
+  admin auth    local mode — unauthenticated requests from localhost only
+  database      ./superforecaster.db
+```
+
+To make the keys persist, `cp .env.example .env` and fill it in. Real environment
+variables always win over that file — `superforecaster config` shows which is which:
+
+```
+  setting                          origin       value
+  ANTHROPIC_API_KEY                .env         set (108 chars)
+  TAVILY_API_KEY                   environment  set (37 chars)   <- an export is shadowing .env
+  AGENT_MODEL                      unset        —
+
+  resolved model                   anthropic:claude-sonnet-4-6
+```
+
+<details>
+<summary>Running without a Tavily key</summary>
+
+It still works — the agents fall back to Wikipedia alone. The run completes and the checks
+still hold, but the reference classes come out noticeably thinner, which is the difference
+between a base rate and a guess with a citation. The header shows a **no web search** chip
+and the startup banner says the same, so you never get that silently.
+</details>
+
+<details>
+<summary>Using the Logfire Gateway instead of Anthropic directly</summary>
 
 ```bash
-cp backend/.env.example backend/.env
+export PYDANTIC_AI_GATEWAY_API_KEY=pylf_v2_...
 ```
 
-**Backend** (`backend/.env`) — minimum to run agents:
-
-| Variable | Required | Purpose |
-| --- | --- | --- |
-| `PYDANTIC_AI_GATEWAY_API_KEY` | One of these | Logfire Gateway key (`pylf_v2_...`) from [logfire.pydantic.dev](https://logfire.pydantic.dev) → Org → **Gateway** |
-| `ANTHROPIC_API_KEY` | One of these | Direct Anthropic API (bypasses gateway) |
-| `TAVILY_API_KEY` | Recommended | Web search for research phase |
-| `RESEARCH_TOOL_CALLS_PER_ITERATION` | No | Tool-call budget per unit of search depth (default 3) |
-| `RUN_CHECKPOINT_DIR` | No | Where graph snapshots live, so a failed run can resume (default `./run_checkpoints`) |
-| `ADMIN_API_KEY` | For admin API/UI | Bearer token for `/admin/*` routes |
-| `LOGFIRE_TOKEN` | No | Logfire **write token** (`pylf_v1_...`) for cloud traces — separate from gateway key |
-
-Legacy `paig_...` gateway keys no longer work. See the [Logfire Gateway migration guide](https://pydantic.dev/docs/logfire/gateway-migration/).
-
-The frontend needs no configuration — it is static files served same-origin by the API.
-
-All backend settings are loaded from `backend/.env` via `backend/config.py`.
+From [logfire.pydantic.dev](https://logfire.pydantic.dev) → your org → **Gateway**. Legacy
+`paig_...` keys no longer work. This is for LLM calls only — it does not send traces.
+</details>
 
 ---
 
-## How to Run
+## What a run looks like
 
-All backend commands assume you are in the `backend/` directory:
+Decompose fixes a **grid**. Rows are stages, columns are sub-questions. Each research row
+runs one agent per column concurrently, then waits for all of them.
 
-```bash
-cd backend
+```
+                        Will OpenAI go public in 2026?
+                                    │
+ Decompose  ┌───────────┬───────────┼───────────┬───────────┐
+           sc1         sc2         sc3         sc4
+        public       docs        market      choose
+       commitment   in time     appetite    exchange
+            │           │           │           │
+ ═══════════╧═══════════╧═══ await decompose ═══╧═══════════╧═══════
+            │           │           │           │
+ Find Base  ▼           ▼           ▼           ▼        one agent each, own budget,
+   Rates  agent       agent       agent       agent      own card, own live tool tail
+            │           │           │           │
+        sources     sources     sources     sources
+        analogs     analogs     analogs     analogs
+        rate %      rate %      rate %      rate %
+            │           │           │           │
+ ═══════════╧═══════════╧═══ await base rates ══╧═══════════╧═══════
+            │           │           │           │
+ Inside-    ▼           ▼           ▼           ▼        each seeded with ITS column's
+   View   agent       agent       agent       agent      rate, not a global anchor
+            │           │           │           │
+        modifiers   modifiers   modifiers   modifiers
+            │           │           │           │
+ ═══════════╧═══════════╧═══ await inside-view ═╧═══════════╧═══════
+                              ▼
+                        reflect          ← P14 steel-man, P15 bias sweep, no tools
+                              ▼
+ Synthesize             one forecast     ← anchor + signed adjustments, checked
 ```
 
-### CLI — run agents directly
+Every card streams its own searches while it works. The anchor is the **chain** the
+decomposition describes — the product of the per-column rates for a conjunction, not an
+average of lenses pointed at different questions.
 
-The CLI runs agents without starting the web server. Output is formatted JSON on stdout.
+Runs are checkpointed. A column that exhausts its search budget degrades to no result and
+the rest of the run carries on; a run that dies outright resumes from its last completed
+stage rather than starting over.
 
-#### Forecast (new question)
+---
 
-**Interactive** — prompts for question, criteria, source, date, category; saves to SQLite:
+## Commands
 
-```bash
-uv run python -m superforecaster forecast
-```
+All from `backend/`.
 
-**Fixture smoke test** — uses bundled `superforecaster/fixtures/forecast_question.json`:
+| | |
+|---|---|
+| `uv run python -m superforecaster serve` | API + web UI on :8000 |
+| `uv run python -m superforecaster serve --port 9000 --reload` | pick a port, restart on edits |
+| `uv run python -m superforecaster forecast` | one forecast, interactive prompts, saved to SQLite |
+| `uv run python -m superforecaster forecast --fixture --no-save -v` | smoke test on a bundled question, prints JSON |
+| `uv run python -m superforecaster forecast --fixture --max-iterations 3` | shallower research — cheaper and faster |
+| `uv run python -m superforecaster refresh --id <uuid>` | re-check an existing forecast against new evidence |
+| `uv run python -m superforecaster resolve --id <uuid>` | has this resolved yet? |
+| `uv run python -m superforecaster config` | every setting and **where its value came from** — secrets redacted |
+| `uv run python -m superforecaster diagram` | the real graph wiring, as mermaid |
+| `uv run pytest` | 402 tests, no network, no API keys |
+| `uv run python -m superforecaster --help` | everything else |
 
-```bash
-uv run python -m superforecaster forecast --fixture
-```
-
-**No database write** — print forecast JSON only:
-
-```bash
-uv run python -m superforecaster forecast --fixture --no-save
-```
-
-**Custom fixture file:**
-
-```bash
-uv run python -m superforecaster forecast --fixture path/to/question.json
-```
-
-**Watch progress in the terminal** (tool calls, usage limits):
+**Docker**, from the repo root:
 
 ```bash
-uv run python -m superforecaster forecast --fixture --no-save --verbose
-```
-
-**Limit research budget** (default `5`; lower = cheaper/faster):
-
-```bash
-uv run python -m superforecaster forecast --fixture --no-save --max-iterations 3
-```
-
-When saving to the database, the forecast UUID is printed to stderr:
-
-```json
-{"forecast_id": "..."}
-```
-
-#### Refresh (update probability on existing forecast)
-
-**In-memory fixture** (no DB write):
-
-```bash
-uv run python -m superforecaster refresh --fixture
-```
-
-**From database** by UUID:
-
-```bash
-uv run python -m superforecaster refresh --id <forecast-uuid>
-```
-
-Add `--verbose` to either command for terminal progress.
-
-#### Resolve (check if a forecast should be flagged for resolution)
-
-**In-memory fixture:**
-
-```bash
-uv run python -m superforecaster resolve --fixture
-```
-
-**From database:**
-
-```bash
-uv run python -m superforecaster resolve --id <forecast-uuid>
-```
-
-#### CLI help
-
-```bash
-uv run python -m superforecaster --help
-uv run python -m superforecaster forecast --help
-```
-
-### API — backend server (local)
-
-Starts FastAPI on port 8000. Also starts scheduled jobs (daily refresh, monthly digest) via APScheduler.
-
-```bash
-cd backend
-uv run uvicorn api.main:app --reload
-```
-
-| URL | Purpose |
-| --- | --- |
-| http://localhost:8000/docs | Swagger UI |
-| http://localhost:8000/healthz | Health check |
-
-**Create a forecast via API** (requires `ADMIN_API_KEY` in `backend/.env`):
-
-```bash
-curl -X POST http://localhost:8000/forecasts \
-  -H "Authorization: Bearer $ADMIN_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "Will X happen?",
-    "resolution_criteria": "Resolves YES if ...",
-    "resolution_date": "2026-12-31T00:00:00Z",
-    "resolution_source": "Official source",
-    "category": "politics"
-  }'
-```
-
-Public routes (`GET /forecasts`, `GET /questions`, etc.) need no auth. Admin routes use `Authorization: Bearer <ADMIN_API_KEY>`. See `spec/CURRENT_STATE.md` for the full route list.
-
-### Frontend — web UI (local)
-
-No install and no build. Start the API and open it:
-
-```bash
-cd backend && uv run uvicorn api.main:app --reload
-```
-
-Open http://localhost:8000
-
-| Page | Purpose |
-| --- | --- |
-| `/` | Draft a question, watch a run stream, read saved results |
-| `/admin.html` | Approve questions, run forecasts, refresh, resolve |
-
-Starting a run is admin-gated. Click **Admin** in the header and paste the same value as
-`ADMIN_API_KEY`; it is stored in browser `localStorage`. Watching a run needs no token.
-
-Your backlog, finished results, and the reasoning trail of each run are kept in
-`localStorage` (the last 12 trails). A run that fails part-way keeps a server-side
-checkpoint — **Resume** re-runs only the step that died.
-
-### Full stack — Docker
-
-From the repo root:
-
-```bash
-cp backend/.env.example backend/.env   # fill in keys
 docker compose up --build
 ```
 
-One service. The frontend is bind-mounted into the API container and served at `/`.
-
-| Service | URL |
-| --- | --- |
-| App + API | http://localhost:8000 |
-| Admin | http://localhost:8000/admin.html |
-| Swagger | http://localhost:8000/docs |
-
-SQLite data persists in the `sqlite_data` Docker volume (`DATABASE_PATH=/app/data/superforecaster.db` inside the API container).
-
-**Detached mode:**
-
-```bash
-docker compose up --build -d
-```
-
-**Stop:**
-
-```bash
-docker compose down
-```
-
-### Tests
-
-**Backend** (313 tests, no network and no API keys needed):
-
-```bash
-cd backend
-uv run pytest
-```
+Also :8000, SQLite in the `sqlite_data` volume. Put both keys **and** an `ADMIN_API_KEY` in
+`backend/.env` first — a container is not localhost.
 
 ---
 
-## Forecast pipeline and usage limits
+## Configuration
 
-Forecasting is a five-node graph — decompose → find base rates → adjust (inside view) →
-synthesize → critique — with one retry edge from critique back to synthesis. See
-`spec/CURRENT_STATE.md` for the wiring.
+Beyond the two keys, nothing here is required. Real environment variables beat
+`backend/.env`.
 
-The two researching steps (base rates, inside view) are tool-using and their budget scales
-with search depth (`--max-iterations`, default 5):
+| Variable | Why you would set it |
+|---|---|
+| `ANTHROPIC_API_KEY` | The model. Or `PYDANTIC_AI_GATEWAY_API_KEY` to route through Logfire |
+| `TAVILY_API_KEY` | Web search for every research agent |
+| `ADMIN_API_KEY` | **Required to serve this anywhere but your own machine** — see below |
+| `AGENT_MODEL` | Override the model for every agent, e.g. `anthropic:claude-sonnet-4-6` |
+| `LOGFIRE_TOKEN` | A `pylf_v1_...` *write* token for cloud traces. Different from the gateway key |
+| `CELL_SOFT_CALLS_PER_ITERATION` | The cline — searches per unit of depth before an agent is pushed to commit (default 1) |
+| `CELL_HARD_HEADROOM` | Calls between the cline and the hard cap (default 3) |
+| `DATABASE_PATH` | Default `./superforecaster.db`; Docker uses `/app/data/` |
+
+Full list in [`backend/.env.example`](backend/.env.example); every check threshold is an
+env var too — see `spec/CURRENT_STATE.md`.
+
+### Admin auth
+
+Starting a forecast is an admin action. With `ADMIN_API_KEY` unset, the API accepts
+unauthenticated admin requests **from 127.0.0.1 only**, and refuses them everywhere else
+with a message saying why. That is what makes the two-key setup work: on a laptop, where
+the only thing that can reach the port is the person who started the process, a token
+protects nothing and costs the entire first-run experience.
+
+A request carrying any proxy header (`X-Forwarded-For` and friends) is never treated as
+local — a reverse proxy in front of this is the shape of a real deployment, and anything
+upstream can rewrite the origin. **Set `ADMIN_API_KEY` before exposing the port.** Once
+set, the UI shows an **Admin** button; paste the same value there.
+
+### Search budget
+
+Each cell — one column at one research stage — gets its own two-tier budget:
 
 ```
-request_limit    = depth × RESEARCH_REQUESTS_PER_ITERATION + 1     # default 3 → 16
-tool_calls_limit = depth × RESEARCH_TOOL_CALLS_PER_ITERATION       # default 3 → 15
+soft_depth = max_iterations × CELL_SOFT_CALLS_PER_ITERATION    # the cline
+hard_depth = soft_depth + CELL_HARD_HEADROOM                   # the wall
 ```
 
-Synthesis is tool-free with its own small budget (4 requests). Refresh and resolution use
-`AGENT_REQUEST_LIMIT` / `AGENT_TOOL_CALLS_LIMIT` (40 requests, 20 tool calls).
-
-**Exhausting a budget raises `UsageLimitExceeded` and kills that node** — it does not degrade
-into a partial answer. That is why runs are checkpointed: the completed steps are kept, and
-resuming re-runs only the one that failed. Raise the budget on the way back in, either with a
-higher search depth on resume or by raising `RESEARCH_TOOL_CALLS_PER_ITERATION`.
-
-Optional env overrides in `backend/.env`:
-
-```bash
-AGENT_MODEL=gateway/anthropic:claude-sonnet-4-6
-AGENT_REQUEST_LIMIT=40
-AGENT_TOOL_CALLS_LIMIT=20
-RESEARCH_TOOL_CALLS_PER_ITERATION=3
-RESEARCH_REQUESTS_PER_ITERATION=3
-```
+Past the cline the agent is told, in the tool result itself, to stop searching and write
+its answer. The wall is `UsageLimits.tool_calls_limit`. A cell that hits it degrades to no
+result and the run continues — one greedy column no longer costs the others their work.
 
 ---
 
-## Observability (Logfire)
-
-With a valid `LOGFIRE_TOKEN` (`pylf_v1_...`), agent runs send structured traces to Logfire automatically.
-
-1. Open [logfire.pydantic.dev](https://logfire.pydantic.dev) → your project → **Live** or **Explore**
-2. Filter by tag `agent-progress` or service `superforecaster`
-3. Expand spans for `forecast research` / `forecast synthesis` to see reasoning, tool calls, and results
-
-Terminal progress is available with `--verbose` on CLI commands.
-
-The gateway key (`PYDANTIC_AI_GATEWAY_API_KEY`) is for LLM calls only — it does not send traces to Logfire.
-
----
-
-## Programmatic usage
-
-```python
-import asyncio
-from datetime import datetime, timezone
-
-from superforecaster.agent import run_forecast
-from superforecaster.models import ForecastInput
-
-async def main() -> None:
-    result = await run_forecast(
-        ForecastInput(
-            question="Will Bitcoin exceed $100k by end of 2026?",
-            resolution_criteria="BTC/USD spot price on a major exchange exceeds $100,000 before 2027-01-01 UTC.",
-            resolution_date=datetime(2026, 12, 31, tzinfo=timezone.utc),
-            category="finance",
-            max_iterations=5,
-        ),
-        verbose=False,
-    )
-    print(f"Forecast: {result.probability:.0%}")
-    print(f"Confidence: {result.confidence}")
-    print(f"Reasoning: {result.reasoning}")
-
-asyncio.run(main())
-```
-
-Run from `backend/` so `config.py` loads `.env`.
-
----
-
-## Repository layout
+## Layout
 
 ```
 backend/
-  superforecaster/   # Agents, graphs, models, tools, checks, DB, cron
-    runs.py          #   live-run registry + typed state -> SSE events
-  api/               # FastAPI routes, including /runs and its SSE stream
-  config.py          # Settings from .env
-frontend/            # static app — index.html, app.js, api.js, admin.html
-spec/                # Spec-driven docs (CURRENT_STATE.md, ADR.md)
-docker-compose.yml
+  superforecaster/
+    agents/          decompose, outside_view, inside_view, reflect, synthesize, critic, …
+    graphs/          the five-node forecast graph and the update graph
+    checks.py        the 16 principles as pure functions over typed output
+    runs.py          live-run registry; typed state → SSE events
+    db.py            SQLite, with schema migrations
+  api/               FastAPI routes, including /runs and its SSE stream
+  config.py          settings, budgets, check thresholds — every number an env var
+frontend/            zero-build static app: index.html, app.js, api.js
+spec/                CURRENT_STATE.md (what exists), ADR.md (why)
 ```
 
-For architecture details, data models, and the full API surface, see `spec/CURRENT_STATE.md`. For why the system is shaped this way, see `spec/ADR.md`.
+- **What exists and what it does** → [`spec/CURRENT_STATE.md`](spec/CURRENT_STATE.md)
+- **Why it is shaped this way** → [`spec/ADR.md`](spec/ADR.md)
+- **What the agents are supposed to do** → [`spec/superforecasting_methodology.md`](spec/superforecasting_methodology.md)
 
 ---
 
-## Methodology
+## Observability
 
-The agents follow Tetlock's superforecasting principles:
-
-1. **Triage** — focus on forecastable questions
-2. **Break down** — Fermi-ize into sub-questions
-3. **Outside view first** — historical analogs and base rates
-4. **Inside view second** — case-specific evidence
-5. **Granular probabilities** — e.g. 65%, not "likely"
-6. **Separate confidence** — certainty distinct from probability
-7. **Iterate** — refresh on new evidence; track calibration
-
-Full agent behavior spec: `spec/superforecasting_methodology.md`.
+With a `LOGFIRE_TOKEN` set, runs send structured traces to
+[logfire.pydantic.dev](https://logfire.pydantic.dev) — filter by service `superforecaster`
+and expand the per-column research spans. Without one, `--verbose` prints the same tool
+calls and results to the terminal.
 
 ---
 
 ## References
 
-- Tetlock, P. E., & Gardner, D. (2015). *Superforecasting*
+- Tetlock, P. E., & Gardner, D. (2015). *Superforecasting: The Art and Science of Prediction*
 - [Pydantic AI](https://ai.pydantic.dev/)
-- [Logfire Gateway migration](https://pydantic.dev/docs/logfire/gateway-migration/)
 
 ## License
 

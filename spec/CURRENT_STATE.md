@@ -39,6 +39,13 @@ of a row, before any agent) and `exhausted`. The frontend renders each research 
 cards, one per sub-question, each with its own live tool tail. `spec/planned/spec3.3.md` §3.3 is
 the new schema of record; `spec3.1.md` §3.3 is superseded.
 
+**Two keys and one command is the whole setup.** `superforecaster serve` starts the API and
+the UI; `ADMIN_API_KEY` unset now means "not deployed" rather than "misconfigured", so admin
+routes accept unauthenticated loopback requests carrying no proxy header. A new public
+`GET /config` tells the frontend whether it needs a token and whether web search is on — it
+used to decide the former for itself and refuse before sending anything. Startup prints the
+model, search status, auth mode and database path. See ADR 35.
+
 **Schema migrations exist now.** `db.init_db()` runs `_migrate` against `PRAGMA user_version`,
 stepping an existing database through `db.MIGRATIONS`. The first step drops
 `forecast_updates.confidence`, which ADR 29 removed from the code on 2026-08-04 but not from any
@@ -1159,6 +1166,8 @@ uv run python -m superforecaster <command>        # from backend/
 | `models [list\|probe\|pick --as-of DATE]` | Inspect the garden; `probe` marks what is served |
 | `diagram [forecast\|update]` | Print the real graph wiring as mermaid |
 | `test component [agent\|all]` | Component eval harness |
+| `config` | Every setting, its origin (`environment` / `.env` / `unset`), and the resolved model. Secrets shown as a length, never a value |
+| `serve [--port N] [--host H] [--reload]` | Start the API + web UI. Binds `127.0.0.1:8000` by default — the only synchronous subcommand, since `uvicorn.run` builds its own loop |
 
 `test e2e` exits 2 with a pointer to `spec/planned/spec4.md` — the backtest is not built.
 
@@ -1174,6 +1183,7 @@ Internals: `_print_json`, `_load_fixture`, `_record_from_fixture`, `_cmd_*`,
 | Method + path | Handler | Admin |
 |---|---|---|
 | GET `/healthz` | `healthz` | no |
+| GET `/config` | `client_config` — `auth_required`, `search_enabled`, `model` | no |
 | POST `/forecasts` | `create_forecast` → `run_forecast_graph` | yes |
 | GET `/forecasts` | `list_forecasts` | no |
 | GET `/forecasts/{id}` | `get_forecast` | no |
@@ -1305,7 +1315,7 @@ the page is opened from somewhere other than the API.
 
 ## What Works
 
-Verified by `cd backend && uv run pytest` — **396 tests, no network, no API keys**:
+Verified by `cd backend && uv run pytest` — **402 tests, no network, no API keys**:
 
 - All eight agents import and build without keys (lazy construction)
 - The forecast graph visits its nodes in methodology order — P4 asserted structurally

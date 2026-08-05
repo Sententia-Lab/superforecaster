@@ -10,7 +10,24 @@ from dotenv import load_dotenv
 from pydantic_ai import UsageLimits
 
 _BACKEND_ROOT = Path(__file__).resolve().parent
-load_dotenv(_BACKEND_ROOT / ".env", override=False)
+ENV_FILE = _BACKEND_ROOT / ".env"
+
+# Snapshot which names the real environment already carried, BEFORE the file is read.
+# `override=False` means an exported variable beats `.env`, and after `load_dotenv` runs
+# the two are indistinguishable in `os.environ` — so "why is this setting not what my .env
+# says" becomes unanswerable unless the answer is captured here, first.
+_PRESET_ENV: frozenset[str] = frozenset(k for k, v in os.environ.items() if v != "")
+
+load_dotenv(ENV_FILE, override=False)
+
+
+def origin(name: str) -> str:
+    """Where `name`'s value came from: the environment, `.env`, or nowhere."""
+    if name in _PRESET_ENV:
+        return "environment"
+    if os.getenv(name):
+        return ".env"
+    return "unset"
 
 DEFAULT_GATEWAY_MODEL = "gateway/anthropic:claude-sonnet-4-6"
 DEFAULT_ANTHROPIC_MODEL = "anthropic:claude-sonnet-4-6"

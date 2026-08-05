@@ -1001,3 +1001,50 @@ for any other reason must not be silently marked complete.
 
 **Rules out.** Telling an operator to delete the database. The data in it is forecasts scored
 against resolved questions — the only record of whether this system works.
+
+---
+
+## ADR 35 — An unset admin key means "not deployed", not "misconfigured"
+
+**Status:** Accepted (2026-08-05)
+
+**Decision.** With `ADMIN_API_KEY` unset, admin routes accept unauthenticated requests that
+arrive from a loopback address and carry no proxy header. Everything else still 403s or 500s
+exactly as before. The frontend asks the server which case it is via a new public
+`GET /config`, rather than deciding for itself.
+
+**Rationale.** The setup was two keys and one command, and then the first click failed. You
+exported an API key, started the server, typed a question, pressed **Run now**, and got
+"Admin token not set" — from `api.js`, which refused before sending anything. The remedy was
+to invent a value, put it in a `.env` you did not otherwise need, restart, then paste the
+same value into a `window.prompt` behind a button labelled Admin. Four steps of ceremony
+around a secret whose only purpose was to authenticate you to yourself.
+
+On a laptop, where the only thing that can reach the port is the process's own owner, a
+token protects nothing. It is worth something the moment the port is reachable by anyone
+else — so the condition is not "is a key set" but "could this request have come from
+somewhere else."
+
+**Loopback plus no proxy header, and why both.** `request.client.host` in `{127.0.0.1, ::1}`
+is the local case. But anything upstream can rewrite that, and a reverse proxy in front of
+this is precisely the shape of a real deployment — so any of `X-Forwarded-For`,
+`X-Real-IP`, `X-Forwarded-Host` or `Forwarded` disqualifies the request regardless of what
+the socket says. Two independent signals, and the failure mode of each is to demand the key.
+
+`superforecaster serve` binds `127.0.0.1` by default, which keeps that statement true by
+construction rather than by hope.
+
+**The client stopped deciding.** `api.js` refusing on a missing token was a second, stale
+copy of the server's auth policy. `GET /config` returns `auth_required` and the client
+believes it; the Admin button is hidden entirely when there is nothing to authenticate. A
+server is the only thing that can answer a question about its own auth.
+
+**Rules out.** Defaulting `ADMIN_API_KEY` to a known value, and generating one on first
+boot. Both produce a system that looks authenticated and is not, which is worse than one
+that says plainly it is running unauthenticated on localhost — as the startup banner now
+does, every time.
+
+**Related.** The same banner reports whether `TAVILY_API_KEY` is set. A forecast built on
+Wikipedia alone is shaped exactly like one with web search behind it — same checks, same
+confidence, thinner reference classes — so the difference has to be stated rather than
+inferred. It also appears as a header chip in the UI.
