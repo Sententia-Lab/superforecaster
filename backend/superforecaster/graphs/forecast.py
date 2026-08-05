@@ -18,8 +18,9 @@ Why a graph rather than six function calls in a row:
   and one join, so "one agent per sub-question, then a barrier" is something you read off
   the graph rather than reconstruct from `asyncio.gather` and a `zip`.
 
-Durability is DBOS's job, not this module's — every agent call is a DBOS step, so a run
-that dies resumes from the last completed one. See `runs.execute`.
+Durability is DBOS's job, not this module's. Every agent call goes through
+`durability.agent_step`, which makes it a checkpointed step when the process is
+checkpointing, so a run that dies resumes from the agent that died rather than the top.
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ from ..agents.outside_view import (
 )
 from ..agents.reflect import run_reflect
 from ..agents.synthesize import run_synthesize
+from .. import durability
 from ..deps import ForecastDeps
 from ..models import (
     Adjustment,
@@ -124,7 +126,9 @@ async def decompose(
     contributes its own working estimate via `checks.chain_inputs`.
     """
     _stage(ctx.deps, "decompose")
-    ctx.state.decomposition = await run_decompose(ctx.state.input, ctx.deps)
+    ctx.state.decomposition = await durability.agent_step(
+        run_decompose, ctx.state.input, ctx.deps
+    )
     _emit(ctx.deps, "decompose", ctx.state.decomposition.model_dump())
     _stage_end(ctx.deps, "decompose")
 
@@ -144,8 +148,8 @@ async def base_rate_cell(
     assert ctx.state.decomposition is not None
     deps = cell_deps(ctx.deps, sub_claim.id or "", ctx.state.input.max_iterations)
     try:
-        result = await run_base_rate_cell(
-            ctx.state.input, ctx.state.decomposition, sub_claim, deps
+        result = await durability.agent_step(
+            run_base_rate_cell, ctx.state.input, ctx.state.decomposition, sub_claim, deps
         )
         return Cell(sub_claim=sub_claim, result=result, sources=deps.sources_seen)
     except Exception as exc:
@@ -231,8 +235,8 @@ async def inside_cell(
     assert ctx.state.outside is not None
     deps = cell_deps(ctx.deps, sub_claim.id or "", ctx.state.input.max_iterations)
     try:
-        result = await run_inside_view_cell(
-            ctx.state.input, sub_claim, ctx.state.outside, deps
+        result = await durability.agent_step(
+            run_inside_view_cell, ctx.state.input, sub_claim, ctx.state.outside, deps
         )
         return Cell(sub_claim=sub_claim, result=result, sources=deps.sources_seen)
     except Exception as exc:
@@ -310,7 +314,8 @@ async def reflect(ctx: StepContext[ForecastState, ForecastDeps, None]) -> None:
     assert ctx.state.decomposition is not None
     assert ctx.state.outside is not None
 
-    reflection = await run_reflect(
+    reflection = await durability.agent_step(
+        run_reflect,
         ctx.state.input,
         ctx.state.decomposition,
         ctx.state.outside,
@@ -343,7 +348,8 @@ async def synthesize(ctx: StepContext[ForecastState, ForecastDeps, None]) -> Non
     assert ctx.state.decomposition is not None
     assert ctx.state.outside is not None
     assert ctx.state.inside is not None
-    ctx.state.forecast = await run_synthesize(
+    ctx.state.forecast = await durability.agent_step(
+        run_synthesize,
         ctx.state.input,
         ctx.state.decomposition,
         ctx.state.outside,

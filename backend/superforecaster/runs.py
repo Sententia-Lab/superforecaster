@@ -4,8 +4,10 @@ Three things happen here and nothing else does them:
 
 1. **A run is a background task**, not a blocked HTTP request. `POST /runs` returns in
    milliseconds; the graph keeps going whether or not anyone is watching.
-2. **A run is durable.** Every agent call is a DBOS step, so a failed run resumes from
-   the last completed one instead of starting over. See `durability`.
+2. **A run is durable.** Every agent call goes through `durability.agent_step`, which
+   makes it a DBOS step, so a failed run resumes from the agent that died rather than
+   re-paying for the whole graph. Resuming *forks* the workflow at the failed step —
+   `resume_workflow` would replay the recorded error and run nothing.
 3. **Events fan out to subscribers**, buffered for replay. See `eventstream`.
 
 What is deliberately *not* here any more: a projection layer. The graph emits the typed
@@ -67,6 +69,13 @@ class Run:
     created_at: datetime = field(default_factory=utc_now)
     ended_at: datetime | None = None
     task: asyncio.Task[None] | None = None
+
+    workflow_id: str | None = None
+    """The DBOS workflow currently backing this run.
+
+    Not derivable from `id`: resuming forks the workflow, which mints a new id, and a
+    second failure has to fork from the fork rather than from the original.
+    """
 
     state: ForecastState | None = None
     """The graph state, held so a resumed run keeps writing to the same object."""
@@ -335,11 +344,11 @@ async def _run_forecast(run_id: str) -> None:
 
 
 _forecast_workflow = DBOS.workflow()(_run_forecast)
-"""The durable wrapper. Every agent call inside becomes a DBOS step.
+"""The durable wrapper. The agent calls inside it are steps — see `durability.agent_step`.
 
 Kept separate from `_run_forecast` because the decorator refuses to be *called* at all
-before DBOS is initialized — so the un-durable path needs the undecorated function, not
-a flag checked inside it.
+before DBOS is initialized, so the un-durable path needs the undecorated function rather
+than a flag checked inside it.
 """
 
 
@@ -351,17 +360,20 @@ async def execute(run: Run, *, resume: bool = False) -> None:
     """
     run.status = "running"
     run.error = None
-    wf_id = durability.workflow_id(run.id)
     try:
         if not durability.is_active():
             # No checkpointing configured — same graph, one less layer. See
             # `durability.is_active`.
             await _run_forecast(run.id)
         elif resume:
-            handle = await DBOS.resume_workflow_async(wf_id)
+            assert run.workflow_id is not None, "resume with nothing to resume from"
+            run.workflow_id, handle = await durability.resume_from_failure(
+                run.workflow_id
+            )
             await handle.get_result()
         else:
-            with SetWorkflowID(wf_id):
+            run.workflow_id = durability.workflow_id(run.id)
+            with SetWorkflowID(run.workflow_id):
                 await _forecast_workflow(run.id)
         run.status = "done"
         run.stage = ""
@@ -441,6 +453,8 @@ def resume_run(run_id: str, *, max_iterations: int | None = None) -> Run:
         raise LookupError(f"unknown run {run_id}")
     if not run.is_terminal:
         raise ValueError("run is still going")
+    if durability.is_active() and run.workflow_id is None:
+        raise LookupError("no checkpoint to resume from")
 
     if max_iterations is not None:
         run.input = run.input.model_copy(update={"max_iterations": max_iterations})

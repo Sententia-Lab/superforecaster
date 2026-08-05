@@ -1178,3 +1178,37 @@ rename fails silently as blank DOM. Accepted deliberately: the backend should no
 **Related.** `api/runs.py` now uses `sse-starlette` for framing, keep-alive pings, and
 disconnect detection, replacing a hand-rolled `asyncio.wait_for` loop. The buffer, replay, and
 subscriber fan-out moved to a generic `eventstream.py` that knows nothing about forecasting.
+
+**Correction (the first implementation of this was broken).** ADR 37 shipped with the run
+wrapped in a workflow and *nothing inside it registered as a step*. The docstrings claimed
+"every agent call is a DBOS step"; the only matches for that phrase in the codebase were
+the docstrings. Two consequences, both silent:
+
+- A workflow with no steps has nothing to replay, so a resume re-ran the entire graph.
+- `DBOS.resume_workflow` on a workflow that reached a terminal error replays the recorded
+  exception and executes nothing at all, so a failed run could never recover — strictly
+  worse than the `checkpoints.py` it replaced.
+
+No test caught it because `durability.configure()` is called from the API lifespan only,
+so the whole suite ran with `is_active() == False` and exercised the un-checkpointed
+branch. **The production path had zero coverage.** That is the real defect; the rest
+followed from it.
+
+The fix rests on two non-obvious facts, both verified rather than assumed:
+
+- **DBOS steps do not serialize their arguments, only their return values.** That is what
+  lets `durability.agent_step` wrap an agent call whose arguments include a live `emit`
+  callable and a model client. The return value is a Pydantic model, which serializes.
+- **`fork_workflow(id, start_step)` takes a `function_id`, not a list index**, and keeps
+  every checkpoint with `function_id < start_step`. Ids are 1-based; reading the id off
+  the failed step's record is correct, counting list positions is off by one.
+
+Forking mints a new workflow id, so `Run.workflow_id` tracks the current one — a second
+failure forks from the fork.
+
+`tests/test_durability.py` now covers the durable path, counting real agent invocations,
+because a workflow that replays a recorded result and one that re-executes are
+indistinguishable from the outside. It holds one event loop for the module and calls
+`durability.shutdown()` on teardown: DBOS is process-global and binds its thread pool to
+the loop that launched it, so leaving it running makes every later test take the durable
+branch against a closed loop.

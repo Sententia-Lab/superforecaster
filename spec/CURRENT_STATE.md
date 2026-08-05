@@ -19,7 +19,12 @@ synthesize → critique`, with `critique` routing back through a decision node.
 **`reflect` is its own graph step.** It was a tail call inside `run_inside_view`, which hid an
 agent run inside a leaf function. It now gets its own stage, span, and checkpoint.
 
-**`checkpoints.py` is deleted; durability is DBOS.** `pydantic_graph`'s `FileStatePersistence`
+**`checkpoints.py` is deleted; durability is DBOS.** Every agent call goes through
+`durability.agent_step`, which registers it as a workflow step — wrapping the run in a
+workflow is not enough on its own, since a workflow with no steps has nothing to replay.
+Resuming *forks* the workflow at the failed step (`fork_workflow`); `resume_workflow`
+replays a recorded terminal error and executes nothing. `tests/test_durability.py` covers
+this path by counting real agent invocations. `pydantic_graph`'s `FileStatePersistence`
 marked a failed snapshot `'error'` and then refused to load it, which is the whole reason that
 module existed. DBOS records every agent call as a workflow step. Resume is **in-process** —
 `executor_id` is unique per process, because `RunRegistry` is in-memory and a recovered run
@@ -184,7 +189,7 @@ backend/
     fixtures/                    # JSON inputs for manual CLI runs
   api/
     main.py  deps.py  forecasts.py  questions.py  calibration.py  admin.py  runs.py
-  tests/                         # 370 tests, no network required
+  tests/                         # 374 tests, no network required
   test_forecasting_baseline/     # 66 legacy questions; raises on import, never run
 
 frontend/                        # static, zero build — served by FastAPI at /
@@ -1351,7 +1356,7 @@ the page is opened from somewhere other than the API.
 
 ## What Works
 
-Verified by `cd backend && uv run pytest` — **370 tests, no network, no API keys**:
+Verified by `cd backend && uv run pytest` — **374 tests, no network, no API keys**:
 
 - All eight agents import and build without keys (lazy construction)
 - The forecast graph runs its stages in methodology order — P4 asserted structurally
