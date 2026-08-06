@@ -16,7 +16,7 @@ from datetime import date, datetime
 from typing import Any, Literal, Optional
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 MAX_SEARCH_DEPTH = 50
 """Ceiling on `max_iterations`, and the one number the UI must not guess.
@@ -244,73 +244,136 @@ class Decomposition(BaseModel):
     )
 
 
-class ReferenceClass(BaseModel):
-    """One outside-view lens. P4 + P7.
+class Evidence(BaseModel):
+    """One block of cases behind a base rate. Counted or published, never both.
 
-    `weight` is recorded rather than left implicit because `aggregate_base_rate` is a
-    weighted blend the agent used to perform in its head — which made the anchor of the
-    whole P6 chain unverifiable. With weights on the record, `checks.check_aggregation`
-    can confirm the anchor is what the classes actually say.
+    A base rate used to be a number the model asserted. It is now `Σ hits / Σ n` over
+    these blocks, which is the difference between "70%" and "7 of the 10 cases I found
+    did, and here they are".
+
+    Two kinds, because both are legitimate and they are audited differently. `counted` is
+    cases the agent enumerated — `check_base_rate_derivation` matches its numbers against
+    the named analogs. `published` is a statistic someone else measured, which is how you
+    get an n of 230 that nobody could list; it is audited by requiring the source to be
+    one the tools actually retrieved.
     """
 
-    name: str = Field(description="What population this rate is drawn from")
-    base_rate: float = Field(ge=0.0, le=1.0)
-    sample_size: int = Field(
-        ge=1, description="How many analogous cases back this rate"
+    kind: Literal["counted", "published"]
+    hits: int = Field(ge=0, description="Cases in this block where the thing happened")
+    n: int = Field(ge=1, description="Cases in this block considered at all")
+    note: str = Field(
+        description="counted: what was enumerated. published: the statistic and the "
+        "population it was measured over."
+    )
+    source: GradedSource | None = Field(
+        default=None, description="Required for `published`. A statistic with no source "
+        "is an assertion."
+    )
+
+    @model_validator(mode="after")
+    def _coherent(self) -> "Evidence":
+        if self.hits > self.n:
+            raise ValueError(f"hits ({self.hits}) cannot exceed n ({self.n})")
+        if self.kind == "published" and self.source is None:
+            raise ValueError("published evidence needs a source")
+        return self
+
+
+class Lens(BaseModel):
+    """One reference population, named before its rate is known. P4 + P7.
+
+    Two lenses on one sub-question is P7's dragonfly eye: a single reference class is a
+    single lens and will mislead you. They are chosen in their own step, before any rate
+    has been seen, so the choice of population cannot be quietly fitted to the answer it
+    produces.
+
+    `weight` is the **only** number in the whole pipeline that no check can verify.
+    Everything else — the base rate, the adjusted rate, the sub-question rate, the final
+    probability — is derived from evidence and re-derivable. So this one carries a
+    mandatory rationale, and the UI shows what each lens alone implied.
+    """
+
+    name: str = Field(description="Short label for this population")
+    population: str = Field(
+        description="Who is in it, precisely enough that someone else could count the "
+        "same cases. 'Large tech companies' is not countable; 'US-listed software "
+        "companies with >$10B revenue that filed an S-1 between 2015 and 2025' is."
+    )
+    why_it_fits: str = Field(
+        description="Why cases from this population tell you about THIS sub-question"
     )
     weight: float = Field(
-        ge=0.0,
+        gt=0.0,
         le=1.0,
-        description="How well this class fits THIS question, relative to the others. "
-        "Not sample size — a large but ill-fitting class should weigh less.",
+        description="How well this population resembles this case, relative to the "
+        "other lenses. Relevance ONLY — never sample size. A well-fitting population "
+        "measured over 12 cases should outweigh a poorly-fitting one measured over 200.",
     )
-    sources: list[GradedSource] = Field(
-        min_length=1, description="A rate you reasoned your way to is not a base rate"
+    weight_rationale: str = Field(
+        description="Argue for the weight. This is the one judgment in the pipeline "
+        "nothing else can check, so it has to justify itself."
+    )
+
+
+class ResearchedLens(Lens):
+    """A lens once its population has been measured.
+
+    No `base_rate` field. The rate is `checks.lens_rate` over `evidence` — computed, not
+    asserted, so the number and the cases behind it cannot tell different stories.
+    """
+
+    evidence: list[Evidence] = Field(
+        min_length=1, description="At least one block. A rate you reasoned your way to "
+        "is not a base rate."
+    )
+    analogs: list[HistoricalAnalog] = Field(
+        default_factory=list,
+        description="The named cases behind the `counted` evidence. One per case counted "
+        "— these are what make the count auditable rather than a claim.",
     )
     sub_claim_ids: list[str] = Field(
         default_factory=list,
-        description="Which decomposed sub-claims this class informs. Empty means the "
-        "question as a whole.",
+        description="Which sub-question this lens informs. Stamped by code, not by you.",
     )
-    analogs: list[HistoricalAnalog] = Field(default_factory=list)
+
+
+class SubClaimLenses(BaseModel):
+    """The `choose_lenses` step's answer for one sub-question. No rates yet."""
+
+    lenses: list[Lens] = Field(min_length=1, max_length=3)
 
 
 class SubClaimBaseRates(BaseModel):
-    """One cell's answer — reference classes for exactly one column of the grid.
+    """One researched lens. The `research_lens` step's answer.
 
-    `min_length=2` is P7's dragonfly eye applied where it now belongs: to the
-    sub-question being measured, rather than to a flat list spanning several. That is
-    strictly stronger than the old whole-view minimum, which "two lenses on sc1 and none
-    on sc2 or sc3" satisfied.
-
-    No `rate` field. The column's rate is `checks.sub_claim_rate` over these classes and
-    their weights — computed, not asserted, so the number cannot disagree with the
-    weights that imply it. No `confidence` field either: `checks.claim_support` grades a
-    class by its strongest `GradedSource`, per ADR 29.
+    One lens per cell rather than a whole row, because the lens is now the unit the
+    research fans out over — five sub-questions with three lenses each is fifteen
+    independent searches.
     """
 
-    reference_classes: list[ReferenceClass] = Field(min_length=2, max_length=3)
+    lens: ResearchedLens
     disagreement: str = Field(
         default="",
-        description="Why these classes disagree about THIS sub-question, and what that "
-        "implies for uncertainty. Empty only when they broadly agree.",
+        description="What this population might mislead you about, and anything it "
+        "already controls for that a later step should not adjust for again.",
     )
 
 
 class OutsideView(BaseModel):
-    """Output of outside_view_agent. P4 + P7.
+    """The merge of every researched lens across every sub-question. P4 + P7.
 
-    The merge of every cell in the base-rate row. `min_length=2` is a floor rather than
-    the mechanism — the two-lens guarantee now lives on `SubClaimBaseRates`, per column.
-    `max_length` allows five columns times three classes each.
+    `aggregate_base_rate` is the anchor before any inside-view move: each sub-question's
+    lenses blended by relevance, then combined by the decomposition's chain rule. It is
+    computed by `checks.anchor_from`, never asserted.
+
+    `max_length` allows five sub-questions times three lenses each.
     """
 
-    reference_classes: list[ReferenceClass] = Field(min_length=2, max_length=15)
+    lenses: list[ResearchedLens] = Field(min_length=1, max_length=15)
     aggregate_base_rate: float = Field(ge=0.0, le=1.0)
     disagreement: str = Field(
         default="",
-        description="Why the reference classes disagree, and what that implies for "
-        "uncertainty. Empty only when they broadly agree.",
+        description="What the populations might mislead about, per sub-question.",
     )
 
 
@@ -322,7 +385,9 @@ class Adjustment(BaseModel):
     magnitude: float = Field(
         ge=0.0,
         le=0.5,
-        description="Probability points to move, not a multiplier. 0 for noise.",
+        description="Probability points to move THIS LENS's base rate, not a multiplier. "
+        "0 for noise. A later step blends the adjusted lenses and combines the "
+        "sub-questions, so size this against the lens in front of you and nothing else.",
     )
     flip_test: str = Field(
         description="P9 — if the opposite of this evidence were true, my estimate would ___"
@@ -336,10 +401,14 @@ class Adjustment(BaseModel):
         description="May be empty — a judgment call with no lookup behind it. That is "
         "an honest signal, and it grades as low support rather than none.",
     )
+    lens_name: str = Field(
+        default="",
+        description="Which lens this moves. Stamped by code, not volunteered.",
+    )
     sub_claim_ids: list[str] = Field(
         default_factory=list,
-        description="Which decomposed sub-claims this adjustment bears on. Empty means "
-        "the question as a whole.",
+        description="Which sub-question this bears on. Stamped by code. Empty means the "
+        "question as a whole — the reflect pass and the whole-question fallback.",
     )
 
 
@@ -351,20 +420,30 @@ class BiasCheck(BaseModel):
 
 
 class SubClaimAdjustments(BaseModel):
-    """One cell's answer — signed moves for exactly one column of the grid. P5 + P9.
+    """One cell's answer — signed moves for exactly one lens. P5 + P9.
 
-    Scoped to a single sub-question, so `steel_man` and `what_would_change_my_mind` are
-    about that sub-question rather than the forecast. No `bias_checks`: three of the five
-    named biases are only askable of a final probability, which a column does not have.
-    Those come from the reflect pass, after the barrier.
+    Scoped to a single lens, not a sub-question, because a modifier is only meaningful
+    relative to a population. "Market cap exploded" is already baked into *large-cap tech
+    IPOs* and warrants no move; against *all AI labs* it is the whole differentiator.
+    Adjusting a blended rate would double-count against the populations that already
+    control for the feature.
+
+    No `bias_checks`: three of the five named biases are only askable of a final
+    probability, which a lens does not have. Those come from the reflect pass.
     """
 
+    lens_name: str = Field(description="Which lens these move. Stamped by code.")
     adjustments: list[Adjustment] = Field(min_length=1, max_length=3)
+    already_controlled_for: str = Field(
+        default="",
+        description="What this population already accounts for, and therefore what you "
+        "deliberately did NOT adjust for. The question that keeps a modifier honest.",
+    )
     steel_man: str = Field(
-        description="P14 — strongest case against your conclusion for THIS sub-question"
+        description="P14 — strongest case against your conclusion for THIS lens"
     )
     what_would_change_my_mind: str = Field(
-        description="P14 — for THIS sub-question specifically"
+        description="P14 — for THIS lens specifically"
     )
 
 

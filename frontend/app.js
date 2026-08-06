@@ -23,16 +23,17 @@ const MAX_SEARCH_DEPTH = 50;
 
 const STAGE_META = {
   decompose: { num: "1", label: "Decompose", principles: [1, 2] },
-  outside: { num: "2", label: "Find base rates", principles: [4, 7] },
-  inside: { num: "3", label: "Adjust — inside view", principles: [5, 9] },
-  reflect: { num: "4", label: "Reflect", principles: [14, 15] },
-  synth: { num: "5", label: "Synthesize", principles: [6, 8, 16] },
-  critique: { num: "6", label: "Critique", principles: [] },
+  lenses: { num: "2", label: "Choose lenses", principles: [4, 7] },
+  outside: { num: "3", label: "Find base rates", principles: [4] },
+  inside: { num: "4", label: "Adjust — inside view", principles: [5, 9] },
+  reflect: { num: "5", label: "Reflect", principles: [14, 15] },
+  synth: { num: "6", label: "Synthesize", principles: [6, 8, 16] },
+  critique: { num: "7", label: "Critique", principles: [] },
   // Not a graph step — a seam in the trail, so the stages above it are visibly the
   // ones that already ran rather than looking like part of this attempt.
   resume: { num: "↻", label: "Resumed", principles: [] },
 };
-const STAGE_ORDER = ["decompose", "outside", "inside", "reflect", "synth", "critique"];
+const STAGE_ORDER = ["decompose", "lenses", "outside", "inside", "reflect", "synth", "critique"];
 
 /**
  * One line per methodology principle, so a bare "P7" explains itself.
@@ -66,21 +67,52 @@ const PRINCIPLES = {
 // Each of these mirrors a function in `checks.py`, deliberately: the check and the
 // picture have to agree about what the evidence implies, so they compute it the same way.
 
-/** The reference classes a sub-claim's cell researched. */
-function classesFor(id, outside) {
+/** The populations a sub-question was viewed through. */
+function lensesFor(id, outside) {
   if (!outside || !id) return [];
-  return outside.reference_classes.filter((rc) => (rc.sub_claim_ids || []).includes(id));
+  return outside.lenses.filter((l) => (l.sub_claim_ids || []).includes(id));
 }
 
-/** Weighted mean of a sub-claim's classes, or null when nothing researched it. */
-function subClaimRate(id, outside) {
-  const classes = classesFor(id, outside);
-  const total = classes.reduce((n, rc) => n + rc.weight, 0);
-  if (!classes.length || total <= 1e-9) return null;
-  return classes.reduce((n, rc) => n + rc.weight * rc.base_rate, 0) / total;
+/** A lens's base rate: pooled hits over pooled n. Derived, never asserted. */
+function lensRate(lens) {
+  const n = (lens.evidence || []).reduce((t, e) => t + e.n, 0);
+  if (!n) return 0;
+  return (lens.evidence || []).reduce((t, e) => t + e.hits, 0) / n;
 }
 
-/** The adjustments a sub-claim's cell produced. */
+/** How many cases a lens rests on, and how they were gathered. */
+function lensEvidenceSummary(lens) {
+  return (lens.evidence || []).map((e) => `${e.hits} of ${e.n} ${e.kind}`).join(" · ");
+}
+
+/** A lens's rate after its own modifiers. Only adjustments naming it apply. */
+function adjustedLensRate(lens, inside) {
+  const moved = adjustmentsForLens(lens, inside).reduce((n, a) => n + signedAdjustment(a), 0);
+  return Math.min(1, Math.max(0, lensRate(lens) + moved));
+}
+
+/** The modifiers that move one lens. */
+function adjustmentsForLens(lens, inside) {
+  if (!inside) return [];
+  return inside.adjustments.filter((a) => a.lens_name === lens.name);
+}
+
+/**
+ * A sub-question's rate: its adjusted lenses blended by relevance.
+ *
+ * `n` is deliberately absent. A lens measured over 12 cases outweighs one measured over
+ * 230 when it fits better — sample size says how well a population was *measured*, not
+ * how much it *resembles this case*, and only the second is what a reference class is
+ * for. Mirrors `checks.sub_claim_rate`; if the two ever disagree the picture is lying.
+ */
+function subClaimRate(id, outside, inside) {
+  const lenses = lensesFor(id, outside);
+  const total = lenses.reduce((n, l) => n + l.weight, 0);
+  if (!lenses.length || total <= 1e-9) return null;
+  return lenses.reduce((n, l) => n + l.weight * adjustedLensRate(l, inside), 0) / total;
+}
+
+/** The adjustments bearing on a sub-question, across all its lenses. */
 function adjustmentsFor(id, inside) {
   if (!inside || !id) return [];
   return inside.adjustments.filter((a) => (a.sub_claim_ids || []).includes(id));
@@ -121,6 +153,11 @@ function sourcesSeenIndex(run) {
     if (ev.type === "source" && ev.payload.url) by[ev.payload.url] = ev.payload;
   }
   return by;
+}
+
+/** The graded sources behind a lens, which live on its evidence blocks. */
+function lensSources(lens) {
+  return (lens.evidence || []).map((e) => e.source).filter(Boolean);
 }
 
 /**
@@ -840,6 +877,10 @@ function applyEvent(runId, ev) {
     case "decompose":
       run.models.decomposition = ev.payload;
       return;
+    case "lenses":
+      run.models.lenses = ev.payload.lenses || [];
+      closeColumns(run, "lenses");
+      return;
     case "outside":
       run.models.outside = ev.payload;
       closeColumns(run, "outside");
@@ -919,7 +960,10 @@ function applyEvent(runId, ev) {
  * because a column that vanishes from a row looks like a bug rather than an answer.
  */
 function openColumns(run, group) {
-  if (group.stage !== "outside" && group.stage !== "inside") return;
+  // Deliberately not "lenses": that stage shows populations *before* any rate exists,
+  // and a column card reads rates off `models.outside`. Opening cards there would
+  // back-fill measurements into the step whose entire purpose is not having them yet.
+  if (!["outside", "inside"].includes(group.stage)) return;
   const d = run.models.decomposition;
   if (!d) return;
 
@@ -927,8 +971,9 @@ function openColumns(run, group) {
   group.columnOrder = [];
   for (const s of d.sub_claims) {
     if (!s.id) continue;
-    const anchor = group.stage === "inside" ? subClaimRate(s.id, run.models.outside) : null;
-    const classes = group.stage === "inside" ? classesFor(s.id, run.models.outside) : [];
+    const anchor =
+      group.stage === "inside" ? subClaimRate(s.id, run.models.outside) : null;
+    const lenses = lensesFor(s.id, run.models.outside);
     group.columns[s.id] = {
       id: s.id,
       question: s.question,
@@ -936,10 +981,11 @@ function openColumns(run, group) {
       rationale: s.rationale,
       p: s.probability,
       anchor,
-      classes,
-      // The inside row adjusts FROM a rate the row above it found. No reference class
-      // means no base rate to adjust from, which is P5's premise.
-      researching: group.stage === "inside" ? classes.length > 0 : s.knowability === "researchable",
+      lenses,
+      // The inside row adjusts FROM rates the row above it measured. No lens means
+      // nothing to adjust, which is P5's premise.
+      researching:
+        group.stage === "inside" ? lenses.length > 0 : s.knowability === "researchable",
       items: [],
       done: false,
       exhausted: false,
@@ -1084,20 +1130,15 @@ const EVENT_RENDERERS = {
 function renderColumnCard(run, group, col) {
   const key = `${group.key}-${col.id}`;
   const log = col.items;
-
-  // Everything below is derived from the models the graph delivered, not from a payload
-  // the backend shaped for this card. The outside row shows what its cell found; the
-  // inside row shows where the number started and what moved it.
   const isInside = group.stage === "inside";
-  const classes = isInside ? col.classes : classesFor(col.id, run.models.outside);
-  const adjustments = isInside ? adjustmentsFor(col.id, run.models.inside) : [];
-  const moved = adjustments.reduce((n, a) => n + signedAdjustment(a), 0);
-  const rate = isInside
-    ? (col.anchor == null ? null : Math.min(1, Math.max(0, col.anchor + moved)))
-    : subClaimRate(col.id, run.models.outside);
+  const lenses = lensesFor(col.id, run.models.outside);
+  const inside = isInside ? run.models.inside : null;
 
-  // One clipped line of whatever the agent is doing right now. The full trail is one
-  // click away; this is the part you can watch without opening anything.
+  // The sub-question's rate: its lenses blended by relevance. On the inside row the
+  // lenses have already been moved by their own modifiers.
+  const rate = subClaimRate(col.id, run.models.outside, inside);
+
+  // One clipped line of whatever the agent is doing right now.
   const live = !col.done && log.length ? log[log.length - 1] : null;
   const liveText = live
     ? (live.type === "thought" ? live.payload.delta
@@ -1117,17 +1158,14 @@ function renderColumnCard(run, group, col) {
             col.knowability)
         : null),
     h("div", {}, col.question),
-    // The inside row adjusts FROM a rate the row above it found. Showing where the
-    // number started is what makes an adjustment readable as a delta.
-    isInside && col.anchor != null
-      ? h("div.micro", {},
-          `from ${pct(col.anchor)}${moved ? ` \u00b7 ${moved > 0 ? "+" : ""}${Math.round(moved * 100)} pts` : ""}`)
+    isInside && col.anchor != null && rate != null && Math.abs(rate - col.anchor) > 1e-9
+      ? h("div.micro", {}, `from ${pct(col.anchor)}`)
       : null,
 
     !col.researching && !log.length
       ? h("div.micro", {},
           col.knowability === "researchable"
-            ? "no reference class found \u2014 nothing was researched for this"
+            ? "no population measured \u2014 nothing was researched for this"
             : "judgment \u2014 no base rate to look up")
       : null,
 
@@ -1137,21 +1175,82 @@ function renderColumnCard(run, group, col) {
       ? disclosure(`col-log-${key}`,
           h("span.micro", {}, `${log.length} search step${log.length === 1 ? "" : "s"}`),
           () => log.map((ev) => EVENT_RENDERERS[ev.type]?.(ev.payload, ev)).filter(Boolean),
-          // Open while it works, closed once its finding lands \u2014 as a default, so a
-          // reader who collapses it keeps it collapsed.
           !col.done,
           { "data-scroll": `col-log-${key}`, class: "coltail" })
       : null,
 
-    adjustments.length
-      ? disclosure(`col-adj-${key}`,
-          h("span.micro", {}, `${adjustments.length} modifier${adjustments.length === 1 ? "" : "s"}`),
-          () => adjustments.map((a, i) => renderAdjustment(a, `${key}-${i}`)))
+    lenses.length
+      ? h("div.lenses", {},
+          lenses.map((l, i) => renderLens(run, l, inside, `${key}-${i}`)))
+      : null);
+}
+
+/**
+ * One population: what it is, what it measured, what moved it.
+ *
+ * The whole methodology is legible here — a rate that is `hits/n` over cases you can
+ * open, modifiers that move only this population, and a weight that admits it is a
+ * judgment. It is the one card worth reading closely.
+ */
+function renderLens(run, lens, inside, key) {
+  const base = lensRate(lens);
+  const moves = adjustmentsForLens(lens, inside);
+  const adjusted = adjustedLensRate(lens, inside);
+  const moved = adjusted - base;
+  const seen = sourcesSeenIndex(run);
+  const queries = [...new Set(lensSources(lens)
+    .map((sc) => seen[sc.url] && seen[sc.url].query)
+    .filter(Boolean))];
+
+  return h("div.lens", {},
+    h("div.evhead", {},
+      h("span.num-strong", {}, pct(base)),
+      moves.length
+        ? h("span.micro", {},
+            `\u2192 ${pct(adjusted)}  ${moved > 0 ? "+" : ""}${Math.round(moved * 100)} pts`)
+        : null,
+      h("div.spacer", {}),
+      lensSources(lens).length
+        ? supportChip(claimSupport(lensSources(lens)))
+        : h("span.chip.for", {}, "counted")),
+    h("div", {}, lens.name),
+    // What the rate is counted from. This is the number that used to be an unverified
+    // "N=50"; it is now the denominator of an arithmetic a check re-derives.
+    h("div.micro", {}, lensEvidenceSummary(lens)),
+    h("div.minibar", {}, h("i", { style: `width:${Math.min(100, base * 100)}%` })),
+    lens.population ? h("div.dim", {}, lens.population) : null,
+    queries.length ? h("div.micro", {}, `searched: ${queries.join(" \u00b7 ")}`) : null,
+
+    // The one number nothing can check, so it shows its argument.
+    lens.weight_rationale
+      ? disclosure(`w-${key}`,
+          h("span.micro", {}, `relevance ${lens.weight.toFixed(2)} \u2014 why`),
+          () => prose(lens.weight_rationale, "dim md"))
+      : h("div.micro", {}, `relevance ${lens.weight.toFixed(2)}`),
+
+    moves.length
+      ? disclosure(`m-${key}`,
+          h("span.micro", {}, `${moves.length} modifier${moves.length === 1 ? "" : "s"}`),
+          () => moves.map((a, i) => renderAdjustment(a, `${key}-${i}`)),
+          true)
       : null,
 
-    classes.length
-      ? h("div", { style: "margin-top:8px" },
-          classes.map((c, i) => renderClass(run, c, `${key}-${i}`)))
+    lensSources(lens).length
+      ? renderSources(`src-${key}`, lensSources(lens), seen)
+      // A counted lens has no citation by design — the cases below ARE its evidence,
+      // and `check_base_rate_derivation` audits them against the count.
+      : h("div.micro", {}, "counted directly \u2014 the cases below are the evidence"),
+
+    (lens.analogs || []).length
+      ? disclosure(`an-${key}`,
+          h("span.micro", {}, `${lens.analogs.length} case${lens.analogs.length === 1 ? "" : "s"} counted`),
+          () => lens.analogs.map((a) =>
+            h("div.srcrow", {},
+              h("span.chip", { class: a.outcome >= 1 ? "for" : "against" },
+                a.outcome >= 1 ? "yes" : "no"),
+              h("div", {},
+                prose(a.description),
+                a.relevance ? prose(a.relevance, "dim md") : null))))
       : null);
 }
 
@@ -1181,45 +1280,6 @@ function renderAdjustment(a, key) {
  */
 const addresses = (ids) =>
   h("div.micro", {}, ids && ids.length ? `addresses ${ids.join(", ")}` : "addresses the whole question");
-
-/**
- * One reference class, inside the sub-claim it was found for.
- *
- * Analogs nest here. They are a child collection on `ReferenceClass` but used to be
- * emitted as flat sibling events, so which class an analog belonged to was carried only
- * by arrival order — a convention nothing wrote down and the UI could not show.
- */
-function renderClass(run, c, key) {
-  // Which search produced each cited URL. The agent asserts the URL; the tool records
-  // the query — only the join answers "which search found this base rate".
-  const seen = sourcesSeenIndex(run);
-  const queries = [...new Set((c.sources || [])
-    .map((s) => seen[s.url] && seen[s.url].query)
-    .filter(Boolean))];
-
-  return h("div.refcard", {},
-    h("div.evhead", {},
-      h("span.num-strong", {}, pct(c.base_rate)),
-      h("span.micro", {}, `n=${c.sample_size}`),
-      c.weight === undefined ? null : h("span.micro", {}, `weight ${c.weight.toFixed(2)}`),
-      h("div.spacer", {}),
-      supportChip(claimSupport(c.sources))),
-    h("div", {}, c.name),
-    h("div.minibar", {}, h("i", { style: `width:${Math.min(100, c.base_rate * 100)}%` })),
-    queries.length ? h("div.micro", {}, `searched: ${queries.join(" · ")}`) : null,
-    renderSources(`src-${key}`, c.sources, seen),
-    (c.analogs || []).length
-      ? disclosure(`analogs-${key}`,
-          h("span.micro", {}, `${c.analogs.length} analog${c.analogs.length === 1 ? "" : "s"}`),
-          () => c.analogs.map((a) =>
-            h("div.srcrow", {},
-              h("span.chip", { class: a.outcome >= 1 ? "for" : "against" },
-                a.outcome >= 1 ? "yes" : "no"),
-              h("div", {},
-                prose(a.description),
-                a.relevance ? prose(a.relevance, "dim md") : null))))
-      : null);
-}
 
 /** The graded sources behind one claim, collapsed until asked for. */
 function renderSources(key, sources, seen) {
@@ -1733,6 +1793,8 @@ function renderStageBody(run, group) {
   switch (group.stage) {
     case "decompose":
       return m.decomposition ? renderDecomposition(m.decomposition) : null;
+    case "lenses":
+      return m.lenses ? renderChosenLenses(m.lenses) : null;
     case "outside":
       return m.outside ? renderAnchorNote(m.outside) : null;
     case "reflect":
@@ -1771,6 +1833,31 @@ function renderDecomposition(d) {
 }
 
 /**
+ * The populations, as chosen — before anything measured them.
+ *
+ * Worth its own stage because the ordering is the guarantee: an agent that picked
+ * populations and measured them in one pass could settle on whichever gave the answer it
+ * already liked, and the output would look identical either way. Showing them here with
+ * no rates attached is what makes the commitment visible.
+ */
+function renderChosenLenses(lenses) {
+  const byClaim = {};
+  for (const l of lenses) (byClaim[l.sub_claim_id] ||= []).push(l);
+  return h("div", {},
+    Object.entries(byClaim).map(([id, group]) =>
+      h("div.ev.sub", {},
+        h("div.evhead", {}, h("span.micro", {}, id)),
+        group.map((l) =>
+          h("div.lens", {},
+            h("div.evhead", {},
+              h("strong", {}, l.name),
+              h("div.spacer", {}),
+              h("span.micro", {}, `relevance ${l.weight.toFixed(2)}`)),
+            h("div.dim", {}, l.population),
+            prose(l.why_it_fits, "dim md"))))));
+}
+
+/**
  * P7 — the anchor, and what the classes disagreed about.
  *
  * The disagreement sentence is the half of P7 a schema cannot enforce, which is the
@@ -1781,7 +1868,7 @@ function renderAnchorNote(o) {
     h("div.micro", {}, `aggregate_base_rate — ${pct(o.aggregate_base_rate)}`),
     prose(
       o.disagreement.trim()
-      || `${o.reference_classes.length} reference classes, broadly in agreement.`,
+      || `${o.lenses.length} population${o.lenses.length === 1 ? "" : "s"} measured.`,
       "dim md"));
 }
 

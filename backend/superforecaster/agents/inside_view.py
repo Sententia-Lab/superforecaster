@@ -5,14 +5,18 @@ signed delta from the outside view, never a fresh absolute estimate — that is 
 makes principle 5 ("the inside view modifies the outside view") checkable arithmetic
 rather than a hope.
 
-One agent per column, like the base-rate row above it, and each is seeded with **its own
-sub-question's** rate rather than the whole-question anchor. For a decomposed question
-the global anchor is the wrong reference point: an adjustment about whether the docs get
-filed in time is not a delta from the probability of the whole IPO.
+One agent per **lens**, seeded with that lens's own base rate. A modifier is only
+meaningful relative to a population: "the market cap exploded" is already inside
+*large-cap tech IPOs* and warrants nothing, while against *all AI labs* it is the whole
+differentiator. Moving a blended rate would double-count against the populations that
+already control for the feature, and under-count against the ones that do not.
+
+That is also why the cell is told what its population already accounts for — the research
+step recorded it, and it is the single most useful thing to know before adjusting.
 
 The fan-out is a `.map()` edge in `graphs.forecast`; this module supplies one cell. P14
-and P15 belong to `reflect`, its own step after this row's barrier — see that module for
-why they cannot be asked of one column.
+and P15 belong to `reflect`, its own step after the barrier — see that module for why
+they cannot be asked of one lens.
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ from ..models import (
     Adjustment,
     ForecastInput,
     OutsideView,
+    ResearchedLens,
     SubClaimAdjustments,
     SubPrediction,
 )
@@ -42,17 +47,31 @@ The other parts of the question are being worked on separately, at the same time
 other agents. Say nothing about them.
 
 ADJUST, DO NOT REPLACE (principle 5)
-You are given the base rate for your sub-question. Every adjustment you return is a
-signed move away from it, in probability points:
+You are given ONE population and the rate measured within it. Every adjustment you return
+is a signed move away from **that** rate, in probability points:
     direction  up / down / neutral
     magnitude  how many points, 0 to 0.5
-Never restate an absolute probability. If the base rate is 0.20 and you think this case
-is somewhat more likely, that is one adjustment up by 0.08 — not "I think 0.28".
+Never restate an absolute probability. If the rate is 0.20 and you think this case is
+somewhat more likely, that is one adjustment up by 0.08 — not "I think 0.28".
 
-Magnitudes are points on the FINAL probability, arrived at via this sub-question. A later
-step adds every adjustment from every part of the question to the anchor, and a check
-verifies the final number matches, so an adjustment sized against your own sub-question
-in isolation will overstate its effect.
+Size every move against the population in front of you and nothing else. A later step
+blends the adjusted populations and combines the sub-questions; you do not need to
+anticipate any of that, and trying to will distort your number.
+
+ASK WHAT THIS POPULATION ALREADY ACCOUNTS FOR
+This is the question that separates a real adjustment from double-counting. Your
+population has a definition, and everything inside that definition is *already priced
+into* the rate you were given.
+
+  population "large-cap tech IPOs", evidence "this company is very large"
+    -> no adjustment. Being large-cap is what the population IS.
+
+  population "all AI labs, any size", evidence "this company is very large"
+    -> a real adjustment. Size is what distinguishes this case from the population.
+
+The same fact, opposite treatment, decided entirely by which population you are looking
+through. Write what you deliberately did not adjust for in `already_controlled_for` — a
+reader has no other way to tell a considered omission from an oversight.
 
 THE FLIP TEST (principle 9)
 For every adjustment, fill in `flip_test`: what would my estimate do if I had found
@@ -119,40 +138,43 @@ def get_inside_view_agent() -> Agent[ForecastDeps, SubClaimAdjustments]:
     return _agent
 
 
-async def run_inside_view_cell(
+async def run_adjust_lens(
     input: ForecastInput,
     sub_claim: SubPrediction,
-    outside: OutsideView,
+    lens: ResearchedLens,
+    already_controlled_for: str,
     deps: ForecastDeps,
 ) -> SubClaimAdjustments:
-    """Adjust from ONE column's base rate. Searches; budget-limited."""
-    own = checks.sub_claim_rate(sub_claim.id or "", outside)
-    # None only on the whole-question fallback, where there is no per-column rate and the
-    # anchor is the only base rate there is.
-    rate = own if own is not None else outside.aggregate_base_rate
-    relevant = checks.classes_for(sub_claim.id or "", outside) or (
-        outside.reference_classes if own is None else []
+    """Adjust ONE population's measured rate. Searches; budget-limited."""
+    rate = checks.lens_rate(lens)
+    blocks = "\n".join(
+        f"  - {e.kind}: {e.hits} of {e.n} — {e.note}"
+        + (f" [{e.source.source}]" if e.source else "")
+        for e in lens.evidence
     )
-    classes = "\n".join(
-        f"  - {rc.name}: {rc.base_rate:.3f} (n={rc.sample_size}, weight={rc.weight:.2f}, "
-        f"{'; '.join(f'{s.source} [{s.confidence}]' for s in rc.sources)})"
-        for rc in relevant
+    cases = "\n".join(
+        f"  - {'YES' if a.outcome >= 1.0 else 'no '}  {a.description}"
+        for a in lens.analogs[:12]
     )
 
-    prompt = f"""Adjust from the base rate for ONE part of this question.
+    prompt = f"""Adjust the measured rate for ONE population.
 
 {format_question(input)}{as_of_note(deps)}
 
-YOUR PART — {sub_claim.id}: {sub_claim.question}
-Why the decomposition split it out: {sub_claim.rationale}
+THE PART OF THE QUESTION THIS BEARS ON — {sub_claim.id}: {sub_claim.question}
 
-BASE RATE FOR THIS SUB-QUESTION: {rate:.3f}
+YOUR POPULATION — {lens.name}
+Who is in it: {lens.population}
+MEASURED RATE: {rate:.3f}
 
-THE REFERENCE CLASSES IT WAS BLENDED FROM:
-{classes}
+WHAT THAT RATE WAS COUNTED FROM:
+{blocks}
+{f"\nCASES BEHIND IT:\n{cases}" if cases else ""}
+{f"\nWHAT THIS POPULATION ALREADY ACCOUNTS FOR:\n  {already_controlled_for}" if already_controlled_for.strip() else ""}
 
-Return a SubClaimAdjustments. Every adjustment is a signed delta from {rate:.3f}, with a
-flip test."""
+Return a SubClaimAdjustments. Every adjustment is a signed delta from {rate:.3f} — the
+rate for THIS population, not for the question — each with a flip test. Say in
+`already_controlled_for` what you deliberately did not adjust for and why."""
 
     agent = get_inside_view_agent()
     with with_model(agent, deps) as bound:
@@ -162,7 +184,7 @@ flip test."""
             deps=deps,
             verbose=deps.verbose,
             usage_limits=get_cell_limits(input.max_iterations),
-            run_name=f"inside view · {sub_claim.id}",
+            run_name=f"inside view · {sub_claim.id} · {lens.name}",
         )
     return result.output
 
@@ -173,28 +195,37 @@ async def whole_question_adjustments(
     deps: ForecastDeps,
     errors: list[str],
 ) -> tuple[list[Adjustment], dict[str, str]]:
-    """No column produced an adjustment. Fall back, or say why we cannot.
+    """No lens produced an adjustment. Fall back, or say why we cannot.
 
-    Two ways to get here. Either no column carried a reference class — so there was
-    nothing to adjust *from*, which is principle 5's premise — or every column that ran
-    failed. The first adjusts from the whole-question anchor; the second is a run with
-    nothing to stand on, and inventing adjustments would be worse than an error.
+    Two ways to get here. Either no lens was researched at all — so there was nothing to
+    adjust *from*, which is principle 5's premise — or every cell that ran failed. The
+    first adjusts the first available lens; the second is a run with nothing to stand on,
+    and inventing adjustments would be worse than an error.
     """
     real = [e for e in errors if e]
     if real and all("UsageLimitExceeded" in e for e in real):
         raise UsageLimitExceeded(
-            f"every column exhausted its search budget without returning an adjustment "
+            f"every lens exhausted its search budget without returning an adjustment "
             f"({'; '.join(real)}). Resume with a higher search depth."
         )
     if real:
-        raise RuntimeError(f"every inside-view column failed: {'; '.join(real)}")
+        raise RuntimeError(f"every inside-view cell failed: {'; '.join(real)}")
 
+    if not outside.lenses:
+        raise RuntimeError("no lens to adjust from")
+
+    lens = outside.lenses[0]
     fallback = SubPrediction(
         question=input.question,
-        probability=outside.aggregate_base_rate,
-        rationale="no sub-question carried its own reference class",
+        probability=checks.lens_rate(lens),
+        rationale="whole-question fallback",
         knowability="judgment",
     ).model_copy(update={"id": None})
 
-    result = await run_inside_view_cell(input, fallback, outside, deps)
-    return result.adjustments, {"whole question": result.steel_man}
+    result = await run_adjust_lens(input, fallback, lens, "", deps)
+    # Named after the lens so `adjusted_lens_rate` picks them up like any other.
+    adjustments = [
+        a.model_copy(update={"lens_name": lens.name, "sub_claim_ids": lens.sub_claim_ids})
+        for a in result.adjustments
+    ]
+    return adjustments, {"whole question": result.steel_man}

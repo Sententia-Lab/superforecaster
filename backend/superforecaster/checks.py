@@ -34,7 +34,7 @@ from .models import (
     GradedSource,
     InsideView,
     OutsideView,
-    ReferenceClass,
+    ResearchedLens,
     SourceConfidence,
     SourceRef,
     UpdateDecision,
@@ -66,14 +66,45 @@ def signed_adjustment(a: Adjustment) -> float:
 _signed = signed_adjustment
 
 
-def implied_probability(o: OutsideView, i: InsideView) -> float:
-    """P6. Where the base rate plus the agent's own stated adjustments lands.
+def _clamp(p: float) -> float:
+    """A probability, whatever the arithmetic wanted to say."""
+    return min(1.0, max(0.0, p))
 
-    Clamped to [0, 1] — a chain of adjustments can walk off either end, and a forecast
-    is a probability regardless of what the arithmetic wanted to say.
+
+def implied_probability(
+    o: OutsideView, i: InsideView, d: Decomposition | None = None
+) -> float:
+    """P6. Where the adjusted lenses land once the decomposition's chain is applied.
+
+    Each lens moves by its own modifiers; each sub-question blends its adjusted lenses by
+    relevance; the sub-questions combine by `chain_rule`. The same
+    `combine_sub_claim_rates` builds the anchor, so the anchor and the forecast are
+    computed the same way and `check_derivation` is checking something real — it used to
+    compare a flat sum against a number that same flat sum had suggested.
+
+    Adjustments naming no lens — the reflect pass, the whole-question fallback — apply to
+    the combined value rather than to any one population.
+
+    `custom` has no chain to apply and keeps the flat sum on the anchor, which is what
+    this did for everything before lenses existed.
+
+    Clamped to [0, 1]: a chain of adjustments can walk off either end, and a forecast is
+    a probability regardless of what the arithmetic wanted to say.
     """
-    total = o.aggregate_base_rate + sum(signed_adjustment(a) for a in i.adjustments)
-    return min(1.0, max(0.0, total))
+    whole_question = sum(
+        signed_adjustment(a) for a in i.adjustments if not a.lens_name
+    )
+
+    if d is None or d.chain_rule == "custom":
+        return _clamp(o.aggregate_base_rate + sum(
+            signed_adjustment(a) for a in i.adjustments
+        ))
+
+    rates = [row["rate"] for row in chain_inputs(d, o, i)]
+    combined = combine_sub_claim_rates(rates, d.chain_rule)
+    if combined is None:
+        return _clamp(o.aggregate_base_rate + whole_question)
+    return _clamp(combined + whole_question)
 
 
 def base_rate_spread(o: OutsideView) -> float:
@@ -90,7 +121,7 @@ def base_rate_spread(o: OutsideView) -> float:
     Whole-view, so it is only meaningful when every class measures the same thing. Once
     research fans out per sub-claim that stops being true — use `sub_claim_spreads`.
     """
-    rates = [rc.base_rate for rc in o.reference_classes]
+    rates = [lens_rate(l) for l in o.lenses]
     return max(rates) - min(rates) if rates else 0.0
 
 
@@ -110,9 +141,9 @@ def sub_claim_spreads(o: OutsideView) -> dict[str | None, float]:
     also why every pre-3.3 fixture forms exactly one group here and behaves as it did.
     """
     by_column: dict[str | None, list[float]] = {}
-    for rc in o.reference_classes:
-        for key in rc.sub_claim_ids or [None]:
-            by_column.setdefault(key, []).append(rc.base_rate)
+    for l in o.lenses:
+        for key in l.sub_claim_ids or [None]:
+            by_column.setdefault(key, []).append(lens_rate(l))
     return {k: max(v) - min(v) for k, v in by_column.items()}
 
 
@@ -140,7 +171,9 @@ def combine_sub_claim_rates(rates: list[float], rule: ChainRule) -> float | None
     return None
 
 
-def chain_inputs(d: Decomposition, o: OutsideView) -> list[dict[str, Any]]:
+def chain_inputs(
+    d: Decomposition, o: OutsideView, i: InsideView | None = None
+) -> list[dict[str, Any]]:
     """Each sub-claim's rate and where it came from, in decomposition order.
 
     Runs over **every** sub-claim, not just the researched ones. A conjunction over only
@@ -152,10 +185,14 @@ def chain_inputs(d: Decomposition, o: OutsideView) -> list[dict[str, Any]]:
     So a column nothing researched falls back to `SubPrediction.probability` — the
     decompose agent's own working estimate, an existing typed field, marked `estimated`
     so a reader can tell the two apart.
+
+    With an inside view the rates are post-adjustment, which is what `implied_probability`
+    walks. Without one they are the anchor. Same rows either way, so the two views cannot
+    disagree about which sub-questions exist or in what order.
     """
     rows: list[dict[str, Any]] = []
     for s in d.sub_claims:
-        researched = sub_claim_rate(s.id, o) if s.id else None
+        researched = sub_claim_rate(s.id, o, i) if s.id else None
         rows.append(
             {
                 "id": s.id,
@@ -212,7 +249,7 @@ def aggregate_source_confidence(
     """
     th = _thresholds(t)
     outside = _weighted_support(
-        [(rc.weight, claim_support(rc.sources)) for rc in o.reference_classes]
+        [(l.weight, claim_support(lens_sources(l))) for l in o.lenses]
     )
     inside = _weighted_support(
         [
@@ -277,6 +314,55 @@ def check_decomposition(
 # ---------- Outside view ----------
 
 
+def check_base_rate_derivation(
+    o: OutsideView, t: CheckThresholds | None = None
+) -> CheckViolation | None:
+    """P4. Every base rate is arithmetic over cases, not a number someone liked.
+
+    This is the check that makes "7 of the 10 cases I found did, so 70%" mean something.
+    Two arms, one per kind of evidence:
+
+    - **counted** — the block claims to have enumerated cases, so the analogs must back
+      it: `n` equals how many were listed for this lens and `hits` equals how many of
+      them resolved YES. A count with no cases behind it is an assertion wearing a
+      fraction's clothes.
+    - **published** — nobody can list 230 cases, so the audit is provenance instead: the
+      statistic needs a source. `check_citations` separately verifies the URL was one the
+      tools actually retrieved.
+
+    Only lenses carrying a `counted` block are audited against analogs. A lens built
+    entirely from published statistics legitimately has none.
+    """
+    problems: list[str] = []
+    for lens in o.lenses:
+        counted = [e for e in lens.evidence if e.kind == "counted"]
+        if counted:
+            claimed_n = sum(e.n for e in counted)
+            claimed_hits = sum(e.hits for e in counted)
+            listed = len(lens.analogs)
+            resolved_yes = sum(1 for a in lens.analogs if a.outcome >= 1.0)
+            if listed != claimed_n:
+                problems.append(
+                    f"{lens.name}: counted {claimed_n} cases but listed {listed} analogs"
+                )
+            elif resolved_yes != claimed_hits:
+                problems.append(
+                    f"{lens.name}: counted {claimed_hits} hits but {resolved_yes} of its "
+                    f"{listed} analogs resolved yes"
+                )
+        for e in lens.evidence:
+            if e.kind == "published" and e.source is None:
+                problems.append(f"{lens.name}: a published statistic with no source")
+
+    if problems:
+        return CheckViolation(
+            principle=4,
+            name="base_rates",
+            detail="; ".join(problems),
+        )
+    return None
+
+
 def check_dragonfly(
     o: OutsideView, t: CheckThresholds | None = None
 ) -> CheckViolation | None:
@@ -302,9 +388,9 @@ def check_dragonfly(
         return None
 
     rates = ", ".join(
-        f"{rc.name}={rc.base_rate:.2f}"
-        for rc in o.reference_classes
-        if worst_id in (rc.sub_claim_ids or [None])
+        f"{l.name}={lens_rate(l):.2f}"
+        for l in o.lenses
+        if worst_id in (l.sub_claim_ids or [None])
     )
     where = f"for {worst_id}" if worst_id else "for the question as a whole"
     return CheckViolation(
@@ -315,53 +401,89 @@ def check_dragonfly(
     )
 
 
-def weighted_base_rate(o: OutsideView) -> float | None:
-    """What the reference classes and their weights imply the anchor should be.
+def lens_rate(lens: ResearchedLens) -> float:
+    """A lens's base rate: pooled hits over pooled n across its evidence.
 
-    Public for the same reason as `signed_adjustment`: the UI shows this alongside the
-    stated anchor, and re-deriving it there would let the picture and `check_aggregation`
-    disagree about what the classes say.
-
-    None when no class carries any weight, which the schema forbids but a hand-built
-    fixture can still produce.
+    Derived, never asserted. Counted cases and published statistics share one
+    denominator — `7/10` enumerated plus `140/230` published is `147/240`, one rate you
+    can audit block by block. That is the difference between "70%" and "7 of the 10 cases
+    I found did, and here they are".
     """
-    total = sum(rc.weight for rc in o.reference_classes)
-    if total <= _EPSILON:
-        return None
-    return sum(rc.weight * rc.base_rate for rc in o.reference_classes) / total
+    n = sum(e.n for e in lens.evidence)
+    if n <= 0:
+        return 0.0
+    return sum(e.hits for e in lens.evidence) / n
 
 
-def classes_for(sub_claim_id: str, o: OutsideView) -> list[ReferenceClass]:
-    """The reference classes that say they inform this sub-claim."""
-    return [rc for rc in o.reference_classes if sub_claim_id in rc.sub_claim_ids]
+def adjusted_lens_rate(lens: ResearchedLens, i: InsideView | None = None) -> float:
+    """A lens's rate after its own modifiers, clamped.
+
+    Only the adjustments naming this lens apply. A modifier is meaningful relative to a
+    population — "market cap exploded" is already inside *large-cap tech IPOs* and
+    warrants nothing, while against *all AI labs* it is the whole differentiator. Moving
+    a blended rate would double-count against the populations that already control for it.
+    """
+    moved = 0.0
+    if i is not None:
+        moved = sum(
+            signed_adjustment(a) for a in i.adjustments if a.lens_name == lens.name
+        )
+    return min(1.0, max(0.0, lens_rate(lens) + moved))
 
 
-def sub_claim_rate(sub_claim_id: str, o: OutsideView) -> float | None:
-    """What the outside view actually found for one sub-claim.
+def lenses_for(sub_claim_id: str, o: OutsideView) -> list[ResearchedLens]:
+    """The lenses that say they inform this sub-claim."""
+    return [l for l in o.lenses if sub_claim_id in l.sub_claim_ids]
 
-    The weighted mean of the classes that name it, by the same `weight` and the same
-    arithmetic `check_aggregation` uses on the whole question — so a per-sub-claim rate
-    and the overall anchor cannot tell different stories.
 
-    None when no class claims this sub-claim. That is the honest answer for a `judgment`
+def sub_claim_rate(
+    sub_claim_id: str, o: OutsideView, i: InsideView | None = None
+) -> float | None:
+    """What one sub-question is worth: its adjusted lenses, blended by relevance.
+
+        Σ(weightᵢ × adjusted_rateᵢ) / Σ weightᵢ
+
+    **`n` is deliberately absent.** A lens measured over 12 cases can and should outweigh
+    one measured over 230 when it fits better: sample size says how well a population was
+    *measured*, not how much it *resembles this case*, and only the second is what a
+    reference class is for. Discounting a well-chosen lens because its data was harder to
+    gather would penalise exactly the questions where forecasting is hardest.
+
+    `weight` is the one number in this pipeline nothing can verify, which is why
+    `Lens.weight_rationale` is required and the UI shows each lens's own rate.
+
+    Pass `i` to blend the *adjusted* rates — the inside view's answer for this
+    sub-question. Without it you get the pre-adjustment anchor.
+
+    None when no lens claims this sub-claim: the honest answer for a `judgment`
     sub-claim, and for a `researchable` one it means the research did not land.
     """
-    classes = classes_for(sub_claim_id, o)
-    total = sum(rc.weight for rc in classes)
-    if not classes or total <= _EPSILON:
+    lenses = lenses_for(sub_claim_id, o)
+    total = sum(l.weight for l in lenses)
+    if not lenses or total <= _EPSILON:
         return None
-    return sum(rc.weight * rc.base_rate for rc in classes) / total
+    return sum(l.weight * adjusted_lens_rate(l, i) for l in lenses) / total
+
+
+def weighted_base_rate(o: OutsideView) -> float | None:
+    """The flat relevance-weighted mean across every lens, ignoring the decomposition.
+
+    Only the `custom` arm uses this — when the sub-questions have no formula relating
+    them there is no chain to walk, and the honest fallback is what all the populations
+    say together.
+    """
+    total = sum(l.weight for l in o.lenses)
+    if total <= _EPSILON:
+        return None
+    return sum(l.weight * lens_rate(l) for l in o.lenses) / total
 
 
 def anchor_from(o: OutsideView, d: Decomposition | None) -> tuple[float | None, str]:
     """The anchor the outside view implies, and which rule produced it.
 
-    With a decomposition carrying a real `chain_rule`, the anchor is that rule applied to
-    the per-column rates. Otherwise it is the weighted mean across all classes — the
-    pre-3.3 arm, and still the honest answer when there is no chain to apply.
-
-    One function so `run_outside_view` and `check_aggregation` cannot disagree about
-    which arm they are in.
+    Pre-adjustment by construction: `chain_inputs` is called without an inside view, so
+    this is where the lenses sat before any modifier moved them. One function so the
+    outside-view merge and `check_aggregation` cannot disagree about which arm they used.
     """
     if d is not None and d.chain_rule != "custom":
         rates = [row["rate"] for row in chain_inputs(d, o)]
@@ -418,8 +540,7 @@ def check_aggregation(
             )
         else:
             parts = ", ".join(
-                f"{rc.name}={rc.base_rate:.2f}@{rc.weight:.2f}"
-                for rc in o.reference_classes
+                f"{l.name}={lens_rate(l):.2f}@{l.weight:.2f}" for l in o.lenses
             )
         return CheckViolation(
             principle=7,
@@ -449,7 +570,7 @@ def check_linkage(
 
     referenced = {
         cid
-        for holder in (*o.reference_classes, *i.adjustments)
+        for holder in (*o.lenses, *i.adjustments)
         for cid in holder.sub_claim_ids
     }
     unknown = sorted(referenced - known)
@@ -477,8 +598,17 @@ def check_linkage(
 # ---------- Sources ----------
 
 
+def lens_sources(lens: ResearchedLens) -> list[GradedSource]:
+    """The sources behind a lens, which now live on its evidence blocks.
+
+    A `published` block must carry one — that is how a statistic nobody could enumerate
+    stays auditable. A `counted` block usually does not: its audit is the analogs.
+    """
+    return [e.source for e in lens.evidence if e.source is not None]
+
+
 def _cited_sources(o: OutsideView, i: InsideView) -> list[GradedSource]:
-    return [s for rc in o.reference_classes for s in rc.sources] + [
+    return [s for l in o.lenses for s in lens_sources(l)] + [
         s for a in i.adjustments for s in a.sources
     ]
 
@@ -616,6 +746,7 @@ def check_derivation(
     f: Forecast,
     o: OutsideView,
     i: InsideView,
+    d: Decomposition | None = None,
     t: CheckThresholds | None = None,
 ) -> CheckViolation | None:
     """P6. The final probability follows from the base rate and the stated adjustments.
@@ -635,7 +766,7 @@ def check_derivation(
     by `evals.scoring.round_number_rate` instead.
     """
     th = _thresholds(t)
-    implied = implied_probability(o, i)
+    implied = implied_probability(o, i, d)
 
     drift = abs(f.probability - implied)
     if drift > th.derivation_slack:
@@ -643,8 +774,8 @@ def check_derivation(
             principle=6,
             name="derivation",
             detail=f"final probability {f.probability:.3f} is {drift:.3f} away from the "
-            f"{implied:.3f} implied by base rate {o.aggregate_base_rate:.3f} plus its own "
-            f"stated adjustments (slack {th.derivation_slack:.3f})",
+            f"{implied:.3f} its own lenses imply once each is moved by its own modifiers "
+            f"and the sub-questions are combined (slack {th.derivation_slack:.3f})",
         )
     return None
 
@@ -840,238 +971,46 @@ def is_large_move(d: UpdateDecision, t: CheckThresholds | None = None) -> bool:
 # ---------- Suites ----------
 
 
-@dataclass(frozen=True)
-class CheckResult:
-    """One check, whether it passed, and the data it looked at.
-
-    Exists because a UI showing the critique needs to distinguish "this check ran and
-    passed" from "this check never ran" — and a list of violations cannot. The label is
-    carried here rather than derived by the caller so the principle numbering has one
-    home.
-
-    `evidence` is the input the verdict was reached on: the actual base rates and
-    spread for P7, the actual anchor-plus-adjustments walk for P6, the five bias slots
-    and which were filled for P15. A violation's `detail` says what went wrong in a
-    sentence; this is the material to check that sentence against.
-    """
-
-    principle: int
-    name: str
-    label: str
-    passed: bool
-    violation: CheckViolation | None = None
-    evidence: dict[str, Any] = field(default_factory=dict)
-
-
-FORECAST_CHECK_LABELS: tuple[tuple[str, int, str], ...] = (
-    ("decomposition", 1, "P1 · P2 decomposition"),
-    ("linkage", 1, "P1 sub-claim linkage"),
-    ("dragonfly", 7, "P7 dragonfly"),
-    ("aggregation", 7, "P7 base-rate aggregation"),
-    ("citations", 4, "P4 citations"),
-    ("signal_vs_noise", 9, "P9 signal vs noise"),
-    ("disconfirming", 14, "P14 disconfirming"),
-    ("bias_coverage", 15, "P15 bias coverage"),
-    ("derivation", 6, "P6 derivation"),
-    ("calibration_hygiene", 16, "P16 calibration hygiene"),
+FORECAST_CHECKS: tuple[tuple[str, int, str, Any], ...] = (
+    ("decomposition", 1, "P1 · P2 decomposition", lambda c: check_decomposition(c.d, c.t)),
+    ("linkage", 1, "P1 sub-claim linkage", lambda c: check_linkage(c.f, c.d, c.o, c.i, c.t)),
+    ("base_rates", 4, "P4 base rates derived", lambda c: check_base_rate_derivation(c.o)),
+    ("dragonfly", 7, "P7 dragonfly", lambda c: check_dragonfly(c.o, c.t)),
+    ("aggregation", 7, "P7 base-rate aggregation", lambda c: check_aggregation(c.o, c.d, c.t)),
+    ("citations", 4, "P4 citations", lambda c: check_citations(c.o, c.i, c.seen)),
+    ("signal_vs_noise", 9, "P9 signal vs noise", lambda c: check_signal_vs_noise(c.i, c.t)),
+    ("disconfirming", 14, "P14 disconfirming", lambda c: check_disconfirming(c.i, c.t)),
+    ("bias_coverage", 15, "P15 bias coverage", lambda c: check_bias_coverage(c.i, c.t)),
+    ("derivation", 6, "P6 derivation", lambda c: check_derivation(c.f, c.o, c.i, c.d, c.t)),
+    ("calibration_hygiene", 16, "P16 calibration hygiene", lambda c: check_calibration_hygiene(c.f, c.o, c.t)),
 )
-"""(name, principle, display label) in the order the checks run and are shown.
+"""(slot name, principle, label, how to run it) in the order the checks run.
 
-The order matches `run_forecast_checks_detailed`. A check that fails may report a
-different `name` than the slot it occupies — `check_decomposition` returns
-"knowability" for its P2 arm — so the slot name is what identifies the row, and the
-violation carries its own more specific name.
+One table, not three. This used to be a labels tuple, a positionally-zipped list of
+calls, and a dict of evidence projections keyed by the same names — three places that had
+to stay in lockstep by hand, where reordering one silently mislabelled every row and a
+typo'd key silently yielded `{}`.
+
+The lambdas exist so the checks keep their narrow signatures. `evals/components.py` calls
+`check_dragonfly(out)` with an outside view and nothing else; forcing every check to take
+a context object would break that for no gain.
+
+A check that fails may report a different `name` than the slot it occupies —
+`check_decomposition` returns "knowability" for its P2 arm — so the slot name identifies
+the row and the violation carries its own, more specific one.
 """
 
 
-def check_evidence(
-    forecast: Forecast,
-    decomposition: Decomposition,
-    outside: OutsideView,
-    inside: InsideView,
-    t: CheckThresholds | None = None,
-) -> dict[str, dict[str, Any]]:
-    """The material each check reasoned over, keyed by check name.
+@dataclass(frozen=True)
+class _Ctx:
+    """Everything any check might want. Assembled once per run."""
 
-    Built here rather than inside the seven validators, so those stay exactly as they
-    were: they answer pass or fail, and this answers "on what basis". A violation's
-    `detail` states the conclusion in a sentence; this is what you check that sentence
-    against. Pure, like everything else in this module.
-    """
-    th = _thresholds(t)
-
-    walk: list[dict[str, Any]] = []
-    running = outside.aggregate_base_rate
-    for a in inside.adjustments:
-        delta = signed_adjustment(a)
-        running = min(1.0, max(0.0, running + delta))
-        walk.append(
-            {
-                "evidence": a.evidence,
-                "direction": a.direction,
-                "delta": delta,
-                "running": running,
-                "is_noise": a.is_noise,
-            }
-        )
-    implied = implied_probability(outside, inside)
-    covered = {b.bias for b in inside.bias_checks}
-    real = [a for a in inside.adjustments if not a.is_noise and a.direction != "neutral"]
-
-    return {
-        "decomposition": {
-            "chain_note": decomposition.chain_note,
-            "sub_claims": [
-                {
-                    "question": s.question,
-                    "probability": s.probability,
-                    "knowability": s.knowability,
-                    "has_rationale": bool(s.rationale.strip()),
-                }
-                for s in decomposition.sub_claims
-            ],
-            "researchable": sum(
-                1 for s in decomposition.sub_claims if s.knowability == "researchable"
-            ),
-        },
-        "dragonfly": {
-            "classes": [
-                {
-                    "name": rc.name,
-                    "base_rate": rc.base_rate,
-                    "sample_size": rc.sample_size,
-                    "weight": rc.weight,
-                    "support": claim_support(rc.sources),
-                    "sub_claim_ids": rc.sub_claim_ids,
-                }
-                for rc in outside.reference_classes
-            ],
-            # Both: `spreads` is what the check actually reads, `spread` the worst of
-            # them. The whole-view number is kept because a reader comparing two columns
-            # wants to know it is not the thing being judged.
-            "spreads": {k or "": v for k, v in sub_claim_spreads(outside).items()},
-            "spread": worst_sub_claim_spread(outside),
-            "whole_view_spread": base_rate_spread(outside),
-            "threshold": th.reference_class_disagreement,
-            "disagreement": outside.disagreement,
-        },
-        "linkage": {
-            "sub_claims": [
-                {"id": s.id, "question": s.question} for s in decomposition.sub_claims
-            ],
-            "classes": [
-                {"name": rc.name, "sub_claim_ids": rc.sub_claim_ids}
-                for rc in outside.reference_classes
-            ],
-            "adjustments": [
-                {"evidence": a.evidence, "sub_claim_ids": a.sub_claim_ids}
-                for a in inside.adjustments
-            ],
-        },
-        "aggregation": {
-            "classes": [
-                {"name": rc.name, "base_rate": rc.base_rate, "weight": rc.weight}
-                for rc in outside.reference_classes
-            ],
-            "stated": outside.aggregate_base_rate,
-            "implied": anchor_from(outside, decomposition)[0],
-            "rule": anchor_from(outside, decomposition)[1],
-            "chain": chain_inputs(decomposition, outside),
-            "weighted_mean": weighted_base_rate(outside),
-            "slack": th.aggregate_slack,
-        },
-        "citations": {
-            "cited": [
-                {"source": s.source, "url": s.url, "confidence": s.confidence}
-                for s in _cited_sources(outside, inside)
-            ],
-            "support": aggregate_source_confidence(outside, inside, th),
-        },
-        "signal_vs_noise": {
-            "adjustments": [
-                {
-                    "evidence": a.evidence,
-                    "magnitude": a.magnitude,
-                    "is_noise": a.is_noise,
-                    "flip_test": a.flip_test,
-                }
-                for a in inside.adjustments
-            ],
-        },
-        "disconfirming": {
-            "steel_man": inside.steel_man,
-            "what_would_change_my_mind": inside.what_would_change_my_mind,
-            "directions": [a.direction for a in real],
-            "real_adjustments": len(real),
-        },
-        "bias_coverage": {
-            "required": list(ALL_BIASES),
-            "assessed": [
-                {"bias": b.bias, "assessment": b.assessment} for b in inside.bias_checks
-            ],
-            "missing": [b for b in ALL_BIASES if b not in covered],
-        },
-        "derivation": {
-            "anchor": outside.aggregate_base_rate,
-            "walk": walk,
-            "implied": implied,
-            "stated": forecast.probability,
-            "drift": abs(forecast.probability - implied),
-            "slack": th.derivation_slack,
-        },
-        "calibration_hygiene": {
-            "probability": forecast.probability,
-            "floor": th.calibration_floor,
-            "ceiling": th.calibration_ceiling,
-            "spread": worst_sub_claim_spread(outside),
-            "agreement_threshold": th.reference_class_agreement,
-            "justification": forecast.extreme_justification,
-        },
-    }
-
-
-def run_forecast_checks_detailed(
-    forecast: Forecast,
-    decomposition: Decomposition,
-    outside: OutsideView,
-    inside: InsideView,
-    t: CheckThresholds | None = None,
-    sources_seen: Iterable[SourceRef] = (),
-) -> list[CheckResult]:
-    """Every forecast-side check, passes included, in `FORECAST_CHECK_LABELS` order.
-
-    `run_forecast_checks` is a filter over this, so the two can never disagree about
-    which checks exist.
-
-    `sources_seen` defaults to empty so callers that only have the four graph artifacts
-    still work — with nothing retrieved, `check_citations` has nothing to contradict and
-    only fires on a URL the agent could not have seen.
-    """
-    th = _thresholds(t)
-    violations = [
-        check_decomposition(decomposition, th),
-        check_linkage(forecast, decomposition, outside, inside, th),
-        check_dragonfly(outside, th),
-        check_aggregation(outside, decomposition, th),
-        check_citations(outside, inside, sources_seen),
-        check_signal_vs_noise(inside, th),
-        check_disconfirming(inside, th),
-        check_bias_coverage(inside, th),
-        check_derivation(forecast, outside, inside, th),
-        check_calibration_hygiene(forecast, outside, th),
-    ]
-    evidence = check_evidence(forecast, decomposition, outside, inside, th)
-    return [
-        CheckResult(
-            principle=v.principle if v is not None else principle,
-            name=name,
-            label=label,
-            passed=v is None,
-            violation=v,
-            evidence=evidence.get(name, {}),
-        )
-        for (name, principle, label), v in zip(FORECAST_CHECK_LABELS, violations)
-    ]
+    f: Forecast
+    d: Decomposition
+    o: OutsideView
+    i: InsideView
+    seen: Iterable[SourceRef]
+    t: CheckThresholds | None
 
 
 def run_forecast_checks(
@@ -1082,19 +1021,14 @@ def run_forecast_checks(
     t: CheckThresholds | None = None,
     sources_seen: Iterable[SourceRef] = (),
 ) -> list[CheckViolation]:
-    """Every forecast-side check. Called by the `Critique` node. Empty list is clean.
+    """Every forecast-side check. Called by the `critique` step. Empty list is clean.
 
     Takes the pieces rather than a `ForecastState` so this module stays free of any
     dependency on `graphs`, which imports it. `sources_seen` arrives the same way — it
     lives on `ForecastDeps`, which this module also must not import.
     """
-    return [
-        r.violation
-        for r in run_forecast_checks_detailed(
-            forecast, decomposition, outside, inside, t, sources_seen
-        )
-        if r.violation is not None
-    ]
+    ctx = _Ctx(forecast, decomposition, outside, inside, list(sources_seen), t)
+    return [v for _n, _p, _l, run in FORECAST_CHECKS if (v := run(ctx)) is not None]
 
 
 def run_update_checks(

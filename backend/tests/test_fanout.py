@@ -27,10 +27,11 @@ from superforecaster.models import (
     SourceRef,
     SubClaimAdjustments,
     SubClaimBaseRates,
+    SubClaimLenses,
     SubPrediction,
 )
 from tests.test_checks import graded, ref
-from tests.test_graph_forecast import a_forecast
+from tests.test_graph_forecast import a_forecast, a_lens
 
 pytestmark = pytest.mark.anyio
 
@@ -70,20 +71,16 @@ def decomposition(knowabilities: list[str], rule: str = "conjunction") -> Decomp
     )
 
 
-def cell_result(rate: float, disagreement: str = "") -> SubClaimBaseRates:
-    return SubClaimBaseRates(
-        reference_classes=[
-            ref("broad", rate, weight=1.0),
-            ref("narrow", rate, weight=1.0),
-        ],
-        disagreement=disagreement,
-    )
+def cell_result(rate: float, name: str = "lens", disagreement: str = "") -> SubClaimBaseRates:
+    """One measured population, at the given rate."""
+    return SubClaimBaseRates(lens=ref(name, rate, weight=1.0), disagreement=disagreement)
 
 
-def adjustments(n: int = 1) -> SubClaimAdjustments:
+def adjustments(n: int = 1, lens_name: str = "lens") -> SubClaimAdjustments:
     from tests.test_checks import adjustment
 
     return SubClaimAdjustments(
+        lens_name=lens_name,
         adjustments=[adjustment("up", 0.02) for _ in range(n)],
         steel_man="the case against",
         what_would_change_my_mind="a filing",
@@ -102,6 +99,7 @@ async def run_graph(
     monkeypatch,
     d: Decomposition,
     *,
+    choose_lenses=None,
     base_rate_cell=None,
     inside_cell=None,
     reflect=None,
@@ -115,11 +113,14 @@ async def run_graph(
     merged, and what the row told the UI.
     """
 
-    async def default_base_rate(input, decomposition, sub_claim, deps):
-        return cell_result(0.2)
+    async def default_choose(input, decomposition, sub_claim, deps):
+        return SubClaimLenses(lenses=[a_lens(f"{sub_claim.id}-lens")])
 
-    async def default_inside(input, sub_claim, outside, deps):
-        return adjustments()
+    async def default_base_rate(input, sub_claim, lens, deps):
+        return cell_result(0.2, lens.name)
+
+    async def default_inside(input, sub_claim, lens, already_controlled_for, deps):
+        return adjustments(lens_name=lens.name)
 
     async def default_reflect(input, d_, o, adjs, steel_mans, deps):
         return a_reflection()
@@ -131,8 +132,9 @@ async def run_graph(
         return a_forecast()
 
     monkeypatch.setattr(fg, "run_decompose", stub_decompose)
-    monkeypatch.setattr(fg, "run_base_rate_cell", base_rate_cell or default_base_rate)
-    monkeypatch.setattr(fg, "run_inside_view_cell", inside_cell or default_inside)
+    monkeypatch.setattr(fg, "run_choose_lenses", choose_lenses or default_choose)
+    monkeypatch.setattr(fg, "run_research_lens", base_rate_cell or default_base_rate)
+    monkeypatch.setattr(fg, "run_adjust_lens", inside_cell or default_inside)
     monkeypatch.setattr(fg, "run_reflect", reflect or default_reflect)
     monkeypatch.setattr(fg, "run_synthesize", stub_synthesize)
 
@@ -151,9 +153,9 @@ async def test_one_cell_runs_per_researchable_column(monkeypatch):
     """A `judgment` column has no base rate to look up, so no cell runs for it."""
     seen: list[str] = []
 
-    async def cell(input, decomposition, sub_claim, deps):
+    async def cell(input, sub_claim, lens, deps):
         seen.append(sub_claim.id)
-        return cell_result(0.2)
+        return cell_result(0.2, lens.name)
 
     d = decomposition(["researchable", "judgment", "researchable"])
     await run_graph(monkeypatch, d, base_rate_cell=cell)
@@ -164,9 +166,9 @@ async def test_one_cell_runs_per_researchable_column(monkeypatch):
 async def test_each_cell_sees_only_its_own_column(monkeypatch):
     asked: dict[str, str] = {}
 
-    async def cell(input, decomposition, sub_claim, deps):
+    async def cell(input, sub_claim, lens, deps):
         asked[sub_claim.id] = sub_claim.question
-        return cell_result(0.2)
+        return cell_result(0.2, lens.name)
 
     d = decomposition(["researchable", "researchable", "judgment"])
     await run_graph(monkeypatch, d, base_rate_cell=cell)
@@ -179,12 +181,12 @@ async def test_the_cells_actually_run_concurrently(monkeypatch):
     which a serial implementation cannot produce."""
     order: list[str] = []
 
-    async def cell(input, decomposition, sub_claim, deps):
+    async def cell(input, sub_claim, lens, deps):
         order.append(f"start:{sub_claim.id}")
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         order.append(f"end:{sub_claim.id}")
-        return cell_result(0.2)
+        return cell_result(0.2, lens.name)
 
     d = decomposition(["researchable"] * 3)
     await run_graph(monkeypatch, d, base_rate_cell=cell)
@@ -204,9 +206,9 @@ async def test_every_merged_class_names_exactly_one_column(monkeypatch):
     state, _ = await run_graph(monkeypatch, d)
 
     assert state.outside is not None
-    for rc in state.outside.reference_classes:
+    for rc in state.outside.lenses:
         assert len(rc.sub_claim_ids) == 1
-    assert {rc.sub_claim_ids[0] for rc in state.outside.reference_classes} == {
+    assert {rc.sub_claim_ids[0] for rc in state.outside.lenses} == {
         "sc1",
         "sc2",
     }
@@ -219,8 +221,8 @@ async def test_the_anchor_is_the_chain_not_the_mean(monkeypatch):
     cell researched it — which is exactly why it still gets a card.
     """
 
-    async def cell(input, decomposition, sub_claim, deps):
-        return cell_result(0.5)
+    async def cell(input, sub_claim, lens, deps):
+        return cell_result(0.5, lens.name)
 
     d = decomposition(["researchable", "researchable", "judgment"], rule="conjunction")
     state, _ = await run_graph(monkeypatch, d, base_rate_cell=cell)
@@ -230,8 +232,8 @@ async def test_the_anchor_is_the_chain_not_the_mean(monkeypatch):
 
 
 async def test_per_column_disagreement_is_carried_with_its_id(monkeypatch):
-    async def cell(input, decomposition, sub_claim, deps):
-        return cell_result(0.2, disagreement=f"{sub_claim.id} is contested")
+    async def cell(input, sub_claim, lens, deps):
+        return cell_result(0.2, lens.name, disagreement=f"{sub_claim.id} is contested")
 
     d = decomposition(["researchable", "researchable", "judgment"])
     state, _ = await run_graph(monkeypatch, d, base_rate_cell=cell)
@@ -248,27 +250,27 @@ async def test_one_failed_cell_does_not_take_the_row_down(monkeypatch):
     """A sibling raising must not cancel the rest of the row — the columns that did
     finish still contribute, and the failed one falls back to its own estimate."""
 
-    async def cell(input, decomposition, sub_claim, deps):
+    async def cell(input, sub_claim, lens, deps):
         if sub_claim.id == "sc1":
             raise RuntimeError("provider exploded")
-        return cell_result(0.2)
+        return cell_result(0.2, lens.name)
 
     d = decomposition(["researchable", "researchable", "judgment"])
     state, _ = await run_graph(monkeypatch, d, base_rate_cell=cell)
 
     assert state.outside is not None
-    assert {rc.sub_claim_ids[0] for rc in state.outside.reference_classes} == {"sc2"}
+    assert {rc.sub_claim_ids[0] for rc in state.outside.lenses} == {"sc2"}
 
 
 async def test_every_cell_failing_raises(monkeypatch):
     """Nothing was researched at all. There is no anchor to invent, and inventing one
     would be worse than an error."""
 
-    async def cell(input, decomposition, sub_claim, deps):
+    async def cell(input, sub_claim, lens, deps):
         raise RuntimeError("network down")
 
     d = decomposition(["researchable", "researchable", "judgment"])
-    with pytest.raises(Exception, match="every base-rate column failed"):
+    with pytest.raises(Exception, match="every lens failed to measure"):
         await run_graph(monkeypatch, d, base_rate_cell=cell)
 
 
@@ -279,12 +281,12 @@ async def test_each_cell_gets_a_private_source_list_merged_after_the_barrier(mon
     """`observability` detects new sources by slicing the tail off `sources_seen`, so
     two cells appending to one list would hand each cell the other's sources."""
 
-    async def cell(input, decomposition, sub_claim, deps):
+    async def cell(input, sub_claim, lens, deps):
         assert deps.sources_seen == [], "a cell started with a dirty source list"
         deps.sources_seen.append(
             SourceRef(url=f"https://x/{sub_claim.id}", title="t", query="q", tool="search_web")
         )
-        return cell_result(0.2)
+        return cell_result(0.2, lens.name)
 
     parent = ForecastDeps()
     d = decomposition(["researchable", "researchable", "judgment"])
@@ -313,7 +315,7 @@ async def test_nothing_researchable_falls_back_to_the_whole_question(monkeypatch
         from superforecaster.models import OutsideView
 
         return OutsideView(
-            reference_classes=[ref("whole", 0.3), ref("question", 0.3)],
+            lenses=[ref("whole", 0.3), ref("question", 0.3)],
             aggregate_base_rate=0.3,
             disagreement="",
         )
@@ -344,14 +346,14 @@ async def test_inside_cells_run_only_for_columns_with_a_base_rate(monkeypatch):
     delta's clothes."""
     seen: list[str] = []
 
-    async def base_rate(input, decomposition, sub_claim, deps):
+    async def base_rate(input, sub_claim, lens, deps):
         if sub_claim.id == "sc2":
             raise RuntimeError("no classes for this one")
-        return cell_result(0.2)
+        return cell_result(0.2, lens.name)
 
-    async def inside(input, sub_claim, outside, deps):
+    async def inside(input, sub_claim, lens, acf, deps):
         seen.append(sub_claim.id)
-        return adjustments()
+        return adjustments(lens_name=lens.name)
 
     d = decomposition(["researchable", "researchable", "judgment"])
     await run_graph(monkeypatch, d, base_rate_cell=base_rate, inside_cell=inside)
@@ -364,12 +366,12 @@ async def test_each_inside_cell_is_seeded_with_its_own_columns_rate(monkeypatch)
     question."""
     rates: dict[str, float] = {}
 
-    async def base_rate(input, decomposition, sub_claim, deps):
-        return cell_result(0.2 if sub_claim.id == "sc1" else 0.6)
+    async def base_rate(input, sub_claim, lens, deps):
+        return cell_result(0.2 if sub_claim.id == 'sc1' else 0.6, lens.name)
 
-    async def inside(input, sub_claim, outside, deps):
-        rates[sub_claim.id] = checks.sub_claim_rate(sub_claim.id, outside)
-        return adjustments()
+    async def inside(input, sub_claim, lens, acf, deps):
+        rates[sub_claim.id] = checks.lens_rate(lens)
+        return adjustments(lens_name=lens.name)
 
     d = decomposition(["researchable", "researchable", "judgment"])
     await run_graph(monkeypatch, d, base_rate_cell=base_rate, inside_cell=inside)
@@ -399,8 +401,9 @@ async def test_the_reflect_pass_supplies_the_whole_question_fields(monkeypatch):
 
 
 async def test_reflect_sees_every_columns_adjustments(monkeypatch):
-    """Which is exactly why it cannot be asked of one column, and why it is a step of
-    its own rather than a tail call inside a cell."""
+    """Which is exactly why it cannot be asked of one lens, and why it is a step of its
+    own rather than a tail call inside a cell. Keyed by lens, since a sub-question can
+    have several and each argues its own case."""
     seen = {}
 
     async def reflect(input, d_, o, adjs, steel_mans, deps):
@@ -412,7 +415,7 @@ async def test_reflect_sees_every_columns_adjustments(monkeypatch):
     await run_graph(monkeypatch, d, inside_cell=lambda *a: _two(), reflect=reflect)
 
     assert seen["adjustments"] == 4
-    assert seen["steel_mans"] == ["sc1", "sc2"]
+    assert seen["steel_mans"] == ["sc1-lens", "sc2-lens"]
 
 
 async def _two():
@@ -431,10 +434,10 @@ async def test_reflect_is_its_own_stage(monkeypatch):
 
 
 async def test_one_failed_inside_cell_does_not_take_the_row_down(monkeypatch):
-    async def inside(input, sub_claim, outside, deps):
+    async def inside(input, sub_claim, lens, acf, deps):
         if sub_claim.id == "sc1":
             raise RuntimeError("provider exploded")
-        return adjustments()
+        return adjustments(lens_name=lens.name)
 
     d = decomposition(["researchable", "researchable", "judgment"])
     state, _ = await run_graph(monkeypatch, d, inside_cell=inside)
@@ -467,21 +470,21 @@ async def test_a_cell_that_blows_its_wall_does_not_kill_the_row(monkeypatch):
     """One greedy column must not cost the others their work — the whole point of
     moving the budget from the row to the cell."""
 
-    async def cell(input, decomposition, sub_claim, deps):
+    async def cell(input, sub_claim, lens, deps):
         if sub_claim.id == "sc1":
             raise UsageLimitExceeded("out of searches")
-        return cell_result(0.2)
+        return cell_result(0.2, lens.name)
 
     d = decomposition(["researchable", "researchable", "judgment"])
     state, events = await run_graph(monkeypatch, d, base_rate_cell=cell)
 
     assert state.outside is not None
-    assert {rc.sub_claim_ids[0] for rc in state.outside.reference_classes} == {"sc2"}
+    assert {rc.sub_claim_ids[0] for rc in state.outside.lenses} == {"sc2"}
     assert any(t == "exhausted" for t, _, _ in events)
 
 
 async def test_every_cell_blowing_its_wall_says_to_raise_the_depth(monkeypatch):
-    async def cell(input, decomposition, sub_claim, deps):
+    async def cell(input, sub_claim, lens, deps):
         raise UsageLimitExceeded("out of searches")
 
     d = decomposition(["researchable", "researchable", "judgment"])
@@ -490,10 +493,10 @@ async def test_every_cell_blowing_its_wall_says_to_raise_the_depth(monkeypatch):
 
 
 async def test_an_inside_cell_that_blows_its_wall_does_not_kill_the_row(monkeypatch):
-    async def inside(input, sub_claim, outside, deps):
+    async def inside(input, sub_claim, lens, acf, deps):
         if sub_claim.id == "sc1":
             raise UsageLimitExceeded("out of searches")
-        return adjustments()
+        return adjustments(lens_name=lens.name)
 
     d = decomposition(["researchable", "researchable", "judgment"])
     state, _ = await run_graph(monkeypatch, d, inside_cell=inside)

@@ -220,7 +220,9 @@ async def test_a_full_run_emits_every_stage_and_ends_done(stub_agents):  # noqa:
     assert run.forecast_id is not None
 
     stages = [e.payload["stage"] for e in run.events if e.type == "stage"]
-    assert stages == ["decompose", "outside", "inside", "reflect", "synth", "critique"]
+    assert stages == [
+        "decompose", "lenses", "outside", "inside", "reflect", "synth", "critique"
+    ]
     assert types_of(run.events)[-2:] == ["result", "end"]
 
 
@@ -233,7 +235,7 @@ async def test_stage_results_are_the_models_the_agents_returned(stub_agents):  #
     by_type = {e.type: e.payload for e in run.events}
 
     assert [s["id"] for s in by_type["decompose"]["sub_claims"]] == ["sc1", "sc2", "sc3"]
-    assert "reference_classes" in by_type["outside"]
+    assert "lenses" in by_type["outside"]
     assert "aggregate_base_rate" in by_type["outside"]
     assert "adjustments" in by_type["inside"]
     assert len(by_type["inside"]["bias_checks"]) == 5

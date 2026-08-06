@@ -1212,3 +1212,91 @@ indistinguishable from the outside. It holds one event loop for the module and c
 `durability.shutdown()` on teardown: DBOS is process-global and binds its thread pool to
 the loop that launched it, so leaving it running makes every later test take the durable
 branch against a closed loop.
+
+---
+
+## ADR 39 — A base rate is counted, not stated
+
+**Supersedes the base-rate half of ADR 30.**
+
+`ReferenceClass.base_rate` was a float the model asserted. `sample_size` was a float the
+model asserted. `analogs` was a list the model volunteered. **None of the three was read
+by any code** — grep found `sample_size` and `analogs` only in the model definition, one
+prompt string, and the UI. A class could claim `base_rate: 0.85, sample_size: 50` while
+listing two analogs, one of which said no, and nothing anywhere would notice.
+
+A `ResearchedLens` now carries `evidence`, and the rate is `Σ hits / Σ n` — a property,
+not a field. Two kinds of block, audited differently:
+
+- **counted** — cases the agent enumerated. `check_base_rate_derivation` matches `n`
+  against the analogs listed and `hits` against how many resolved yes. This is what makes
+  "7 of the 10 cases I found did, so 70%" a fact rather than a claim.
+- **published** — a statistic somebody else measured, which is the only way an `n` of 230
+  enters a forecast nobody could enumerate by hand. Audited by provenance: a source is
+  required, and `check_citations` verifies the URL was retrieved.
+
+They pool into one denominator: `7/10` counted plus `140/230` published is `147/240`. A
+handful of verified cases and a large published study sit in the same rate, each carrying
+exactly the weight of its own denominator.
+
+**Rules out.** Counted-only, which would ban real datasets and push the agent to
+enumerate instead of finding the best measurement. And model-stated with analogs as
+decoration, which is what this replaces.
+
+---
+
+## ADR 40 — Modifiers move a lens, and lenses are chosen before they are measured
+
+**Supersedes the inside-view half of ADR 30 and the arithmetic in ADR 36.**
+
+Two defects, found by reading a real run's output rather than its code.
+
+**The prompt said two incompatible things.** `inside_view` told each cell "every
+adjustment is a signed delta from {sub-claim rate}" and, nine lines earlier, "magnitudes
+are points on the FINAL probability". Meanwhile `implied_probability` summed every
+adjustment flat onto the whole-question anchor, ignoring `chain_rule` entirely. The model
+was being asked to mentally rescale a sub-claim delta into final-probability points, and
+nothing verified it had.
+
+**A modifier is only meaningful relative to a population.** "The market cap exploded" is
+already inside *large-cap tech IPOs* and warrants no move; against *all AI labs* it is the
+entire differentiator. Same fact, opposite treatment, decided by which population you are
+looking through. Adjusting a *blended* rate double-counts against the populations that
+already control for the feature and under-counts against those that do not — so the
+adjustment has to happen per lens, before the blend.
+
+The pipeline is now:
+
+```
+lens rate = Σ hits / Σ n                        derived
+adjusted  = lens rate + its own modifiers       per population
+sub-question = Σ(weight × adjusted) / Σ weight  relevance-weighted
+final = chain_rule over sub-questions           the same combine_sub_claim_rates
+                                                the anchor uses
+```
+
+`check_derivation` is load-bearing again. It previously compared a flat sum against a
+number that same flat sum had been used to suggest.
+
+**Choosing lenses is its own step, with no tools and no rates.** An agent that chose
+populations and measured them in one pass could settle on whichever gave the answer it
+already liked, and the output would be indistinguishable from an honest one. Naming them
+blind is pre-registration. It also makes the lens the unit of parallelism: three lenses
+across five sub-questions is fifteen concurrent searches rather than five.
+
+**The blend ignores `n`, deliberately.** A lens measured over 12 cases can and should
+outweigh one measured over 230 when it fits better — sample size measures how well a
+population was *measured*, not how much it *resembles this case*, and only the second is
+what a reference class is for. Precision-weighting was considered and rejected for exactly
+this reason: it would let a large, well-measured, ill-fitting population dominate.
+
+`weight` is therefore **the only number left in the pipeline that no check can verify**.
+Everything else is derived from evidence and re-derivable. So `weight_rationale` is
+mandatory, and the UI shows every lens's own adjusted rate — a reader can see what each
+population alone implied and judge the blend rather than take it.
+
+**Related.** `check_evidence` (144 lines) and `run_forecast_checks_detailed` are deleted;
+the three hand-synchronised tables they belonged to collapse into one `FORECAST_CHECKS`
+registry of `(name, principle, label, run)`. `synthesize._implied` — a hand-copied second
+implementation of the derivation formula, and precisely how the prompt and the check
+drifted apart — is deleted in favour of calling `checks.implied_probability`.

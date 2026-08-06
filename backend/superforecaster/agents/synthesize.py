@@ -18,6 +18,7 @@ from config import (
 )
 from pydantic_ai import Agent
 
+from .. import checks
 from ..deps import ForecastDeps
 from ..models import (
     CheckViolation,
@@ -34,11 +35,13 @@ INSTRUCTIONS = """You produce the final Forecast from work already done. You hav
 search tools — the evidence gathering is finished. Commit to a number.
 
 THE ARITHMETIC (principle 6 — regression to the mean)
-Your probability should equal:
-    aggregate_base_rate + sum of the signed, non-noise adjustments
-Adjustments marked as noise contribute zero. If that sum feels wrong, the fix is to
-say so in `reasoning` — not to quietly land somewhere else. A check verifies your
-number against this sum and will send it back if they diverge.
+Your probability should equal what the pipeline already computed:
+    each population's measured rate, moved by its own modifiers
+    blended by relevance within each sub-question
+    combined by the decomposition's chain rule
+Adjustments marked as noise contribute zero. The number is given to you below. If it
+feels wrong, the fix is to say so in `reasoning` — not to quietly land somewhere else. A
+check verifies your number against it and will send it back if they diverge.
 
 This is what stops a compelling narrative pulling the estimate away from the evidence.
 Extreme recent signals revert; the reference class is the gravity.
@@ -93,17 +96,16 @@ def get_synthesize_agent() -> Agent[ForecastDeps, Forecast]:
     return _agent
 
 
-def _implied(outside: OutsideView, inside: InsideView) -> float:
-    """The probability the agent's own numbers point at. Mirrors checks.check_derivation."""
-    total = outside.aggregate_base_rate + sum(
-        (
-            0.0
-            if a.is_noise or a.direction == "neutral"
-            else (a.magnitude if a.direction == "up" else -a.magnitude)
-        )
-        for a in inside.adjustments
-    )
-    return min(1.0, max(0.0, total))
+def _implied(
+    outside: OutsideView, inside: InsideView, decomposition: Decomposition | None = None
+) -> float:
+    """The probability the agent's own numbers point at.
+
+    Delegates rather than mirrors. This used to be a hand-copied second implementation of
+    the same arithmetic, which is exactly how the prompt and the check drifted into
+    telling the agent one thing and failing it for another.
+    """
+    return checks.implied_probability(outside, inside, decomposition)
 
 
 def _violation_block(violations: list[CheckViolation]) -> str:
@@ -123,9 +125,10 @@ adjustments below are unchanged and still stand."""
 
 def _arithmetic_block(outside: OutsideView, implied: float) -> str:
     return (
-        f"ARITHMETIC CHECK — base rate {outside.aggregate_base_rate:.3f} plus the signed\n"
-        f"non-noise adjustments implies {implied:.3f}. Your probability should match this\n"
-        f"unless you explain the divergence in reasoning."
+        f"ARITHMETIC CHECK — each population moved by its own modifiers, blended by\n"
+        f"relevance within each sub-question, then combined by the chain rule, implies\n"
+        f"{implied:.3f}. Your probability should match this unless you explain the\n"
+        f"divergence in reasoning."
     )
 
 
@@ -155,7 +158,7 @@ def retry_brief(
     outside is one nobody can audit; showing the correction verbatim is what makes the
     difference between the two attempts inspectable.
     """
-    implied = _implied(outside, inside)
+    implied = _implied(outside, inside, decomposition)
     return {
         "anchor": outside.aggregate_base_rate,
         "implied": implied,
@@ -176,7 +179,7 @@ async def run_synthesize(
     deps: ForecastDeps,
 ) -> Forecast:
     """Produce the final Forecast. No tools; single-shot with a small retry budget."""
-    implied = _implied(outside, inside)
+    implied = _implied(outside, inside, decomposition)
 
     prompt = f"""Produce the final Forecast.
 

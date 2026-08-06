@@ -30,6 +30,7 @@ from superforecaster.models import (
     UpdateDecision,
 )
 from tests.test_checks import (
+    counted_ref,
     adjustment,
     all_bias_checks,
     forecast,
@@ -81,15 +82,34 @@ def test_outside_view_scorer_compares_against_the_documented_rate():
     ).assertions["rate_near_documented_truth"]
 
 
-def test_outside_view_scorer_requires_sourced_classes():
-    blank = ref("a", 0.2).sources[0].model_copy(update={"source": "  "})
-    o = outside(
-        reference_classes=[
-            ref("a", 0.2).model_copy(update={"sources": [blank]}),
-            ref("b", 0.24),
-        ]
+def test_outside_view_scorer_requires_every_lens_to_be_backed():
+    """A published statistic with a blank source is an assertion.
+
+    A *counted* lens is exempt: its audit is the analogs, which
+    `check_base_rate_derivation` verifies separately.
+    """
+    lens = ref("a", 0.2)
+    blanked = lens.model_copy(
+        update={
+            "evidence": [
+                lens.evidence[0].model_copy(
+                    update={
+                        "source": lens.evidence[0].source.model_copy(
+                            update={"source": "  "}
+                        )
+                    }
+                )
+            ]
+        }
     )
-    assert not ce.score_outside_view(o, {}).assertions["every_class_sourced"]
+    o = outside(lenses=[blanked, ref("b", 0.24)])
+    assert not ce.score_outside_view(o, {}).assertions["every_lens_sourced"]
+
+
+def test_outside_view_scorer_accepts_a_counted_lens_without_a_citation():
+    o = outside(lenses=[counted_ref("a"), ref("b", 0.24)])
+    assert ce.score_outside_view(o, {}).assertions["every_lens_sourced"]
+    assert ce.score_outside_view(o, {}).assertions["rates_are_derived"]
 
 
 # ---------- inside view ----------

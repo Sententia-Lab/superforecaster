@@ -42,6 +42,17 @@ another more likely or they overlap. Not for merely being unsure. If you pick it
 
 Explain the chain in `chain_note` in prose whichever rule you picked.
 
+DO NOT SPLIT OUT SOMETHING THAT HAS ALREADY HAPPENED
+A sub-claim whose outcome is already settled is not a forecast — it is a fact, and in a
+conjunction it contributes 1.0 while consuming a research slot that could have measured
+something live. If the company has already filed, "will they file?" is not a
+sub-question. Ask the thing that is still open, and fold what is settled into the
+population a later step measures:
+
+  bad   "Will they file an S-1?"                       (they filed in June)
+  good  "Of companies that filed, how many completed
+         the listing inside the same year?"
+
 SEPARATE KNOWABLE FROM UNKNOWABLE (principle 2)
 Label each sub-claim:
   researchable  a base rate or historical frequency could be looked up for this

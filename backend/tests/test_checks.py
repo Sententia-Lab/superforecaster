@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
+from pydantic import ValidationError
 
 from config import get_check_thresholds
 from superforecaster import checks
@@ -22,12 +23,14 @@ from superforecaster.models import (
     Adjustment,
     BiasCheck,
     Decomposition,
+    Evidence,
     EvidenceItem,
     Forecast,
+    HistoricalAnalog,
     GradedSource,
     InsideView,
     OutsideView,
-    ReferenceClass,
+    ResearchedLens,
     ResearchSummary,
     SourceRef,
     SubPrediction,
@@ -75,19 +78,68 @@ def ref(
     base_rate: float = 0.20,
     weight: float = 1.0,
     sources: list[GradedSource] | None = None,
-) -> ReferenceClass:
-    return ReferenceClass(
+    n: int = 1000,
+    sub_claim_ids: list[str] | None = None,
+) -> ResearchedLens:
+    """One measured population.
+
+    Takes a `base_rate` for readability even though the model no longer has that field —
+    it is converted into a published evidence block of the right shape, so a test that
+    says "a 20% lens" reads as one while still exercising the derivation.
+
+    `n` defaults large so any two-decimal rate is exact: at n=40, 0.24 rounds to 10/40 =
+    0.25 and every downstream assertion drifts.
+    """
+    hits = round(base_rate * n)
+    return ResearchedLens(
         name=name,
-        base_rate=base_rate,
-        sample_size=40,
+        population=f"cases comparable to {name}",
+        why_it_fits="it is the population this sub-question belongs to",
         weight=weight,
-        sources=sources if sources is not None else [graded()],
+        weight_rationale="the closest available population",
+        evidence=[
+            Evidence(
+                kind="published",
+                hits=hits,
+                n=n,
+                note=f"{hits} of {n}",
+                source=(sources or [graded()])[0],
+            )
+        ],
+        sub_claim_ids=sub_claim_ids or [],
+    )
+
+
+def counted_ref(
+    name: str = "counted cases",
+    hits: int = 7,
+    n: int = 10,
+    weight: float = 1.0,
+    sub_claim_ids: list[str] | None = None,
+) -> ResearchedLens:
+    """A population measured by enumerating cases, with the analogs to prove it."""
+    return ResearchedLens(
+        name=name,
+        population=f"cases comparable to {name}",
+        why_it_fits="enumerable",
+        weight=weight,
+        weight_rationale="hand-counted",
+        evidence=[Evidence(kind="counted", hits=hits, n=n, note="enumerated")],
+        analogs=[
+            HistoricalAnalog(
+                description=f"case {i}",
+                outcome=1.0 if i < hits else 0.0,
+                relevance="same population",
+            )
+            for i in range(n)
+        ],
+        sub_claim_ids=sub_claim_ids or [],
     )
 
 
 def outside(**kwargs) -> OutsideView:
     defaults = {
-        "reference_classes": [ref("a", 0.20), ref("b", 0.24)],
+        "lenses": [ref("a", 0.20), ref("b", 0.24)],
         "aggregate_base_rate": 0.22,
         "disagreement": "",
     }
@@ -201,14 +253,14 @@ def test_decomposition_all_judgment_catches_unlabeled_output():
 
 def test_dragonfly_clean_when_classes_agree():
     """A small spread needs no explanation."""
-    o = outside(reference_classes=[ref("a", 0.20), ref("b", 0.25)])
+    o = outside(lenses=[ref("a", 0.20), ref("b", 0.25)])
     assert checks.check_dragonfly(o) is None
 
 
 def test_dragonfly_fails_on_silent_disagreement():
     """0.12 vs 0.55 averaged to 0.33 with no comment throws away real uncertainty."""
     o = outside(
-        reference_classes=[ref("a", 0.12), ref("b", 0.55)],
+        lenses=[ref("a", 0.12), ref("b", 0.55)],
         aggregate_base_rate=0.33,
         disagreement="",
     )
@@ -219,7 +271,7 @@ def test_dragonfly_fails_on_silent_disagreement():
 
 def test_dragonfly_passes_when_disagreement_is_explained():
     o = outside(
-        reference_classes=[ref("a", 0.12), ref("b", 0.55)],
+        lenses=[ref("a", 0.12), ref("b", 0.55)],
         aggregate_base_rate=0.33,
         disagreement="the narrow class excludes hostile bids, which is why it is lower",
     )
@@ -227,7 +279,7 @@ def test_dragonfly_passes_when_disagreement_is_explained():
 
 
 def test_dragonfly_threshold_is_configurable(monkeypatch):
-    o = outside(reference_classes=[ref("a", 0.20), ref("b", 0.45)])
+    o = outside(lenses=[ref("a", 0.20), ref("b", 0.45)])
     assert checks.check_dragonfly(o) is not None
 
     monkeypatch.setenv("CHECK_RC_DISAGREEMENT", "0.50")
@@ -342,7 +394,7 @@ def test_derivation_clean():
 def test_derivation_catches_narrative_drift():
     """Base rate 0.20, adjustments summing 0.10, final 0.75 — unsupported by its own evidence."""
     o = outside(
-        reference_classes=[ref("a", 0.20), ref("b", 0.20)], aggregate_base_rate=0.20
+        lenses=[ref("a", 0.20), ref("b", 0.20)], aggregate_base_rate=0.20
     )
     i = inside(
         adjustments=[adjustment("up", 0.10), adjustment("down", 0.0, is_noise=True)]
@@ -355,7 +407,7 @@ def test_derivation_catches_narrative_drift():
 def test_derivation_allows_a_round_number():
     """P8 note: 0.60 is a legitimate answer when the arithmetic lands there."""
     o = outside(
-        reference_classes=[ref("a", 0.50), ref("b", 0.50)], aggregate_base_rate=0.50
+        lenses=[ref("a", 0.50), ref("b", 0.50)], aggregate_base_rate=0.50
     )
     i = inside(adjustments=[adjustment("up", 0.10)])
     assert checks.check_derivation(forecast(0.60), o, i) is None
@@ -363,7 +415,7 @@ def test_derivation_allows_a_round_number():
 
 def test_derivation_ignores_noise_adjustments():
     o = outside(
-        reference_classes=[ref("a", 0.30), ref("b", 0.30)], aggregate_base_rate=0.30
+        lenses=[ref("a", 0.30), ref("b", 0.30)], aggregate_base_rate=0.30
     )
     i = inside(
         adjustments=[
@@ -377,7 +429,7 @@ def test_derivation_ignores_noise_adjustments():
 def test_derivation_clamps_to_unit_interval():
     """base 0.90 + 0.30 up would imply 1.20; it clamps to 1.00."""
     o = outside(
-        reference_classes=[ref("a", 0.90), ref("b", 0.90)], aggregate_base_rate=0.90
+        lenses=[ref("a", 0.90), ref("b", 0.90)], aggregate_base_rate=0.90
     )
     i = inside(adjustments=[adjustment("up", 0.30)])
     assert checks.check_derivation(forecast(0.98), o, i) is None
@@ -385,7 +437,7 @@ def test_derivation_clamps_to_unit_interval():
 
 def test_derivation_slack_is_configurable(monkeypatch):
     o = outside(
-        reference_classes=[ref("a", 0.30), ref("b", 0.30)], aggregate_base_rate=0.30
+        lenses=[ref("a", 0.30), ref("b", 0.30)], aggregate_base_rate=0.30
     )
     i = inside(adjustments=[adjustment("up", 0.10)])
     assert checks.check_derivation(forecast(0.48), o, i) is not None
@@ -421,7 +473,7 @@ def test_calibration_hygiene_is_advisory_not_blocking():
 def test_calibration_hygiene_allows_argued_extreme():
     """An extreme is justified, not forbidden — writing the argument is what clears it."""
     o = outside(
-        reference_classes=[ref("a", 0.97), ref("b", 0.99)], aggregate_base_rate=0.98
+        lenses=[ref("a", 0.97), ref("b", 0.99)], aggregate_base_rate=0.98
     )
     f = forecast(0.99, extreme_justification="class 'b' carries it; n=40 and both agree")
     assert checks.check_calibration_hygiene(f, o) is None
@@ -436,7 +488,7 @@ def test_calibration_hygiene_flags_retreat_to_the_boundary():
     had changed.
     """
     o = outside(
-        reference_classes=[ref("a", 0.05), ref("b", 0.35)],
+        lenses=[ref("a", 0.05), ref("b", 0.35)],
         aggregate_base_rate=0.20,
         disagreement="explained",
     )
@@ -449,7 +501,7 @@ def test_calibration_hygiene_flags_retreat_to_the_boundary():
 def test_calibration_hygiene_allows_the_boundary_when_classes_agree():
     """Sitting at the edge is only suspect when the outside view is itself unsure."""
     o = outside(
-        reference_classes=[ref("a", 0.02), ref("b", 0.04)], aggregate_base_rate=0.03
+        lenses=[ref("a", 0.02), ref("b", 0.04)], aggregate_base_rate=0.03
     )
     assert checks.check_calibration_hygiene(forecast(0.02), o) is None
 
@@ -470,16 +522,16 @@ def ided(*ids: str) -> Decomposition:
 
 def test_linkage_accepts_references_to_real_sub_claims():
     d = ided("sc1", "sc2", "sc3")
-    o = outside(reference_classes=[ref("a", 0.20), ref("b", 0.24)])
-    o.reference_classes[0].sub_claim_ids = ["sc1"]
+    o = outside(lenses=[ref("a", 0.20), ref("b", 0.24)])
+    o.lenses[0].sub_claim_ids = ["sc1"]
     f = forecast().model_copy(update={"decompositions": d.sub_claims})
     assert checks.check_linkage(f, d, o, inside()) is None
 
 
 def test_linkage_catches_an_invented_sub_claim_id():
     d = ided("sc1", "sc2", "sc3")
-    o = outside(reference_classes=[ref("a", 0.20), ref("b", 0.24)])
-    o.reference_classes[0].sub_claim_ids = ["sc9"]
+    o = outside(lenses=[ref("a", 0.20), ref("b", 0.24)])
+    o.lenses[0].sub_claim_ids = ["sc9"]
     f = forecast().model_copy(update={"decompositions": d.sub_claims})
     v = checks.check_linkage(f, d, o, inside())
     assert v is not None
@@ -510,7 +562,7 @@ def test_linkage_allows_a_class_that_addresses_the_whole_question():
 
 def test_aggregation_accepts_an_honestly_weighted_anchor():
     o = outside(
-        reference_classes=[ref("a", 0.10, weight=0.25), ref("b", 0.90, weight=0.75)],
+        lenses=[ref("a", 0.10, weight=0.25), ref("b", 0.90, weight=0.75)],
         aggregate_base_rate=0.70,
         disagreement="explained",
     )
@@ -520,7 +572,7 @@ def test_aggregation_accepts_an_honestly_weighted_anchor():
 def test_aggregation_rejects_an_anchor_the_weights_do_not_support():
     """The hole this check fills: the anchor used to be an unverifiable blend."""
     o = outside(
-        reference_classes=[ref("a", 0.10, weight=0.5), ref("b", 0.90, weight=0.5)],
+        lenses=[ref("a", 0.10, weight=0.5), ref("b", 0.90, weight=0.5)],
         aggregate_base_rate=0.85,
         disagreement="explained",
     )
@@ -532,7 +584,7 @@ def test_aggregation_rejects_an_anchor_the_weights_do_not_support():
 
 def test_aggregation_slack_is_configurable(monkeypatch):
     o = outside(
-        reference_classes=[ref("a", 0.20, weight=1.0), ref("b", 0.30, weight=1.0)],
+        lenses=[ref("a", 0.20, weight=1.0), ref("b", 0.30, weight=1.0)],
         aggregate_base_rate=0.35,
     )
     assert checks.check_aggregation(o) is not None
@@ -540,29 +592,24 @@ def test_aggregation_slack_is_configurable(monkeypatch):
     assert checks.check_aggregation(o) is None
 
 
-def test_aggregation_reports_when_no_class_carries_weight():
-    o = outside(
-        reference_classes=[ref("a", 0.20, weight=0.0), ref("b", 0.30, weight=0.0)],
-        aggregate_base_rate=0.25,
-    )
-    v = checks.check_aggregation(o)
-    assert v is not None
-    assert "no reference class carries any weight" in v.detail
+def test_a_weightless_lens_cannot_be_constructed():
+    """The zero-weight case moved from a runtime check to the schema.
+
+    `check_aggregation` used to report "no reference class carries any weight", because a
+    weightless class could exist and made the blend undefined. `Lens.weight` is now
+    `gt=0`, so the state is unreachable through the model and the remaining guard in
+    `weighted_base_rate` is belt-and-braces for hand-built fixtures.
+    """
+    with pytest.raises(ValidationError):
+        ref("a", 0.20, weight=0.0)
 
 
 # ---------- P7: the anchor is the chain the decomposition describes ----------
 
 
-def researched(sub_claim_id: str, rate: float) -> ReferenceClass:
-    """A reference class that names exactly one column, as the merge stamps them."""
-    return ReferenceClass(
-        name=f"class for {sub_claim_id}",
-        base_rate=rate,
-        sample_size=40,
-        weight=1.0,
-        sources=[graded()],
-        sub_claim_ids=[sub_claim_id],
-    )
+def researched(sub_claim_id: str, rate: float) -> ResearchedLens:
+    """A lens that names exactly one sub-question, as the merge stamps them."""
+    return ref(f"lens for {sub_claim_id}", rate, sub_claim_ids=[sub_claim_id])
 
 
 def a_grid(rule: str, rates: dict[str, float], estimates: dict[str, float]):
@@ -582,7 +629,7 @@ def a_grid(rule: str, rates: dict[str, float], estimates: dict[str, float]):
         chain_note="stated",
     )
     o = OutsideView(
-        reference_classes=[researched(i, r) for i, r in sorted(rates.items())] or
+        lenses=[researched(i, r) for i, r in sorted(rates.items())] or
                           [ref("a", 0.2), ref("b", 0.2)],
         aggregate_base_rate=0.0,
         disagreement="",
@@ -636,7 +683,7 @@ def test_custom_falls_back_to_the_weighted_mean():
 
 def test_no_decomposition_keeps_the_pre_3_3_behaviour():
     """`d` is optional so the component evals and direct unit tests need no edit."""
-    o = outside(reference_classes=[ref("a", 0.20), ref("b", 0.24)], aggregate_base_rate=0.22)
+    o = outside(lenses=[ref("a", 0.20), ref("b", 0.24)], aggregate_base_rate=0.22)
     assert checks.check_aggregation(o) is None
     assert checks.check_aggregation(o, None) is None
 
@@ -660,7 +707,7 @@ def test_dragonfly_ignores_spread_between_different_columns():
     they are measuring different things. Whole-view spread called that 0.65.
     """
     o = outside(
-        reference_classes=[researched("sc1", 0.15), researched("sc4", 0.80)],
+        lenses=[researched("sc1", 0.15), researched("sc4", 0.80)],
         disagreement="",
     )
     assert checks.base_rate_spread(o) == pytest.approx(0.65)
@@ -669,7 +716,7 @@ def test_dragonfly_ignores_spread_between_different_columns():
 
 def test_dragonfly_still_fires_within_one_column():
     o = outside(
-        reference_classes=[researched("sc1", 0.12), researched("sc1", 0.55)],
+        lenses=[researched("sc1", 0.12), researched("sc1", 0.55)],
         disagreement="",
     )
     v = checks.check_dragonfly(o)
@@ -679,7 +726,7 @@ def test_dragonfly_still_fires_within_one_column():
 
 def test_the_worst_column_is_the_one_reported():
     o = outside(
-        reference_classes=[
+        lenses=[
             researched("sc1", 0.20), researched("sc1", 0.24),
             researched("sc2", 0.10), researched("sc2", 0.70),
         ],
@@ -699,7 +746,7 @@ def test_the_worst_column_is_the_one_reported():
 
 def test_citations_pass_when_every_url_was_retrieved():
     o = outside(
-        reference_classes=[
+        lenses=[
             ref("a", 0.20, sources=[graded(url="https://x.test/a")]),
             ref("b", 0.24),
         ]
@@ -710,7 +757,7 @@ def test_citations_pass_when_every_url_was_retrieved():
 
 def test_citations_catch_a_url_that_was_never_fetched():
     o = outside(
-        reference_classes=[
+        lenses=[
             ref("a", 0.20, sources=[graded(url="https://invented.test/report")]),
             ref("b", 0.24),
         ]
@@ -771,7 +818,7 @@ def test_claim_support_with_no_sources_is_low():
 
 def test_aggregate_source_confidence_is_weighted_by_fit_and_magnitude():
     strong = outside(
-        reference_classes=[
+        lenses=[
             ref("a", 0.20, weight=1.0, sources=[graded(confidence="high")]),
             ref("b", 0.24, weight=1.0, sources=[graded(confidence="high")]),
         ]
@@ -782,7 +829,7 @@ def test_aggregate_source_confidence_is_weighted_by_fit_and_magnitude():
     assert checks.aggregate_source_confidence(strong, i) == "high"
 
     thin = outside(
-        reference_classes=[
+        lenses=[
             ref("a", 0.20, weight=1.0, sources=[graded(confidence="low")]),
             ref("b", 0.24, weight=1.0, sources=[graded(confidence="low")]),
         ]
@@ -793,7 +840,7 @@ def test_aggregate_source_confidence_is_weighted_by_fit_and_magnitude():
 def test_aggregate_source_confidence_skips_noise_adjustments():
     """Noise contributes zero to the probability, so it must not drag the grade."""
     o = outside(
-        reference_classes=[
+        lenses=[
             ref("a", 0.20, sources=[graded(confidence="high")]),
             ref("b", 0.24, sources=[graded(confidence="high")]),
         ]
@@ -959,7 +1006,7 @@ def test_run_forecast_checks_clean():
 def test_run_forecast_checks_collects_every_failure():
     """One input violating several principles reports all of them, not just the first."""
     o = outside(
-        reference_classes=[ref("a", 0.10), ref("b", 0.60)],
+        lenses=[ref("a", 0.10), ref("b", 0.60)],
         aggregate_base_rate=0.20,
         disagreement="",
     )
@@ -989,7 +1036,7 @@ def test_run_update_checks_reports_direction_and_magnitude():
 
 def test_blocking_filters_non_blocking_violations():
     v_block = checks.check_dragonfly(
-        outside(reference_classes=[ref("a", 0.10), ref("b", 0.60)])
+        outside(lenses=[ref("a", 0.10), ref("b", 0.60)])
     )
     assert v_block is not None
     v_soft = v_block.model_copy(update={"blocking": False})
