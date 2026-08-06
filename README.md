@@ -125,15 +125,31 @@ All from `backend/`.
 | `uv run pytest` | the whole suite — no network, no API keys |
 | `uv run python -m superforecaster --help` | everything else |
 
-**Docker**, from the repo root (build the frontend first — the compose file mounts
-`frontend/dist`):
+**Docker**, from the repo root. Put both keys **and** an `ADMIN_API_KEY` in `backend/.env`
+first — a container is not localhost:
 
 ```bash
+cd frontend && npm install && npm run build && cd ..
 docker compose up --build
 ```
 
-Also :8000, SQLite in the `sqlite_data` volume. Put both keys **and** an `ADMIN_API_KEY` in
-`backend/.env` first — a container is not localhost.
+Also :8000, SQLite in the `sqlite_data` volume. The compose file mounts `frontend/dist`
+read-only into the API container rather than building a frontend image — that's ADR 47's
+"one process serving everything," unchanged from local. Re-run `npm run build` (or
+`docker compose up --build`) after any frontend edit; nothing rebuilds it for you.
+
+<details>
+<summary>Dockerized frontend dev loop (hot reload, no local Node needed)</summary>
+
+```bash
+docker compose --profile dev up --build
+```
+
+This also starts a `frontend` service (`frontend/Dockerfile.dev`) running `npm run dev` on
+**:5173**, proxying API routes to the `api` service over the compose network. It's opt-in
+via the `dev` profile — plain `docker compose up` never starts it, so production stays the
+single-process deploy above.
+</details>
 
 ---
 
