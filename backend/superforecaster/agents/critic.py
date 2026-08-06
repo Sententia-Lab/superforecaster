@@ -18,6 +18,7 @@ from pydantic_ai import Agent
 from pydantic_ai.exceptions import UsageLimitExceeded
 
 from ..deps import ForecastDeps, SearchBudget
+from ..errors import AgentTimeout
 from ..models import CriteriaCritique
 from ..observability import run_agent
 from ..tools import search_web
@@ -52,14 +53,21 @@ WHAT TO RETURN
                  intent; change only what has to change. Name a source, give numbers
                  and units, and state the exact observable event that counts as yes.
   suggested_resolution_source
-                 the specific publication, dataset, or body that would settle it.
+                 REQUIRED, always, whether or not you found anything else wrong. The
+                 specific publication, dataset, register, or body whose output settles
+                 this question on the resolution date. Name it precisely enough that
+                 someone could go and read it — "the SEC EDGAR full-text filing search",
+                 not "public filings"; "the ONS Consumer Price Inflation bulletin", not
+                 "official statistics". A question with no named adjudicator is not
+                 resolvable no matter how crisp its wording, so if you cannot name one,
+                 say so in `missing` and set `is_resolvable` false.
 
-You may search to check whether a named source exists and publishes what the criteria
-assume it does — a criterion resting on a statistic nobody publishes is not resolvable.
-That is the only thing worth searching for here. You are judging the wording of the
-question, not forecasting it: do not go looking for the answer, for background on the
-topic, or for a better source than the one you already found. A handful of searches is
-the whole budget, and every tool result tells you what is left of it.
+At most TWO searches, and only to check that a source you are about to name exists and
+publishes what the criteria assume it does — a criterion resting on a statistic nobody
+publishes is not resolvable. That is the only thing worth searching for here. You are
+judging the wording of the question, not forecasting it: do not go looking for the
+answer, for background on the topic, or for a better source than the one you already
+found. Most questions need one search or none. Every tool result tells you what is left.
 """
 
 
@@ -128,15 +136,43 @@ Return a CriteriaCritique."""
                 usage_limits=get_critique_limits(),
                 run_name="criteria critique",
             )
-    except UsageLimitExceeded:
-        return _unfinished(resolution_criteria)
-    return result.output
+    except (UsageLimitExceeded, AgentTimeout) as exc:
+        return _unfinished(resolution_criteria, exc)
+    return _require_a_source(result.output)
 
 
-def _unfinished(resolution_criteria: str) -> CriteriaCritique:
-    """What the critic returns when it hit the wall instead of converging.
+def _require_a_source(critique: CriteriaCritique) -> CriteriaCritique:
+    """A critique that names no resolution source cannot pass.
 
-    `UsageLimitExceeded` is raised before the next tool runs, so there is no partial
+    Enforced here rather than trusted to the prompt because it is the one gap that
+    survives to resolution day silently: criteria can be perfectly crisp and still have
+    nobody who adjudicates them, and a forecast nobody can score is a forecast that was
+    never worth running. The frontend blocks the run on `is_resolvable`, so flipping it
+    is what makes "name a source" a requirement rather than a suggestion.
+
+    Nothing is invented — the finding says exactly what is absent.
+    """
+    if critique.suggested_resolution_source.strip():
+        return critique
+
+    note = (
+        "No resolution source. Name the specific publication, dataset, register, or "
+        "body whose output settles this on the resolution date — without one, nobody "
+        "can score the forecast."
+    )
+    return critique.model_copy(
+        update={
+            "is_resolvable": False,
+            "missing": [*critique.missing, note] if note not in critique.missing else critique.missing,
+        }
+    )
+
+
+def _unfinished(resolution_criteria: str, cause: Exception | None = None) -> CriteriaCritique:
+    """What the critic returns when it hit a wall instead of converging.
+
+    Two walls, and they degrade the same way. `UsageLimitExceeded` means it searched too
+    many times; `AgentTimeout` means it stopped responding. Neither leaves a partial
     critique to salvage — but there is a parsed question, and `/questions/draft` returns
     both from one call. Raising here 500s that endpoint and the frontend drops the user
     back to an empty draft box, losing text they just typed. Degrading costs them a
@@ -147,13 +183,20 @@ def _unfinished(resolution_criteria: str) -> CriteriaCritique:
     criteria, which is exactly what happened. The rewrite is the author's own text
     unchanged, so applying it is a no-op rather than a fabricated suggestion.
     """
+    why = (
+        "stopped responding"
+        if isinstance(cause, AgentTimeout)
+        else "ran out of search budget"
+    )
     return CriteriaCritique(
         is_resolvable=False,
         ambiguities=[],
         missing=[
-            "The resolvability check ran out of search budget before it reached a "
-            "verdict. Nothing is known to be wrong with these criteria — they are "
-            "simply unreviewed. Dismiss to proceed, or edit and re-run the check."
+            f"The resolvability check {why} before it reached a verdict. Nothing is "
+            "known to be wrong with these criteria — they are simply unreviewed. "
+            "Dismiss to proceed, or edit and re-run the check.",
+            "No resolution source was suggested, because nothing was reviewed. Name "
+            "one yourself before running the forecast.",
         ],
         suggested_criteria=resolution_criteria,
         suggested_resolution_source="",

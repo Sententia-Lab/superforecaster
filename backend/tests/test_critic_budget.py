@@ -45,9 +45,12 @@ def _capture(monkeypatch) -> dict:
 
 
 def test_critique_budget_puts_the_wall_above_the_cline():
+    """Three tool calls, total. A resolvability review is one or two lookups — checking
+    that a source it is about to name exists — and anything past that is the critic
+    drifting into forecasting the question, which its own prompt forbids."""
     soft, hard = config.get_critique_budget()
-    assert soft == 3
-    assert hard == 5
+    assert soft == 2
+    assert hard == 3
     assert hard > soft  # the headroom is where it writes the critique down
 
 
@@ -59,7 +62,7 @@ def test_critique_budget_respects_both_env_vars(monkeypatch):
 
 def test_critique_limits_cap_tool_calls_well_below_the_global_default():
     limits = config.get_critique_limits()
-    assert limits.tool_calls_limit == 5
+    assert limits.tool_calls_limit == 3
     assert limits.tool_calls_limit < config.DEFAULT_AGENT_TOOL_CALLS_LIMIT
 
 
@@ -70,7 +73,7 @@ async def test_the_critic_runs_on_its_own_budget_not_the_global_default(monkeypa
     seen = _capture(monkeypatch)
     await critic.run_critique("Will X happen?", "X is significant.")
 
-    assert seen["usage_limits"].tool_calls_limit == 5
+    assert seen["usage_limits"].tool_calls_limit == 3
 
 
 async def test_the_critic_installs_a_budget_so_the_cline_can_fire(monkeypatch):
@@ -81,7 +84,7 @@ async def test_the_critic_installs_a_budget_so_the_cline_can_fire(monkeypatch):
 
     budget = seen["deps"].budget
     assert budget is not None
-    assert (budget.soft_depth, budget.hard_depth) == (3, 5)
+    assert (budget.soft_depth, budget.hard_depth) == (2, 3)
 
 
 async def test_the_cline_sits_below_the_wall_the_run_is_given(monkeypatch):
@@ -120,6 +123,65 @@ async def test_a_degraded_critique_invents_no_findings(monkeypatch):
 
     assert out.suggested_resolution_source == ""
     assert "unreviewed" in " ".join(out.missing)
+
+
+async def test_a_timeout_degrades_the_same_way_the_wall_does(monkeypatch):
+    """Two ways to fail, one way to degrade. `UsageLimitExceeded` means it searched too
+    often; `AgentTimeout` means it stopped responding. Either way there is a parsed
+    question to hand back, and raising throws it away."""
+    from superforecaster.errors import AgentTimeout
+
+    async def stall(agent, prompt, **kwargs):
+        raise AgentTimeout("criteria critique exceeded its 180s deadline")
+
+    monkeypatch.setattr(critic, "run_agent", stall)
+    out = await critic.run_critique("Will X happen?", "original text")
+
+    assert out.is_resolvable is False
+    assert any("stopped responding" in m for m in out.missing)
+    assert out.suggested_criteria == "original text"
+
+
+# ---------- the resolution source ----------
+
+
+async def test_a_critique_naming_no_source_cannot_pass(monkeypatch):
+    """Criteria can be perfectly crisp and still name nobody who adjudicates them. A
+    forecast nobody can score is a whole run spent for nothing, and the gap only becomes
+    visible on the one day it is too late to fix."""
+    _capture(monkeypatch)  # returns CRITIQUE: is_resolvable=True, no source
+    out = await critic.run_critique("Will X happen?", "X is at least 10% by 2027-01-01.")
+
+    assert out.is_resolvable is False
+    assert any("No resolution source" in m for m in out.missing)
+
+
+async def test_a_critique_that_names_a_source_is_left_alone(monkeypatch):
+    """The gate must not fire on a critique that did its job."""
+    sourced = CRITIQUE.model_copy(
+        update={"suggested_resolution_source": "ONS Consumer Price Inflation bulletin"}
+    )
+
+    async def fake_run_agent(agent, prompt, **kwargs):
+        class R:
+            output = sourced
+
+        return R()
+
+    monkeypatch.setattr(critic, "run_agent", fake_run_agent)
+    out = await critic.run_critique("Will X happen?", "X is at least 10% by 2027-01-01.")
+
+    assert out.is_resolvable is True
+    assert out.missing == []
+
+
+async def test_the_source_finding_is_not_duplicated_on_a_second_pass(monkeypatch):
+    """`_require_a_source` is idempotent — a critique that already carries the finding
+    must not accumulate a second copy of it."""
+    once = critic._require_a_source(CRITIQUE)
+    twice = critic._require_a_source(once)
+
+    assert once.missing == twice.missing
 
 
 def test_the_draft_endpoint_keeps_the_parsed_question(monkeypatch):

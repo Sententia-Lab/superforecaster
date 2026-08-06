@@ -322,7 +322,7 @@ def test_at_the_wall_the_notice_says_it_is_the_last_result():
     notice = tools._budget_notice(make_ctx(deps))
 
     assert "EXHAUSTED" in notice
-    assert "last tool result" in notice
+    assert "last search result" in notice
     assert deps.budget.exhausted is True
 
 

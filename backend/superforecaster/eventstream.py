@@ -120,6 +120,16 @@ class EventStream(Generic[T]):
     def unsubscribe(self, q: asyncio.Queue[T]) -> None:
         self._subscribers.discard(q)
 
+    @property
+    def subscriber_count(self) -> int:
+        """How many connections are currently attached.
+
+        Read by `runs` to decide whether anyone is still watching. Counting live queues
+        rather than tracking connects and disconnects separately means a subscriber
+        dropped for falling behind — see `_append` — is counted as gone, which it is.
+        """
+        return len(self._subscribers)
+
     def replay(self, from_seq: int, seq_of: Callable[[T], int]) -> Iterable[T]:
         """Buffered events at or after `from_seq`.
 

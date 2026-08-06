@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import sys
 from collections.abc import AsyncIterable
@@ -22,8 +24,10 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.tools import RunContext
 
-from config import get_settings, get_usage_limits
+from config import get_agent_timeout, get_settings, get_usage_limits
 from pydantic_ai import UsageLimits
+
+from .errors import AgentTimeout
 
 _logfire_configured = False
 _warned_invalid_logfire_token = False
@@ -274,6 +278,17 @@ def _make_event_handler(*, verbose: bool):
     return _handler
 
 
+def _deadline(seconds: float):
+    """`asyncio.timeout(seconds)`, or a no-op when timeouts are switched off.
+
+    Zero or negative means disabled — the escape hatch for a long backtest run, and the
+    reason this is a helper rather than an `async with asyncio.timeout(...)` inline.
+    """
+    if seconds and seconds > 0:
+        return asyncio.timeout(seconds)
+    return contextlib.nullcontext()
+
+
 async def run_agent(
     agent: Agent[Any, Any],
     prompt: str,
@@ -282,15 +297,24 @@ async def run_agent(
     verbose: bool = False,
     max_iterations: int | None = None,
     usage_limits: UsageLimits | None = None,
+    timeout: float | None = None,
     run_name: str = "agent run",
 ) -> Any:
-    """Run an agent with tracing, budget, and progress output.
+    """Run an agent with tracing, budget, a deadline, and progress output.
 
     `deps` is forwarded to `agent.run` so tools can read the contamination clamps
     (`ForecastDeps.as_of`) and append to the leakage audit trail.
+
+    Two independent ceilings, because there are two ways to never finish. `usage_limits`
+    bounds how many times the agent may act. The deadline bounds how long one act may
+    take, and it is the one that matters for a stuck browser: a provider request that
+    never returns reaches no limit, raises nothing, and leaves every subscriber waiting
+    on an `end` frame that is never sent. Every call site passes explicit limits; the
+    `get_usage_limits` fallback is a backstop for callers outside this package.
     """
     configure_logfire(verbose=verbose)
     limits = usage_limits or get_usage_limits(max_iterations=max_iterations)
+    deadline = get_agent_timeout() if timeout is None else timeout
     full = not cloud_tracing_active()
     show = verbose or full
     logging_active = cloud_tracing_active() or console_active()
@@ -323,14 +347,30 @@ async def run_agent(
         )
 
     with logfire.span(run_name, prompt_preview=_preview(prompt, 500)):
-        result = await agent.run(
-            prompt,
-            deps=deps,
-            usage_limits=limits,
-            event_stream_handler=(
-                _make_event_handler(verbose=verbose) if trace_events else None
-            ),
-        )
+        try:
+            async with _deadline(deadline):
+                result = await agent.run(
+                    prompt,
+                    deps=deps,
+                    usage_limits=limits,
+                    event_stream_handler=(
+                        _make_event_handler(verbose=verbose) if trace_events else None
+                    ),
+                )
+        except TimeoutError as exc:
+            # Raised as our own type so callers can tell "stopped responding" from
+            # "acted too many times" — they degrade differently, and a bare TimeoutError
+            # from somewhere inside httpx would be indistinguishable from either.
+            message = f"{run_name} exceeded its {deadline:g}s deadline"
+            logfire.error(
+                "{run_name} timed out",
+                run_name=run_name,
+                timeout_seconds=deadline,
+                _tags=["agent-progress", "run-timeout"],
+            )
+            if show:
+                print(f"[agent] TIMEOUT: {message}", file=sys.stderr, flush=True)
+            raise AgentTimeout(message) from exc
 
     if show or logging_active:
         usage = result.usage()

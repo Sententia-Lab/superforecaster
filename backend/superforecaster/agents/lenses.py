@@ -16,7 +16,7 @@ not see.
 
 from __future__ import annotations
 
-from config import resolve_agent_model
+from config import get_synthesis_limits, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
@@ -125,6 +125,7 @@ enough that someone else could count the same cases, and weigh them by fit alone
             prompt,
             deps=deps,
             verbose=deps.verbose,
+            usage_limits=get_synthesis_limits(),
             run_name=f"lenses · {sub_claim.id}",
         )
     return result.output

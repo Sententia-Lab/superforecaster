@@ -9,6 +9,7 @@ from config import get_settings
 from superforecaster import db
 from superforecaster.agents.critic import run_critique
 from superforecaster.agents.draft import run_draft
+from superforecaster.errors import AgentTimeout
 from superforecaster.graphs import run_forecast_graph
 from superforecaster.models import (
     ApproveQuestionRequest,
@@ -53,8 +54,20 @@ async def draft_question(body: DraftQuestionRequest) -> DraftResponse:
     the system, and a spinner is a truthful UI for something that takes seconds. If it
     ever becomes the slowest thing a user waits on, it gets the same treatment /runs
     has.
+
+    A spinner is only truthful while the request is still alive, which is why the parse
+    turns a timeout into a 504 rather than letting the connection hang: the frontend
+    toasts the failure and gives the reader their text back. The critique half degrades
+    instead of raising — see `agents.critic._unfinished` — because there is a parsed
+    question to hand back by then and losing it costs the reader more than an unreviewed
+    draft does.
     """
-    parsed = await run_draft(body.text)
+    try:
+        parsed = await run_draft(body.text)
+    except AgentTimeout as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(exc)
+        )
     critique = await run_critique(
         question=parsed.question,
         resolution_criteria=parsed.resolution_criteria,
@@ -239,13 +252,21 @@ async def forecast_from_question(
             detail=f"question must be approved (currently {record.status})",
         )
 
-    forecast, _violations = await run_forecast_graph(
-        ForecastInput(
-            question=record.text,
-            resolution_criteria=record.resolution_criteria,
-            resolution_date=record.proposed_resolution_date,
-            category="community",
+    try:
+        forecast, _violations = await run_forecast_graph(
+            ForecastInput(
+                question=record.text,
+                resolution_criteria=record.resolution_criteria,
+                resolution_date=record.proposed_resolution_date,
+                category="community",
+            )
         )
-    )
+    except AgentTimeout as exc:
+        # This route blocks the request for the whole graph, so a stalled agent is a
+        # connection held open with nothing coming. Bounded by AGENT_TIMEOUT_SECONDS,
+        # then answered.
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(exc)
+        )
     fid = db.save_forecast(forecast, resolution_source="community submission")
     return db.link_question_to_forecast(question_id=question_id, forecast_id=fid)

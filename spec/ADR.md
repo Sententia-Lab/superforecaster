@@ -1365,3 +1365,80 @@ had bound to the `date` *class*, so `import run_baseline` raised `AttributeError
 hundred lines of data pretending to be code, and broken code at that. The corpus is now
 `questions.json` and the module is a 44-line loader that also reports the contamination-risk
 split, which is the number that decides which model may see a question at all.
+
+---
+
+## ADR 43 — Every agent call has a ceiling, and every run has a deadline
+
+Two different failures were being confused, and only one of them had a mechanism.
+
+**Acting too often** was handled: `UsageLimits` bounds tool calls and requests, and
+`SearchBudget` puts a cline below the wall so a cell converges rather than dying
+mid-thought. But five of the eleven `run_agent` call sites passed no limits at all —
+`decompose`, `choose_lenses`, `resolution`, `update`, `postmortem` — and fell through to
+the process-wide default of **40 requests and 20 tool calls**, a number nobody chose for
+them. The critic had the same shape until ADR-less commit `8cd08f3`; the other five kept
+it. Each call site now passes explicit limits, and `test_every_agent_run_passes_explicit_limits`
+walks the AST of `agents/` to keep it that way. The fallback stays as a backstop for
+callers outside the package, but reaching it inside one is now a test failure.
+
+The critic's own budget drops from 3/5 to **2 searches, 3 the wall**. A resolvability
+review is one or two lookups — does the source it is about to name exist and publish what
+the criteria assume. Anything past that is the critic forecasting the question, which its
+prompt already forbids and its budget should not have funded.
+
+**Not acting at all** had no mechanism whatsoever, and it is the failure that actually
+stalls. A provider request that never returns reaches no limit, raises nothing, and holds
+the run open forever: `execute` never reaches its `finally`, no `end` frame is emitted,
+the SSE generator never returns, and the browser spins on a loading state that has no
+timeout of its own. Three ceilings close it:
+
+| ceiling | default | bounds |
+|---|---|---|
+| `AGENT_TIMEOUT_SECONDS` | 180 | one agent run — raises `AgentTimeout` |
+| `RUN_TIMEOUT_SECONDS` | 1200 | the whole graph — raises `RunTimeout` |
+| `RUN_WATCHER_GRACE_SECONDS` | 45 | how long a run may go unwatched |
+
+All three are `Exception`s reaching `execute`'s catch-all, so every path now ends
+`error` → `end`. That pair is the contract the frontend depends on and the only thing
+that closes the socket.
+
+**A run no longer outlives its audience.** A run is thirty-odd agent invocations against a
+live search budget; finishing one for a tab that closed ten minutes ago spends real money
+and shows nobody. A watchdog cancels a run with zero subscribers for the grace window.
+The window is not politeness — SSE reconnects, so zero watchers *right now* is a laptop
+lid, a proxy hiccup, or a subscriber dropped for falling behind, and all three resolve
+themselves. Only zero continuously means gone. `RUN_WATCHER_GRACE_SECONDS=0` restores the
+old fire-and-forget behaviour for a deployment that wants it.
+
+**The prompt bug underneath all of this.** `attach_budget_pressure` told an exhausted
+agent *"Do not call another tool."* Structured output in pydantic-ai **is** a tool call —
+the output schema lives in the toolset — so that sentence forbids the one call that would
+end the run. A model that obeys answers in plain text, pydantic-ai replies "please include
+your response in a tool call", the instruction is re-fetched per request and says the same
+thing again, and the agent burns every request it has without ever producing output. The
+budget channels now name *searching* and never tools as a category, and both the
+instruction and the tool notice say the final answer is still a tool call.
+
+## ADR 44 — A forecast with no adjudicator is not worth running
+
+`resolution_source` defaulted to `""` on `CreateRunRequest` and was rendered with a red
+border and no consequence: the run started anyway. Criteria can be perfectly crisp and
+still name nobody who publishes the number that settles them, and unlike every other flaw
+this one is invisible until resolution day — the one day it cannot be fixed. The whole run
+is spent by then.
+
+Three changes, deliberately at three layers, because each alone is bypassable:
+
+- **The critic must name one.** `suggested_resolution_source` is required by the prompt for
+  every question it reviews, whether or not it found anything else wrong.
+  `_require_a_source` enforces it in code: a critique naming none is forced to
+  `is_resolvable=False` with a finding that says exactly what is absent. Nothing is
+  invented — the critic's own suggestion is offered, or the gap is reported.
+- **The API refuses without one.** `CreateRunRequest.resolution_source` is `min_length=1`.
+- **The UI blocks the button** and offers the critic's suggestion as its own one-click
+  action, separate from "apply rewrite" — the two findings are independent, and a question
+  with fine criteria and no source has no rewrite to apply.
+
+`ForecastInput` is unchanged. Who adjudicates a question is a property of the run, not
+something the agents are asked to reason about.

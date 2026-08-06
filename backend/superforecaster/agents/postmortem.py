@@ -13,7 +13,7 @@ at the time (noise). Only the first kind should change how the agent forecasts.
 
 from __future__ import annotations
 
-from config import resolve_agent_model
+from config import get_monitor_limits, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
@@ -146,6 +146,11 @@ Return a PostMortem."""
     agent = get_postmortem_agent()
     with with_model(agent, deps) as bound:
         result = await run_agent(
-            bound, prompt, deps=deps, verbose=deps.verbose, run_name="post-mortem"
+            bound,
+            prompt,
+            deps=deps,
+            verbose=deps.verbose,
+            usage_limits=get_monitor_limits(),
+            run_name="post-mortem",
         )
     return result.output

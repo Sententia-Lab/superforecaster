@@ -86,6 +86,8 @@ def a_body() -> dict:
             datetime.now(timezone.utc) + timedelta(days=60)
         ).isoformat(),
         "category": "test",
+        # Required since a run with no adjudicator produces a forecast nobody can score.
+        "resolution_source": "The X Register, quarterly bulletin",
     }
 
 

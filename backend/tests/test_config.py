@@ -3,6 +3,7 @@ import pytest
 import config
 
 from config import (
+    get_monitor_limits,
     get_research_limits,
     get_synthesis_limits,
     get_usage_limits,
@@ -106,3 +107,52 @@ def test_a_headroom_of_zero_makes_the_cline_the_wall(monkeypatch):
     monkeypatch.setenv("CELL_HARD_HEADROOM", "0")
     soft, hard = config.get_cell_budget(3)
     assert soft == hard == 3
+
+
+# ---------- every agent call is bounded ----------
+
+
+def test_monitor_limits_bound_the_agents_outside_the_graph(monkeypatch):
+    """The resolution check, the daily update, and the post-mortem used to fall through
+    to `get_usage_limits()` — twenty tool calls and forty requests nobody chose for them."""
+    monkeypatch.delenv("MONITOR_TOOL_CALLS", raising=False)
+    limits = get_monitor_limits()
+
+    assert limits.tool_calls_limit == 4
+    assert limits.request_limit == 7
+
+
+def test_monitor_limits_are_tunable(monkeypatch):
+    monkeypatch.setenv("MONITOR_TOOL_CALLS", "8")
+    assert get_monitor_limits().tool_calls_limit == 8
+
+
+def test_no_tool_agents_are_capped_at_zero_tool_calls():
+    """decompose, choose-lenses, reflect, synthesize and draft are built with no tools.
+    A ceiling of zero is what makes that a fact the runtime enforces rather than a
+    property of how the agent happened to be constructed."""
+    assert get_synthesis_limits().tool_calls_limit == 0
+
+
+def test_every_agent_run_passes_explicit_limits():
+    """The process-wide default is a backstop, not a budget. An agent reaching it means
+    somebody added a call site and forgot to say what it may spend — which is exactly how
+    the critic came to run on twenty tool calls.
+    """
+    import ast
+    import pathlib
+
+    agents_dir = pathlib.Path(__file__).resolve().parent.parent / "superforecaster" / "agents"
+    unbounded = []
+    for path in sorted(agents_dir.glob("*.py")):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if not (isinstance(fn, ast.Name) and fn.id == "run_agent"):
+                continue
+            if not any(kw.arg == "usage_limits" for kw in node.keywords):
+                unbounded.append(path.name)
+
+    assert unbounded == []
