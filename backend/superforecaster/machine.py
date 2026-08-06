@@ -17,7 +17,6 @@ import json
 from typing import Callable
 
 import logfire
-
 from config import get_stage_timeout
 
 from . import db, stages
