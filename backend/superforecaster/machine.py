@@ -16,6 +16,8 @@ import asyncio
 import json
 from typing import Callable
 
+import logfire
+
 from config import get_stage_timeout
 
 from . import db, stages
@@ -178,12 +180,29 @@ async def execute_step(
         )
         deps = ForecastDeps(emit=emit)
 
+        cancelled: asyncio.CancelledError | None = None
         try:
-            async with asyncio.timeout(get_stage_timeout() or None):
-                payload_json = await _dispatch(step, run["id"], input, deps)
-        except asyncio.CancelledError:
-            db.fail_step(step_id, "cancelled")
-            raise
+            # One span per step, so every agent run inside it — reflect plus both
+            # synthesis attempts, say — nests under a single trace instead of
+            # surfacing as unrelated root spans.
+            with logfire.span(
+                "step {stage}",
+                stage=step["stage"],
+                run_id=run["id"],
+                step_id=step_id,
+                sub_claim_id=step["sub_claim_id"],
+                lens_name=step["lens_name"],
+                attempt=claimed["attempts"],
+            ) as span:
+                try:
+                    async with asyncio.timeout(get_stage_timeout() or None):
+                        payload_json = await _dispatch(step, run["id"], input, deps)
+                except asyncio.CancelledError as exc:
+                    # Deliberate stop (ADR 46), not a failure: tag the span, let it
+                    # close cleanly, and re-raise after — the errors view should show
+                    # only real ones.
+                    span.set_attribute("cancelled", True)
+                    cancelled = exc
         except AgentTimeout as exc:
             # One agent stalled — its own failure, not the stage ceiling's, even
             # though both subclass TimeoutError.
@@ -198,6 +217,10 @@ async def execute_step(
         except Exception as exc:
             db.fail_step(step_id, f"{type(exc).__name__}: {exc}")
             raise
+
+        if cancelled is not None:
+            db.fail_step(step_id, "cancelled")
+            raise cancelled
 
         finished = db.finish_step(step_id, payload_json)
         if step["stage"] == "synthesis":
