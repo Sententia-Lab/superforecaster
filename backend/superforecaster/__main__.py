@@ -9,7 +9,11 @@ Three subcommands, one per agent. All print formatted JSON to stdout.
 
 from __future__ import annotations
 
-import argparse
+from types import SimpleNamespace
+
+import click
+import typer
+
 import asyncio
 import json
 import sys
@@ -413,130 +417,155 @@ async def _cmd_test(args: argparse.Namespace) -> int:
 # ---------- arg parser ----------
 
 
-def _add_verbose_flag(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="Print agent tool calls and usage stats to stderr",
-    )
+app = typer.Typer(
+    name="superforecaster",
+    help="Forecast, refresh, resolve, and inspect.",
+    no_args_is_help=True,
+    add_completion=False,
+)
+
+VERBOSE = typer.Option(
+    False, "-v", "--verbose", help="Print agent tool calls and usage stats to stderr"
+)
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="superforecaster")
-    sub = parser.add_subparsers(dest="cmd", required=True)
+def _run(fn, **kwargs) -> None:
+    """Drive one command. Every `_cmd_*` still takes a namespace of flags.
 
-    p_forecast = sub.add_parser("forecast", help="Run the forecast agent")
-    p_forecast.add_argument(
-        "--fixture",
-        nargs="?",
-        const="",
-        default=None,
-        help="Load input from a fixture JSON file (default: bundled)",
-    )
-    p_forecast.add_argument(
-        "--no-save", action="store_true", help="Don't save the result to SQLite"
-    )
-    p_forecast.add_argument("--max-iterations", type=int, default=5)
-    _add_verbose_flag(p_forecast)
-    p_forecast.set_defaults(func=_cmd_forecast)
+    Typer replaces `_build_parser` — a hundred lines that restated each command's
+    signature a second time, in a second syntax, next to the function that already
+    declared it. The command bodies are untouched; they read their flags off an object,
+    and a `SimpleNamespace` is that object.
+    """
+    code = asyncio.run(fn(SimpleNamespace(**kwargs)))
+    raise typer.Exit(code or 0)
 
-    p_refresh = sub.add_parser("refresh", help="Run the refresh agent")
-    grp_r = p_refresh.add_mutually_exclusive_group(required=True)
-    grp_r.add_argument(
-        "--fixture",
-        nargs="?",
-        const="",
-        default=None,
-        help="Load forecast from a fixture file (in-memory, no DB write)",
-    )
-    grp_r.add_argument("--id", help="Refresh a forecast by UUID from the DB")
-    _add_verbose_flag(p_refresh)
-    p_refresh.set_defaults(func=_cmd_refresh)
 
-    p_resolve = sub.add_parser("resolve", help="Run the resolution agent")
-    grp_v = p_resolve.add_mutually_exclusive_group(required=True)
-    grp_v.add_argument(
-        "--fixture",
-        nargs="?",
-        const="",
-        default=None,
-        help="Load forecast from a fixture file (in-memory, no DB write)",
-    )
-    grp_v.add_argument(
-        "--id", help="Check resolution for a forecast by UUID from the DB"
-    )
-    _add_verbose_flag(p_resolve)
-    p_resolve.set_defaults(func=_cmd_resolve)
+def _run_blocking(fn, **kwargs) -> None:
+    """`serve` and `config` run their own event loop, so they cannot be awaited in one."""
+    raise typer.Exit(fn(SimpleNamespace(**kwargs)) or 0)
 
-    p_critique = sub.add_parser(
-        "critique", help="Check whether a question is resolvable"
-    )
-    p_critique.add_argument("--question", required=True)
-    p_critique.add_argument("--criteria", required=True)
-    p_critique.add_argument("--date", help="Proposed resolution date (YYYY-MM-DD)")
-    _add_verbose_flag(p_critique)
-    p_critique.set_defaults(func=_cmd_critique)
 
-    p_post = sub.add_parser(
-        "postmortem", help="Review a resolved forecast for process errors"
-    )
-    p_post.add_argument("id", help="Forecast UUID")
-    _add_verbose_flag(p_post)
-    p_post.set_defaults(func=_cmd_postmortem)
+def _one_of(fixture: str | None, id: str | None, what: str) -> None:
+    """`--fixture` and `--id` are alternatives, which argparse enforced structurally."""
+    if (fixture is None) == (id is None):
+        raise typer.BadParameter(f"give exactly one of --fixture or --id to {what}")
 
-    p_models = sub.add_parser("models", help="Inspect the model garden")
-    p_models.add_argument(
-        "action", nargs="?", default="list", choices=["list", "probe", "pick"]
-    )
-    p_models.add_argument("--as-of", help="Date to pick a clean model for (YYYY-MM-DD)")
-    _add_verbose_flag(p_models)
-    p_models.set_defaults(func=_cmd_models)
 
-    p_diagram = sub.add_parser("diagram", help="Print the graph as mermaid")
-    p_diagram.add_argument(
-        "graph", nargs="?", default="forecast", choices=["forecast", "update"]
-    )
-    _add_verbose_flag(p_diagram)
-    p_diagram.set_defaults(func=_cmd_diagram)
+@app.command()
+def forecast(
+    fixture: str = typer.Option(None, help="Load input from a fixture JSON file"),
+    no_save: bool = typer.Option(False, "--no-save", help="Do not save to SQLite"),
+    max_iterations: int = 5,
+    verbose: bool = VERBOSE,
+) -> None:
+    """Run the forecast agent."""
+    _run(_cmd_forecast, fixture=fixture, no_save=no_save,
+         max_iterations=max_iterations, verbose=verbose)
 
-    p_test = sub.add_parser("test", help="Run the component eval harness")
-    p_test.add_argument(
-        "suite", nargs="?", default="component", choices=["component", "e2e"]
-    )
-    p_test.add_argument(
-        "agent", nargs="?", default="all", help="Agent name, or 'all' (default)"
-    )
-    p_test.add_argument(
-        "--mode",
-        default="clean",
-        choices=["clean", "production"],
-        help="clean picks a model trained before the case's as_of",
-    )
-    _add_verbose_flag(p_test)
-    p_test.set_defaults(func=_cmd_test)
 
-    p_config = sub.add_parser(
-        "config", help="Show every setting and where its value came from"
-    )
-    p_config.set_defaults(func=_cmd_config, blocking=True)
+@app.command()
+def refresh(
+    fixture: str = typer.Option(None, help="Load forecast from a fixture (no DB write)"),
+    id: str = typer.Option(None, help="Refresh a forecast by UUID from the DB"),
+    verbose: bool = VERBOSE,
+) -> None:
+    """Run the refresh agent."""
+    _one_of(fixture, id, "refresh")
+    _run(_cmd_refresh, fixture=fixture, id=id, verbose=verbose)
 
-    p_serve = sub.add_parser("serve", help="Start the API and the web UI")
-    p_serve.add_argument("--port", type=int, default=8000)
-    p_serve.add_argument("--host", default="127.0.0.1")
-    p_serve.add_argument("--reload", action="store_true", help="Restart on file changes")
-    p_serve.set_defaults(func=_cmd_serve, blocking=True)
 
-    return parser
+@app.command()
+def resolve(
+    fixture: str = typer.Option(None, help="Load forecast from a fixture (no DB write)"),
+    id: str = typer.Option(None, help="Check resolution by UUID from the DB"),
+    verbose: bool = VERBOSE,
+) -> None:
+    """Run the resolution agent."""
+    _one_of(fixture, id, "resolve")
+    _run(_cmd_resolve, fixture=fixture, id=id, verbose=verbose)
+
+
+@app.command()
+def critique(
+    question: str = typer.Option(..., help="The question text"),
+    criteria: str = typer.Option(..., help="Its resolution criteria"),
+    date: str = typer.Option(None, help="Proposed resolution date (YYYY-MM-DD)"),
+    verbose: bool = VERBOSE,
+) -> None:
+    """Check whether a question is resolvable."""
+    _run(_cmd_critique, question=question, criteria=criteria, date=date, verbose=verbose)
+
+
+@app.command()
+def postmortem(id: str = typer.Argument(..., help="Forecast UUID"),
+               verbose: bool = VERBOSE) -> None:
+    """Review a resolved forecast for process errors."""
+    _run(_cmd_postmortem, id=id, verbose=verbose)
+
+
+@app.command()
+def models(
+    action: str = typer.Argument("list", help="list | probe | pick"),
+    as_of: str = typer.Option(None, help="Date to pick a clean model for (YYYY-MM-DD)"),
+    verbose: bool = VERBOSE,
+) -> None:
+    """Inspect the model garden."""
+    if action not in ("list", "probe", "pick"):
+        raise typer.BadParameter("action must be list, probe, or pick")
+    _run(_cmd_models, action=action, as_of=as_of, verbose=verbose)
+
+
+@app.command()
+def diagram(graph: str = typer.Argument("forecast", help="forecast | update"),
+            verbose: bool = VERBOSE) -> None:
+    """Print the graph as mermaid."""
+    if graph not in ("forecast", "update"):
+        raise typer.BadParameter("graph must be forecast or update")
+    _run(_cmd_diagram, graph=graph, verbose=verbose)
+
+
+@app.command()
+def test(
+    suite: str = typer.Argument("component", help="component | e2e"),
+    agent: str = typer.Argument("all", help="Agent name, or 'all'"),
+    mode: str = typer.Option("clean", help="clean picks a model trained before the case"),
+    verbose: bool = VERBOSE,
+) -> None:
+    """Run the component eval harness."""
+    if suite not in ("component", "e2e"):
+        raise typer.BadParameter("suite must be component or e2e")
+    if mode not in ("clean", "production"):
+        raise typer.BadParameter("mode must be clean or production")
+    _run(_cmd_test, suite=suite, agent=agent, mode=mode, verbose=verbose)
+
+
+@app.command()
+def config() -> None:
+    """Show every setting and where its value came from."""
+    _run_blocking(_cmd_config)
+
+
+@app.command()
+def serve(
+    port: int = 8000,
+    host: str = "127.0.0.1",
+    reload: bool = typer.Option(False, help="Restart on file changes"),
+) -> None:
+    """Start the API and the web UI."""
+    _run_blocking(_cmd_serve, port=port, host=host, reload=reload)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = _build_parser()
-    args = parser.parse_args(argv)
-    # `serve` runs its own event loop and so cannot be awaited inside one.
-    if getattr(args, "blocking", False):
-        return args.func(args)
-    return asyncio.run(args.func(args))
+    """Kept as a function so `python -m superforecaster` and the tests share an entry."""
+    try:
+        app(args=argv, standalone_mode=False)
+    except typer.Exit as exc:
+        return exc.exit_code
+    except click.ClickException as exc:
+        exc.show()
+        return exc.exit_code
+    return 0
 
 
 if __name__ == "__main__":

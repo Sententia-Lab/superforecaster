@@ -63,9 +63,6 @@ def signed_adjustment(a: Adjustment) -> float:
     return a.magnitude if a.direction == "up" else -a.magnitude
 
 
-_signed = signed_adjustment
-
-
 def _clamp(p: float) -> float:
     """A probability, whatever the arithmetic wanted to say."""
     return min(1.0, max(0.0, p))
@@ -123,9 +120,6 @@ def base_rate_spread(o: OutsideView) -> float:
     """
     rates = [lens_rate(l) for l in o.lenses]
     return max(rates) - min(rates) if rates else 0.0
-
-
-_spread = base_rate_spread
 
 
 def sub_claim_spreads(o: OutsideView) -> dict[str | None, float]:
@@ -224,12 +218,22 @@ def claim_support(sources: list[GradedSource]) -> SourceConfidence:
     return _RANK_CONFIDENCE[max(_CONFIDENCE_RANK[s.confidence] for s in sources)]
 
 
-def _weighted_support(pairs: list[tuple[float, SourceConfidence]]) -> float | None:
-    """Weighted mean rank over (weight, grade). None when nothing carries weight."""
+def _weighted_mean(pairs: list[tuple[float, float]]) -> float | None:
+    """Weighted mean, or None when nothing carries weight.
+
+    One primitive for what was three near-identical guard-and-divide bodies: source
+    support, the flat lens mean, and a sub-question's blend. The `None` is the shared
+    part — a division by zero weight is not zero, it is "no answer".
+    """
     total = sum(w for w, _ in pairs)
     if total <= _EPSILON:
         return None
-    return sum(w * _CONFIDENCE_RANK[c] for w, c in pairs) / total
+    return sum(w * v for w, v in pairs) / total
+
+
+def _weighted_support(pairs: list[tuple[float, SourceConfidence]]) -> float | None:
+    """Weighted mean rank over (weight, grade)."""
+    return _weighted_mean([(w, _CONFIDENCE_RANK[c]) for w, c in pairs])
 
 
 def aggregate_source_confidence(
@@ -458,11 +462,9 @@ def sub_claim_rate(
     None when no lens claims this sub-claim: the honest answer for a `judgment`
     sub-claim, and for a `researchable` one it means the research did not land.
     """
-    lenses = lenses_for(sub_claim_id, o)
-    total = sum(l.weight for l in lenses)
-    if not lenses or total <= _EPSILON:
-        return None
-    return sum(l.weight * adjusted_lens_rate(l, i) for l in lenses) / total
+    return _weighted_mean(
+        [(l.weight, adjusted_lens_rate(l, i)) for l in lenses_for(sub_claim_id, o)]
+    )
 
 
 def weighted_base_rate(o: OutsideView) -> float | None:
@@ -472,10 +474,7 @@ def weighted_base_rate(o: OutsideView) -> float | None:
     them there is no chain to walk, and the honest fallback is what all the populations
     say together.
     """
-    total = sum(l.weight for l in o.lenses)
-    if total <= _EPSILON:
-        return None
-    return sum(l.weight * lens_rate(l) for l in o.lenses) / total
+    return _weighted_mean([(l.weight, lens_rate(l)) for l in o.lenses])
 
 
 def anchor_from(o: OutsideView, d: Decomposition | None) -> tuple[float | None, str]:
