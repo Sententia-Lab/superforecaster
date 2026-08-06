@@ -1281,6 +1281,45 @@ function renderAdjustment(a, key) {
 const addresses = (ids) =>
   h("div.micro", {}, ids && ids.length ? `addresses ${ids.join(", ")}` : "addresses the whole question");
 
+/**
+ * One reference class, inside the sub-claim it was found for.
+ *
+ * Analogs nest here. They are a child collection on `ReferenceClass` but used to be
+ * emitted as flat sibling events, so which class an analog belonged to was carried only
+ * by arrival order — a convention nothing wrote down and the UI could not show.
+ */
+function renderClass(run, c, key) {
+  // Which search produced each cited URL. The agent asserts the URL; the tool records
+  // the query — only the join answers "which search found this base rate".
+  const seen = sourcesSeenIndex(run);
+  const queries = [...new Set((c.sources || [])
+    .map((s) => seen[s.url] && seen[s.url].query)
+    .filter(Boolean))];
+
+  return h("div.refcard", {},
+    h("div.evhead", {},
+      h("span.num-strong", {}, pct(c.base_rate)),
+      h("span.micro", {}, `n=${c.sample_size}`),
+      c.weight === undefined ? null : h("span.micro", {}, `weight ${c.weight.toFixed(2)}`),
+      h("div.spacer", {}),
+      supportChip(claimSupport(c.sources))),
+    h("div", {}, c.name),
+    h("div.minibar", {}, h("i", { style: `width:${Math.min(100, c.base_rate * 100)}%` })),
+    queries.length ? h("div.micro", {}, `searched: ${queries.join(" · ")}`) : null,
+    renderSources(`src-${key}`, c.sources, seen),
+    (c.analogs || []).length
+      ? disclosure(`analogs-${key}`,
+          h("span.micro", {}, `${c.analogs.length} analog${c.analogs.length === 1 ? "" : "s"}`),
+          () => c.analogs.map((a) =>
+            h("div.srcrow", {},
+              h("span.chip", { class: a.outcome >= 1 ? "for" : "against" },
+                a.outcome >= 1 ? "yes" : "no"),
+              h("div", {},
+                prose(a.description),
+                a.relevance ? prose(a.relevance, "dim md") : null))))
+      : null);
+}
+
 /** The graded sources behind one claim, collapsed until asked for. */
 function renderSources(key, sources, seen) {
   if (!sources || !sources.length) {
@@ -1833,31 +1872,6 @@ function renderDecomposition(d) {
 }
 
 /**
- * The populations, as chosen — before anything measured them.
- *
- * Worth its own stage because the ordering is the guarantee: an agent that picked
- * populations and measured them in one pass could settle on whichever gave the answer it
- * already liked, and the output would look identical either way. Showing them here with
- * no rates attached is what makes the commitment visible.
- */
-function renderChosenLenses(lenses) {
-  const byClaim = {};
-  for (const l of lenses) (byClaim[l.sub_claim_id] ||= []).push(l);
-  return h("div", {},
-    Object.entries(byClaim).map(([id, group]) =>
-      h("div.ev.sub", {},
-        h("div.evhead", {}, h("span.micro", {}, id)),
-        group.map((l) =>
-          h("div.lens", {},
-            h("div.evhead", {},
-              h("strong", {}, l.name),
-              h("div.spacer", {}),
-              h("span.micro", {}, `relevance ${l.weight.toFixed(2)}`)),
-            h("div.dim", {}, l.population),
-            prose(l.why_it_fits, "dim md"))))));
-}
-
-/**
  * P7 — the anchor, and what the classes disagreed about.
  *
  * The disagreement sentence is the half of P7 a schema cannot enforce, which is the
@@ -1868,7 +1882,7 @@ function renderAnchorNote(o) {
     h("div.micro", {}, `aggregate_base_rate — ${pct(o.aggregate_base_rate)}`),
     prose(
       o.disagreement.trim()
-      || `${o.lenses.length} population${o.lenses.length === 1 ? "" : "s"} measured.`,
+      || `${o.reference_classes.length} reference classes, broadly in agreement.`,
       "dim md"));
 }
 
