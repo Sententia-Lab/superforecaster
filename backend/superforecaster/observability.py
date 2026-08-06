@@ -346,7 +346,8 @@ async def run_agent(
             _tags=["agent-progress", "run-start"],
         )
 
-    with logfire.span(run_name, prompt_preview=_preview(prompt, 500)):
+    cancelled: asyncio.CancelledError | None = None
+    with logfire.span(run_name, prompt_preview=_preview(prompt, 500)) as span:
         try:
             async with _deadline(deadline):
                 result = await agent.run(
@@ -357,6 +358,21 @@ async def run_agent(
                         _make_event_handler(verbose=verbose) if trace_events else None
                     ),
                 )
+        except asyncio.CancelledError as exc:
+            # The client hung up mid-run — the deliberate stop ADR 46 promises, not a
+            # failure. Exit the span cleanly (held until after the `with`, so the trace
+            # does not record an unhandled exception and the errors view shows only real
+            # ones), then let the cancellation keep propagating to `machine.execute_step`,
+            # which records the step as `error='cancelled'`.
+            span.set_attribute("cancelled", True)
+            logfire.info(
+                "{run_name} cancelled — client disconnected",
+                run_name=run_name,
+                _tags=["agent-progress", "run-cancelled"],
+            )
+            if show:
+                print(f"[agent] cancelled: {run_name}", file=sys.stderr, flush=True)
+            cancelled = exc
         except TimeoutError as exc:
             # Raised as our own type so callers can tell "stopped responding" from
             # "acted too many times" — they degrade differently, and a bare TimeoutError
@@ -371,6 +387,9 @@ async def run_agent(
             if show:
                 print(f"[agent] TIMEOUT: {message}", file=sys.stderr, flush=True)
             raise AgentTimeout(message) from exc
+
+    if cancelled is not None:
+        raise cancelled
 
     if show or logging_active:
         usage = result.usage()
