@@ -202,13 +202,14 @@ backend/
     tools.py                     # date-clamped search  (clamp 1)
     model_garden.py              # model registry by training cutoff  (clamp 2)
     model_garden.json            # registry data
-    db.py                        # SQLite layer + scoring math
+    db.py                        # SQLite layer
+    scoring.py                   # time-weighted Brier + calibration deciles
     runs.py                      # live-run registry + lifecycle
     eventstream.py               # generic bounded buffer, replay, subscriber fan-out
     durability.py                # DBOS config; makes a run resumable
     cron.py                      # APScheduler jobs + orchestrators
     observability.py             # Logfire config + run_agent wrapper
-    __main__.py                  # CLI
+    __main__.py                  # CLI (typer)
     agents/                      # one module per methodology step (9)
       __init__.py                #   with_model, format_question, as_of_note
       decompose.py  outside_view.py  inside_view.py  reflect.py  synthesize.py
@@ -221,7 +222,7 @@ backend/
     fixtures/                    # JSON inputs for manual CLI runs
   api/
     main.py  deps.py  forecasts.py  questions.py  calibration.py  admin.py  runs.py
-  tests/                         # 360 tests, no network required
+  tests/                         # 369 tests, no network required
   test_forecasting_baseline/     # 66 legacy questions; raises on import, never run
 
 frontend/                        # static, zero build — served by FastAPI at /
@@ -1390,7 +1391,7 @@ the page is opened from somewhere other than the API.
 
 ## What Works
 
-Verified by `cd backend && uv run pytest` — **360 tests, no network, no API keys**:
+Verified by `cd backend && uv run pytest` — **369 tests, no network, no API keys**:
 
 - All eight agents import and build without keys (lazy construction)
 - The forecast graph runs its stages in methodology order — P4 asserted structurally

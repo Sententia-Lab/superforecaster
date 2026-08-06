@@ -1,12 +1,13 @@
 """SQLite persistence layer.
 
-All DB operations live here. The schema is defined in `init_db()` and
-created on first connection. Queries are intentionally written in plain
-SQL — there is no ORM. The complexity is low enough that an ORM would
-add overhead without value.
+All DB operations live here. The schema is defined in `init_db()` and created on first
+connection. Queries are intentionally written in plain SQL — there is no ORM. Measured
+against this file, one would eliminate ~200 lines of row-mapping and add ~150 of model
+and migration scaffolding, and roughly 40% of what is here is forecasting domain rules an
+ORM does not touch. See ADR 38-adjacent notes in the audit.
 
-Scoring math (time-weighted Brier) is implemented here too because it
-is fundamentally a query against the `forecast_updates` table.
+Scoring maths lives in `scoring`, not here — what a forecast is *worth* is a methodology
+question, and it is testable without a database.
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ sqlite3.register_converter("TIMESTAMP", _convert_timestamp)
 
 from config import get_settings
 
+from . import scoring
 from .models import (
     CalibrationBucket,
     CalibrationReport,
@@ -88,11 +90,18 @@ def _db_path() -> str:
 def connect() -> Iterator[sqlite3.Connection]:
     """Yield a sqlite3 connection with sane defaults.
 
+    `journal_mode=WAL` and a `busy_timeout` are not optional here: APScheduler's daily
+    refresh runs in the same process as the API, so a write during a request is ordinary
+    rather than exceptional. Without WAL a reader blocks a writer; without the timeout the
+    loser of that race gets `database is locked` immediately instead of waiting a moment.
+
     Foreign keys are enforced. Row factory returns dicts for ergonomic access.
     """
     conn = sqlite3.connect(_db_path(), detect_types=sqlite3.PARSE_DECLTYPES)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
     try:
         yield conn
         conn.commit()
@@ -128,19 +137,17 @@ route: an old database being upgraded, or a fresh one just built by `init_db`'s
 """
 
 
-def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
-
-
 def _migrate(conn: sqlite3.Connection) -> None:
     """Bring an existing database up to `SCHEMA_VERSION`.
 
     `PRAGMA user_version` is a four-byte integer SQLite keeps in the file header for
     exactly this. No extra table, no dependency, and it survives a copy of the file.
 
-    A database created fresh by `init_db` is already at `SCHEMA_VERSION` structurally, but
-    its `user_version` is 0 — so every step still runs, and every step has to tolerate
-    having nothing to do.
+    A fresh database is stamped at `SCHEMA_VERSION` by `init_db` before this runs, so
+    historical steps never replay against a schema that was born correct. That matters
+    more with every migration added: a step that *renames* a column would succeed against
+    a fresh database and corrupt it, and no amount of tolerance inside the step would
+    help. Tolerating a no-op is still worth keeping for databases stamped before this.
     """
     current = conn.execute("PRAGMA user_version").fetchone()[0]
     if current >= SCHEMA_VERSION:
@@ -161,6 +168,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
 def init_db() -> None:
     """Create tables if they don't exist, then migrate. Safe to call repeatedly."""
     with connect() as conn:
+        fresh = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='forecasts'"
+        ).fetchone()[0] == 0
+
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS forecasts (
@@ -249,6 +260,11 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS ix_runs_created ON runs(created_at DESC);
             """
         )
+        if fresh:
+            # Born at the current schema, so no historical step has anything to do here.
+            # Stamping now is what stops a future migration — a rename, say — from
+            # "upgrading" a database that was already correct.
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         _migrate(conn)
 
     # A run only ever lives in memory (see `superforecaster.runs`). Anything still
@@ -263,6 +279,21 @@ def init_db() -> None:
 def hash_ip(ip: str) -> str:
     """Hash a raw IP address for privacy-preserving storage."""
     return hashlib.sha256(ip.encode("utf-8")).hexdigest()
+
+
+def _guard_question(conn: sqlite3.Connection, question_id: str):
+    """Fetch a question for mutation, or raise. The precondition every writer shares.
+
+    Written out four times before this, which is three chances for one copy to drift from
+    the others on what "deleted" means.
+    """
+    row = conn.execute(
+        "SELECT ip_hash, status, is_deleted FROM questions WHERE id = ?",
+        (question_id,),
+    ).fetchone()
+    if row is None or row["is_deleted"]:
+        raise NotFoundError(f"question {question_id}")
+    return row
 
 
 def _utcnow() -> datetime:
@@ -424,14 +455,23 @@ def list_forecasts(
 
     with connect() as conn:
         f_rows = conn.execute(sql, params).fetchall()
-        results = []
-        for f_row in f_rows:
-            u_rows = conn.execute(
-                "SELECT * FROM forecast_updates WHERE forecast_id = ? ORDER BY created_at ASC",
-                (f_row["id"],),
-            ).fetchall()
-            results.append(_row_to_forecast(f_row, u_rows))
-    return results
+        if not f_rows:
+            return []
+
+        # One query for every forecast's updates, not one per forecast. At the default
+        # limit that is 2 round-trips instead of 51.
+        ids = [r["id"] for r in f_rows]
+        placeholders = ",".join("?" * len(ids))
+        u_rows = conn.execute(
+            f"SELECT * FROM forecast_updates WHERE forecast_id IN ({placeholders}) "
+            f"ORDER BY created_at ASC",
+            ids,
+        ).fetchall()
+
+    by_forecast: dict[str, list] = {fid: [] for fid in ids}
+    for u in u_rows:
+        by_forecast[u["forecast_id"]].append(u)
+    return [_row_to_forecast(f, by_forecast[f["id"]]) for f in f_rows]
 
 
 def list_active_forecast_ids() -> list[str]:
@@ -449,12 +489,7 @@ def list_active_forecast_ids() -> list[str]:
 
 
 def compute_time_weighted_probability(forecast_id: str) -> float:
-    """Time-weighted average of all updates, weighted by held duration.
-
-    Each update is held from its `created_at` until the next update's
-    `created_at` (or `resolution_date` for the final update). The weight
-    is its held duration as a fraction of the total horizon.
-    """
+    """Read a forecast's update history and score it. Maths in `scoring`."""
     with connect() as conn:
         f_row = conn.execute(
             "SELECT resolution_date FROM forecasts WHERE id = ?", (forecast_id,)
@@ -471,21 +506,11 @@ def compute_time_weighted_probability(forecast_id: str) -> float:
     if not u_rows:
         raise StateError("forecast has no updates")
 
-    timestamps = [_ensure_aware(r["created_at"]) for r in u_rows]
-    probabilities = [r["probability"] for r in u_rows]
-    boundaries = timestamps + [resolution_date]
-    total_seconds = (resolution_date - timestamps[0]).total_seconds()
-
-    if total_seconds <= 0:
-        # Degenerate case: only the latest probability matters
-        return probabilities[-1]
-
-    weighted_sum = 0.0
-    for i, prob in enumerate(probabilities):
-        duration = (boundaries[i + 1] - boundaries[i]).total_seconds()
-        weight = duration / total_seconds
-        weighted_sum += prob * weight
-    return weighted_sum
+    return scoring.time_weighted_probability(
+        [r["probability"] for r in u_rows],
+        [_ensure_aware(r["created_at"]) for r in u_rows],
+        resolution_date,
+    )
 
 
 def resolve_forecast(forecast_id: str, outcome: float | None) -> None:
@@ -549,7 +574,7 @@ def mark_refreshed(forecast_id: str, flagged: bool = False) -> None:
 
 
 def calibration_report() -> CalibrationReport:
-    """Aggregate Brier score + per-bucket calibration over resolved, non-ambiguous forecasts."""
+    """Read every resolved, non-ambiguous forecast and score it. Maths in `scoring`."""
     with connect() as conn:
         rows = conn.execute(
             """
@@ -562,50 +587,10 @@ def calibration_report() -> CalibrationReport:
             "SELECT COUNT(*) FROM forecasts WHERE is_ambiguous = 1"
         ).fetchone()[0]
 
-    if not rows:
-        return CalibrationReport(
-            aggregate_brier_score=None,
-            total_resolved=0,
-            total_ambiguous_excluded=ambiguous_count,
-            buckets=[],
-        )
-
-    aggregate = sum(r["brier_score"] for r in rows) / len(rows)
-
-    # 10 deciles
-    buckets: list[CalibrationBucket] = []
-    for i in range(10):
-        low = i / 10
-        high = (i + 1) / 10
-        bucket_rows = [
-            r
-            for r in rows
-            if (low <= r["scored_probability"] < high)
-            or (i == 9 and r["scored_probability"] == 1.0)
-        ]
-        if not bucket_rows:
-            continue
-        buckets.append(
-            CalibrationBucket(
-                range=f"{int(low * 100)}-{int(high * 100)}%",
-                predicted_avg=sum(r["scored_probability"] for r in bucket_rows)
-                / len(bucket_rows),
-                actual_frequency=sum(r["outcome"] for r in bucket_rows)
-                / len(bucket_rows),
-                count=len(bucket_rows),
-            )
-        )
-
-    return CalibrationReport(
-        aggregate_brier_score=aggregate,
-        total_resolved=len(rows),
-        total_ambiguous_excluded=ambiguous_count,
-        buckets=buckets,
+    return scoring.calibration(
+        [(r["scored_probability"], r["outcome"], r["brier_score"]) for r in rows],
+        ambiguous_count,
     )
-
-
-# ---------- Questions ----------
-
 
 def submit_question(
     text: str,
@@ -639,7 +624,8 @@ def submit_question(
             (qid, text, resolution_criteria, proposed_resolution_date, ip_hash, now),
         )
 
-    record = get_question(qid, requester_ip_hash=ip_hash)
+        record = _read_question(conn, qid, requester_ip_hash=ip_hash)
+
     assert record is not None
     return record
 
@@ -662,12 +648,7 @@ def edit_question(
 
     now = _utcnow()
     with connect() as conn:
-        row = conn.execute(
-            "SELECT ip_hash, status, is_deleted FROM questions WHERE id = ?",
-            (question_id,),
-        ).fetchone()
-        if row is None or row["is_deleted"]:
-            raise NotFoundError(f"question {question_id}")
+        row = _guard_question(conn, question_id)
 
         if not is_admin:
             if ip_hash != row["ip_hash"]:
@@ -692,7 +673,8 @@ def edit_question(
 
         conn.execute(f"UPDATE questions SET {', '.join(sets)} WHERE id = ?", params)
 
-    record = get_question(question_id, requester_ip_hash=ip_hash)
+        record = _read_question(conn, question_id, requester_ip_hash=ip_hash)
+
     assert record is not None
     return record
 
@@ -700,12 +682,7 @@ def edit_question(
 def delete_question(question_id: str, ip_hash: str, is_admin: bool = False) -> None:
     """Soft-delete a question. Only the original submitter (or admin) can delete."""
     with connect() as conn:
-        row = conn.execute(
-            "SELECT ip_hash, status, is_deleted FROM questions WHERE id = ?",
-            (question_id,),
-        ).fetchone()
-        if row is None or row["is_deleted"]:
-            raise NotFoundError(f"question {question_id}")
+        row = _guard_question(conn, question_id)
         if not is_admin:
             if ip_hash != row["ip_hash"]:
                 raise PermissionError("only the original submitter can delete")
@@ -715,31 +692,46 @@ def delete_question(question_id: str, ip_hash: str, is_admin: bool = False) -> N
         conn.execute("UPDATE questions SET is_deleted = 1 WHERE id = ?", (question_id,))
 
 
+def _read_question(
+    conn: sqlite3.Connection,
+    question_id: str,
+    requester_ip_hash: str | None = None,
+) -> QuestionRecord | None:
+    """Assemble a question on an existing connection.
+
+    Split out so a mutation can return the row it just wrote *inside its own
+    transaction*. Every writer used to close its connection and then call
+    `get_question`, which opened a second one — two round-trips with a window between
+    them where another writer could land, and the caller would be handed a record that
+    was never the result of its own write.
+    """
+    row = conn.execute(
+        "SELECT * FROM questions WHERE id = ? AND is_deleted = 0", (question_id,)
+    ).fetchone()
+    if row is None:
+        return None
+
+    net_row = conn.execute(
+        "SELECT COALESCE(SUM(vote), 0) AS net FROM votes WHERE question_id = ?",
+        (question_id,),
+    ).fetchone()
+    user_vote = None
+    if requester_ip_hash is not None:
+        v_row = conn.execute(
+            "SELECT vote FROM votes WHERE question_id = ? AND ip_hash = ?",
+            (question_id, requester_ip_hash),
+        ).fetchone()
+        user_vote = v_row["vote"] if v_row else None
+
+    is_own = requester_ip_hash is not None and row["ip_hash"] == requester_ip_hash
+    return _row_to_question(row, net_row["net"] if net_row else 0, user_vote, is_own)
+
+
 def get_question(
     question_id: str, requester_ip_hash: str | None = None
 ) -> QuestionRecord | None:
     with connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM questions WHERE id = ? AND is_deleted = 0",
-            (question_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        net_score_row = conn.execute(
-            "SELECT COALESCE(SUM(vote), 0) AS net FROM votes WHERE question_id = ?",
-            (question_id,),
-        ).fetchone()
-        net_score = net_score_row["net"] if net_score_row else 0
-        user_vote = None
-        if requester_ip_hash is not None:
-            v_row = conn.execute(
-                "SELECT vote FROM votes WHERE question_id = ? AND ip_hash = ?",
-                (question_id, requester_ip_hash),
-            ).fetchone()
-            user_vote = v_row["vote"] if v_row else None
-
-    is_own = requester_ip_hash is not None and row["ip_hash"] == requester_ip_hash
-    return _row_to_question(row, net_score, user_vote, is_own)
+        return _read_question(conn, question_id, requester_ip_hash)
 
 
 def list_questions(
@@ -828,25 +820,22 @@ def approve_question(
         params.append(question_id)
         conn.execute(f"UPDATE questions SET {', '.join(sets)} WHERE id = ?", params)
 
-    record = get_question(question_id)
+        record = _read_question(conn, question_id)
+
     assert record is not None
     return record
 
 
 def reject_question(question_id: str) -> QuestionRecord:
     with connect() as conn:
-        row = conn.execute(
-            "SELECT status, is_deleted FROM questions WHERE id = ?",
-            (question_id,),
-        ).fetchone()
-        if row is None or row["is_deleted"]:
-            raise NotFoundError(f"question {question_id}")
+        row = _guard_question(conn, question_id)
         if row["status"] not in ("pending", "approved"):
             raise StateError(f"cannot reject question with status {row['status']}")
         conn.execute(
             "UPDATE questions SET status = 'rejected' WHERE id = ?", (question_id,)
         )
-    record = get_question(question_id)
+        record = _read_question(conn, question_id)
+
     assert record is not None
     return record
 
@@ -854,11 +843,7 @@ def reject_question(question_id: str) -> QuestionRecord:
 def link_question_to_forecast(question_id: str, forecast_id: str) -> QuestionRecord:
     """Admin: mark a question as forecasted and link to its forecast row."""
     with connect() as conn:
-        row = conn.execute(
-            "SELECT status, is_deleted FROM questions WHERE id = ?", (question_id,)
-        ).fetchone()
-        if row is None or row["is_deleted"]:
-            raise NotFoundError(f"question {question_id}")
+        row = _guard_question(conn, question_id)
         if row["status"] != "approved":
             raise StateError(
                 f"can only forecast approved questions, got {row['status']}"
@@ -867,7 +852,8 @@ def link_question_to_forecast(question_id: str, forecast_id: str) -> QuestionRec
             "UPDATE questions SET status = 'forecasted', forecast_id = ? WHERE id = ?",
             (forecast_id, question_id),
         )
-    record = get_question(question_id)
+        record = _read_question(conn, question_id)
+
     assert record is not None
     return record
 
@@ -888,23 +874,20 @@ def cast_vote(question_id: str, ip_hash: str, vote: int) -> int:
         if q is None:
             raise NotFoundError(f"question {question_id}")
 
-        existing = conn.execute(
-            "SELECT id FROM votes WHERE question_id = ? AND ip_hash = ?",
-            (question_id, ip_hash),
-        ).fetchone()
-        if existing is None:
-            conn.execute(
-                """
-                INSERT INTO votes (id, question_id, ip_hash, vote, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (str(uuid.uuid4()), question_id, ip_hash, vote, now, now),
-            )
-        else:
-            conn.execute(
-                "UPDATE votes SET vote = ?, updated_at = ? WHERE id = ?",
-                (vote, now, existing["id"]),
-            )
+        # `votes` already carries UNIQUE(question_id, ip_hash), so the database can do
+        # this atomically. The select-then-insert-or-update it replaces had a window
+        # between the check and the write where a second vote from the same caller
+        # raised an integrity error instead of updating.
+        conn.execute(
+            """
+            INSERT INTO votes (id, question_id, ip_hash, vote, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(question_id, ip_hash) DO UPDATE SET
+                vote = excluded.vote,
+                updated_at = excluded.updated_at
+            """,
+            (str(uuid.uuid4()), question_id, ip_hash, vote, now, now),
+        )
         net_row = conn.execute(
             "SELECT COALESCE(SUM(vote), 0) AS net FROM votes WHERE question_id = ?",
             (question_id,),

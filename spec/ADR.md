@@ -1300,3 +1300,68 @@ the three hand-synchronised tables they belonged to collapse into one `FORECAST_
 registry of `(name, principle, label, run)`. `synthesize._implied` — a hand-copied second
 implementation of the derivation formula, and precisely how the prompt and the check
 drifted apart — is deleted in favour of calling `checks.implied_probability`.
+
+---
+
+## ADR 41 — Scoring is arithmetic, not persistence; and no ORM
+
+`db.py` was 1138 lines, and the audit's first instinct — reach for SQLAlchemy — turned out
+to be wrong when measured against the actual file:
+
+| candidate | LOC | an ORM saves |
+|---|---|---|
+| row → model converters | 70 | ~55 |
+| datetime adapters + `_ensure_aware` × 18 | ~40 | ~35 |
+| DDL in `init_db` | 97 | ~60 (tables move into model classes, they do not vanish) |
+| simple CRUD | ~180 | ~40 — `select(F).where(...)` is not shorter than the SQL |
+| migrations | 53 | **−150** — Alembic replaces 53 working lines with a directory, `env.py`, and a versions folder. A net loss at one migration. |
+| domain rules: permissions, state transitions, rate limiting, scoring | **~380** | **0** |
+
+Net ~10-15%, for a live-data migration. **Rules out** SQLAlchemy, SQLModel, and Alembic
+while this stays single-worker on SQLite. Revisit at multiple workers, where Postgres
+forces the question anyway — the SQL here is SQLite-dialect (`PRAGMA`, `INSERT OR REPLACE`)
+and would need rewriting regardless. Note DBOS already pulls SQLAlchemy into the tree
+(ADR 37), so "a large new dependency" is *not* an argument against it; the LOC maths is.
+
+What actually helped, at a fraction of the risk:
+
+- **`scoring.py`.** Time-weighted Brier and the calibration deciles are ninety lines of
+  arithmetic that lived in `db.py` because they read a table. What a forecast is *worth*
+  is a methodology question; it is now testable without a database.
+- **Two real bugs.** `list_forecasts` issued one query per forecast — 51 round-trips at
+  the default limit, now 2. And every question mutation closed its write transaction and
+  then called `get_question`, opening a *second* connection: two round-trips with a window
+  between them where another writer could land, handing the caller a record that was never
+  the result of its own write. `_read_question(conn, ...)` reads inside the transaction.
+- **`cast_vote` is one statement.** The table already carried
+  `UNIQUE(question_id, ip_hash)`; the select-then-insert-or-update had a TOCTOU window
+  where a second vote from the same caller raised an integrity error instead of updating.
+- **WAL and `busy_timeout`.** APScheduler's refresh shares a process with the API, so a
+  write during a request is ordinary. Without these the loser gets `database is locked`
+  immediately rather than waiting.
+- **Fresh databases are stamped at `SCHEMA_VERSION`.** Migrations no longer replay against
+  a schema born correct — which matters the first time a step *renames* something, since
+  that would succeed against a fresh database and corrupt it.
+
+**Related.** `_columns` was dead. `ForecastResearchNotes` had zero references repo-wide.
+`_signed` and `_spread` were private aliases nothing used. `_weighted_mean` absorbs three
+copies of "weighted mean, None when weightless".
+
+---
+
+## ADR 42 — The CLI is typer; the corpus is JSON
+
+`_build_parser` was 108 lines restating every command's signature a second time, in a
+second syntax, a hundred lines from the function that already declared it. Typer takes the
+signature from the function. The `_cmd_*` bodies are unchanged — they read flags off an
+object, and a `SimpleNamespace` is that object — so this is boilerplate removal, not a
+rewrite. The two structural things argparse gave for free are now explicit: mutually
+exclusive `--fixture`/`--id` raises a `BadParameter`, as do the enum-ish arguments.
+
+`test_forecasting_baseline/run_baseline.py` was 617 lines, of which **five** were
+executable. The other 600 were the 66-question backtest corpus as dict literals — and the
+file **could not be imported**: the fixtures called `datetime.date(...)` on a name the file
+had bound to the `date` *class*, so `import run_baseline` raised `AttributeError`. Six
+hundred lines of data pretending to be code, and broken code at that. The corpus is now
+`questions.json` and the module is a 44-line loader that also reports the contamination-risk
+split, which is the number that decides which model may see a question at all.
