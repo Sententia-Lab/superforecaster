@@ -80,6 +80,19 @@ Two channels apply the pressure: a notice appended to every tool return, and a d
 `@agent.instructions` function re-fetched per model request. A cell that crosses the wall
 degrades to no result and the run continues. See ADR 32.
 
+**The criteria critic runs on the same two numbers.** It is standalone, not a cell, so its
+budget is flat rather than scaled by `max_iterations`: `config.get_critique_budget()` gives
+soft 3 / hard 5, and `run_critique` installs its own `SearchBudget` and passes
+`get_critique_limits()`. It previously had neither — it ran on the process-wide default of 20
+tool calls with no cline, and blowing it raised `UsageLimitExceeded` out of
+`POST /questions/draft`, which returns the parsed question and the critique from one call, so
+the 500 threw away the user's parsed draft. Hitting the wall now returns a critique marked
+`is_resolvable=False` whose only finding says the check did not finish, with the author's own
+criteria as the "rewrite" — inventing nothing. `app.js` tells the two apart with
+`critiqueFoundSomething()` (a real block always offers criteria different from what was typed):
+the chip reads "not checked" rather than "not resolvable", the "two people could argue" prose is
+suppressed, the rewrite body is hidden, and the unblock button reads "Proceed anyway".
+
 **Every event carries a `sub_claim` tag**, and two new types — `column` (opens a card at the top
 of a row, before any agent) and `exhausted`. The frontend renders each research row as a grid of
 cards, one per sub-question, each with its own live tool tail. `spec/planned/spec3.3.md` §3.3 is
@@ -829,7 +842,7 @@ run_<n>(...) -> <Out>                               # the seam nodes, tests, eva
 | `synthesize.py` | 6, 8, 16 | `Forecast` | — |
 | `resolution.py` | — | `ResolutionCheckResult` | search_web, search_wikipedia |
 | `update.py` | 10, 11, 12 | `UpdateDecision` | search_web, find_disconfirming_evidence |
-| `critic.py` | 3 | `CriteriaCritique` | search_web |
+| `critic.py` | 3 | `CriteriaCritique` | search_web (soft 3 / hard 5) |
 | `postmortem.py` | 13 | `PostMortem` | search_web |
 | `draft.py` | — | `DraftedQuestion` | — |
 
@@ -1366,6 +1379,8 @@ Backend reads everything through `config.py`. `backend/.env`; see `backend/.env.
 | `RESEARCH_TOOL_CALLS_PER_ITERATION` | Tool calls per `max_iterations` unit (same) | `3` |
 | `CELL_SOFT_CALLS_PER_ITERATION` | The cline — searches per `max_iterations` unit, per cell | `1` |
 | `CELL_HARD_HEADROOM` | Calls between the cline and the wall | `3` |
+| `CRITIQUE_SOFT_CALLS` | The criteria critic's cline, flat (it runs before any forecast) | `3` |
+| `CRITIQUE_HARD_HEADROOM` | Calls between that cline and its wall | `2` |
 | `FRONTEND_DIR` | Static files served at `/`; unset disables the mount | `../frontend` |
 
 Frontend: none. It is same-origin static files; `window.SF_API_URL` overrides the base URL when

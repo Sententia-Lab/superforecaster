@@ -630,6 +630,19 @@ function isResolvable() {
   return !state.critique || state.critique.is_resolvable || state.applied || state.dismissed;
 }
 
+/** Whether the critic actually reached a verdict, or merely failed to clear the criteria.
+ *
+ *  The backend degrades to a critique with no ambiguities and the author's own text back
+ *  as the "rewrite" when the critic hits its search wall — better than a 500 that throws
+ *  away the parsed draft, but it is not a finding, and the copy below must not assert one.
+ *  A real critique that blocks a run always offers criteria different from what was typed. */
+function critiqueFoundSomething() {
+  const c = state.critique;
+  if (!c) return false;
+  const rewritten = (c.suggested_criteria || "").trim() !== ((state.fields || {}).resolution_criteria || "").trim();
+  return c.ambiguities.length > 0 || rewritten;
+}
+
 function slotsFree() {
   const active = Object.values(state.runs).filter((r) => !isTerminal(r.summary.status));
   return Math.max(0, MAX_SLOTS - active.length);
@@ -1537,6 +1550,7 @@ function renderReview() {
   const f = state.fields;
   const c = state.critique;
   const ok = isResolvable();
+  const found = critiqueFoundSomething();
   const editing = !!state.editingBacklogId;
   const field = (label, key, opts = {}) =>
     h("label.field", {},
@@ -1567,7 +1581,8 @@ function renderReview() {
 
       h("div", { style: "display:flex;gap:8px;align-items:center;margin-top:6px" },
         h("span.micro", { style: "flex:1" },
-          !ok ? "Blocked: the criteria have to be adjudicable before a run is worth its cost."
+          !ok && found ? "Blocked: the criteria have to be adjudicable before a run is worth its cost."
+              : !ok ? "The resolvability check did not finish. Read the criteria yourself before spending a run on them."
               : editing ? "Editing a queued question. Saving updates the backlog; running it removes it from the queue."
               : slotsFree() <= 0 ? "All five run slots are busy. Add it to the backlog."
               : "Full graph, two clamped search tools. Expect five to eight minutes."),
@@ -1579,10 +1594,13 @@ function renderReview() {
     c ? h("section.panel", {},
       h("div.evhead", {},
         h("span.micro", {}, "Resolvability"),
-        h("span.chip", { class: ok ? "for" : "against" }, ok ? "adjudicable" : "not resolvable")),
+        h("span.chip", { class: ok ? "for" : "against" },
+          ok ? "adjudicable" : found ? "not resolvable" : "not checked")),
       h("p.dim", {}, ok
         ? "Two people reading these criteria on resolution day would reach the same verdict. Cleared to run."
-        : `${c.ambiguities.length} ambiguities and ${c.missing.length} structural gaps. Two people reading this on resolution day could argue, so the forecast would not be scoreable.`),
+        : found
+        ? `${c.ambiguities.length} ambiguities and ${c.missing.length} structural gaps. Two people reading this on resolution day could argue, so the forecast would not be scoreable.`
+        : "The check did not finish, so nothing here has been cleared or faulted. Read the criteria yourself and keep them, or edit and read the question back again."),
 
       c.ambiguities.length ? h("div", {},
         h("div.micro", { style: "margin-top:12px" }, `Ambiguities · ${c.ambiguities.length}`),
@@ -1594,12 +1612,14 @@ function renderReview() {
         c.missing.map((t) => h("div.ev.note", { style: "margin-top:6px" }, "— ", t))) : null,
 
       !ok ? h("div", { style: "margin-top:16px" },
-        h("div.micro", {}, "Suggested rewrite"),
-        h("p", { style: "margin-top:6px" }, c.suggested_criteria),
-        h("div.micro", {}, `Source · ${c.suggested_resolution_source}`),
+        found ? h("div", {},
+          h("div.micro", {}, "Suggested rewrite"),
+          h("p", { style: "margin-top:6px" }, c.suggested_criteria),
+          h("div.micro", {}, `Source · ${c.suggested_resolution_source}`)) : null,
         h("div", { style: "display:flex;gap:8px;margin-top:10px" },
-          h("button.btn.primary", { onClick: onApplyRewrite }, "Apply rewrite"),
-          h("button.btn", { onClick: () => setState({ dismissed: true }) }, "Keep mine"))) : null,
+          found ? h("button.btn.primary", { onClick: onApplyRewrite }, "Apply rewrite") : null,
+          h("button.btn", { onClick: () => setState({ dismissed: true }) },
+            found ? "Keep mine" : "Proceed anyway"))) : null,
     ) : null,
   );
 }

@@ -10,16 +10,18 @@ invisible until resolution day. This agent is the frontend's suggestion box.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 
-from config import resolve_agent_model
+from config import get_critique_budget, get_critique_limits, resolve_agent_model
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import UsageLimitExceeded
 
-from ..deps import ForecastDeps
+from ..deps import ForecastDeps, SearchBudget
 from ..models import CriteriaCritique
 from ..observability import run_agent
 from ..tools import search_web
-from . import with_model
+from . import attach_budget_pressure, with_model
 
 INSTRUCTIONS = """You review forecast questions for resolvability. You do not forecast
 them — you decide whether they COULD be scored fairly once the date arrives.
@@ -54,13 +56,17 @@ WHAT TO RETURN
 
 You may search to check whether a named source exists and publishes what the criteria
 assume it does — a criterion resting on a statistic nobody publishes is not resolvable.
+That is the only thing worth searching for here. You are judging the wording of the
+question, not forecasting it: do not go looking for the answer, for background on the
+topic, or for a better source than the one you already found. A handful of searches is
+the whole budget, and every tool result tells you what is left of it.
 """
 
 
 def build_critic_agent(
     model: str | None = None,
 ) -> Agent[ForecastDeps, CriteriaCritique]:
-    return Agent[ForecastDeps, CriteriaCritique](
+    agent = Agent[ForecastDeps, CriteriaCritique](
         model=model or resolve_agent_model(),
         name="critic_agent",
         deps_type=ForecastDeps,
@@ -69,6 +75,8 @@ def build_critic_agent(
         tools=[search_web],
         retries=1,
     )
+    attach_budget_pressure(agent)
+    return agent
 
 
 _agent: Agent[ForecastDeps, CriteriaCritique] | None = None
@@ -104,9 +112,49 @@ PROPOSED RESOLUTION CRITERIA:
 
 Return a CriteriaCritique."""
 
+    # The critic owns its budget rather than inheriting one: it is standalone, never a
+    # cell in a fanned-out row, so there is no caller whose budget it should share.
+    soft, hard = get_critique_budget()
+    deps = replace(deps, budget=SearchBudget(soft_depth=soft, hard_depth=hard))
+
     agent = get_critic_agent()
-    with with_model(agent, deps) as bound:
-        result = await run_agent(
-            bound, prompt, deps=deps, verbose=deps.verbose, run_name="criteria critique"
-        )
+    try:
+        with with_model(agent, deps) as bound:
+            result = await run_agent(
+                bound,
+                prompt,
+                deps=deps,
+                verbose=deps.verbose,
+                usage_limits=get_critique_limits(),
+                run_name="criteria critique",
+            )
+    except UsageLimitExceeded:
+        return _unfinished(resolution_criteria)
     return result.output
+
+
+def _unfinished(resolution_criteria: str) -> CriteriaCritique:
+    """What the critic returns when it hit the wall instead of converging.
+
+    `UsageLimitExceeded` is raised before the next tool runs, so there is no partial
+    critique to salvage — but there is a parsed question, and `/questions/draft` returns
+    both from one call. Raising here 500s that endpoint and the frontend drops the user
+    back to an empty draft box, losing text they just typed. Degrading costs them a
+    dismiss click instead.
+
+    `is_resolvable=False` is what surfaces this in the UI at all — the suggestion box is
+    hidden when it is true — and it claims only that the check did not clear the
+    criteria, which is exactly what happened. The rewrite is the author's own text
+    unchanged, so applying it is a no-op rather than a fabricated suggestion.
+    """
+    return CriteriaCritique(
+        is_resolvable=False,
+        ambiguities=[],
+        missing=[
+            "The resolvability check ran out of search budget before it reached a "
+            "verdict. Nothing is known to be wrong with these criteria — they are "
+            "simply unreviewed. Dismiss to proceed, or edit and re-run the check."
+        ],
+        suggested_criteria=resolution_criteria,
+        suggested_resolution_source="",
+    )

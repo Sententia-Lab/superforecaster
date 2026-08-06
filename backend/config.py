@@ -45,6 +45,9 @@ DEFAULT_RESEARCH_TOOL_CALLS_PER_ITERATION = 3
 DEFAULT_CELL_SOFT_CALLS_PER_ITERATION = 1
 DEFAULT_CELL_HARD_HEADROOM = 3
 
+DEFAULT_CRITIQUE_SOFT_CALLS = 3
+DEFAULT_CRITIQUE_HARD_HEADROOM = 2
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -209,6 +212,33 @@ def get_cell_limits(max_iterations: int) -> UsageLimits:
     degrades to no result, so one greedy column no longer kills the run.
     """
     _, hard = get_cell_budget(max_iterations)
+    return UsageLimits(request_limit=hard + 3, tool_calls_limit=hard)
+
+
+def get_critique_budget() -> tuple[int, int]:
+    """`(soft_depth, hard_depth)` for the criteria critic. Same two-number shape as a cell.
+
+    Flat rather than scaled by `max_iterations` — the critic runs before a question is
+    forecast at all, so there is no iteration count to scale by, and its job is bounded:
+    check that a named resolution source exists and publishes what the criteria assume.
+    Three searches covers that. The headroom above the cline is where it writes the
+    critique down, not where it keeps looking.
+
+    It was previously running on the process-wide default of 20 tool calls with no cline
+    at all, and a question with several checkable sources would spend them all and die on
+    `UsageLimitExceeded` — taking the parsed draft down with it, since `/questions/draft`
+    returns both from one call.
+    """
+    soft = max(1, int(os.getenv("CRITIQUE_SOFT_CALLS", str(DEFAULT_CRITIQUE_SOFT_CALLS))))
+    headroom = int(
+        os.getenv("CRITIQUE_HARD_HEADROOM", str(DEFAULT_CRITIQUE_HARD_HEADROOM))
+    )
+    return soft, soft + max(0, headroom)
+
+
+def get_critique_limits() -> UsageLimits:
+    """The wall `get_critique_budget`'s cline sits below."""
+    _, hard = get_critique_budget()
     return UsageLimits(request_limit=hard + 3, tool_calls_limit=hard)
 
 
