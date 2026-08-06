@@ -120,24 +120,44 @@ textarea::placeholder, input::placeholder { color: var(--pv-text-3); }
 .btn.tiny { padding:4px 9px; font-size:var(--pv-fs-xs); }
 
 .shell { display:grid; grid-template-columns: 272px minmax(0,1fr); gap:0; align-items:start; }
-/* Narrow the rail before dropping it: at ~1100px a fixed 272px rail starts eating the
-   reading column, and the cards are full-width now so the main pane feels it first. */
+
+.rail {
+  border-right:1px solid var(--pv-border); padding:18px 16px; min-width:0;
+  position:sticky; top:51px; max-height:calc(100vh - 51px); overflow:auto;
+  /* Opaque on purpose. The rail is a positioned box and `.main` is not, so the rail
+     always paints in front of it; without a background a stacking mistake shows as two
+     panels legible through each other rather than as one hiding the other. */
+  background:var(--pv-bg);
+}
+/* `margin-inline:auto` is what centers the reading column — without it the pane sits
+   hard left and every pixel past `max-width` becomes dead space on the right. */
+.main { padding:26px 28px 80px; max-width:1100px; width:100%; min-width:0; margin-inline:auto; }
+
+/* ---------- narrowing down ---------- */
+/* These come AFTER the rules they override, and that placement is the whole point: a
+   media query contributes nothing to specificity, so `@media … { .rail { … } }` and a
+   plain `.rail { … }` tie at (0,1,0) and the *later* one wins. Written above, this block
+   lost `position` and `max-height` silently — the rail stayed sticky on a phone and slid
+   over `.main` — while `border-right` appeared to work only because someone had reached
+   for `!important` when they hit the symptom. No `!important` is needed down here. */
+
+/* At ~1100px a fixed 272px rail starts eating the reading column, and the cards are
+   full-width, so the main pane feels it first. */
 @media (max-width: 1100px) { .shell { grid-template-columns: 220px minmax(0,1fr); } }
+
 /* `minmax(0,1fr)`, not `1fr`: a grid item defaults to `min-width:auto`, so a bare `1fr`
    track refuses to shrink below its content's min-content width. That is what made the
    stacked rail 743px wide inside a 375px viewport and pushed the whole page sideways. */
 @media (max-width: 900px) {
   .shell { grid-template-columns: minmax(0,1fr); }
-  .rail { border-right:none !important; position:static; max-height:none; }
+  /* Stacked above `.main` now, so it must scroll away with the page. Sticky here would
+     overlay the content, and the height cap would trap the saved list in an inner
+     scroller roughly a viewport tall before the main pane even begins. */
+  .rail {
+    border-right:none; position:static; max-height:none; overflow:visible;
+  }
 }
 
-.rail {
-  border-right:1px solid var(--pv-border); padding:18px 16px; min-width:0;
-  position:sticky; top:51px; max-height:calc(100vh - 51px); overflow:auto;
-}
-/* `margin-inline:auto` is what centers the reading column — without it the pane sits
-   hard left and every pixel past `max-width` becomes dead space on the right. */
-.main { padding:26px 28px 80px; max-width:1100px; width:100%; min-width:0; margin-inline:auto; }
 @media (max-width: 640px) { .main { padding:18px 16px 64px; } }
 
 .card {
@@ -294,6 +314,23 @@ p  { margin:0 0 10px; }
 .num-strong.down { color:var(--pv-red); }
 .minibar { height:4px; background:var(--pv-surface-3); border-radius:2px; margin:5px 0 3px; overflow:hidden; }
 .minibar > i { display:block; height:100%; background:var(--pv-text-3); }
+
+/* ---------- agent prose ---------- */
+/* Rendered markdown. The margins are tight because this sits inside cards that are
+   already padded — a default `p { margin: 1em 0 }` here doubles every gap on screen. */
+.md > :first-child { margin-top:0; }
+.md > :last-child { margin-bottom:0; }
+.md p { margin:0 0 8px; }
+.md ul, .md ol { margin:0 0 8px; padding-left:20px; }
+.md li { margin:2px 0; }
+.md code {
+  font-family:var(--pv-font-mono); font-size:var(--pv-fs-xs);
+  background:var(--pv-surface-2); border-radius:4px; padding:1px 4px;
+}
+.md strong { font-weight:var(--pv-fw-semibold); color:var(--pv-text); }
+/* A flip test is a label plus one sentence; keep it on the same line. */
+.ev.adj .dim > .md { display:inline; }
+.ev.adj .dim > .md p { display:inline; }
 
 /* ---------- the principles drawer ---------- */
 /* A P-chip is a reference, so it behaves like one: hovering lights up every other
