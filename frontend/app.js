@@ -624,23 +624,79 @@ function onApplyRewrite() {
   });
 }
 
-/** Whether a run is worth its cost yet. Client-side only — the API accepts anything,
- *  so the CLI can still run a question nobody critiqued. */
+/** Take the critic's named source without taking its rewrite.
+ *
+ *  Separate from `onApplyRewrite` because the two findings are independent: criteria can
+ *  be crisp and still name no adjudicator, and in that case there is nothing to rewrite. */
+function onUseSuggestedSource() {
+  setState({
+    fields: { ...state.fields, resolution_source: state.critique.suggested_resolution_source },
+  });
+}
+
+/** Whether the criteria themselves are adjudicable. Advisory — dismissible by the reader,
+ *  because a critic that fails to clear a question is not the same as a bad question. */
 function isResolvable() {
-  return !state.critique || state.critique.is_resolvable || state.applied || state.dismissed;
+  const c = state.critique;
+  if (!c || c.is_resolvable || state.applied || state.dismissed) return true;
+  // A block whose only finding was the missing adjudicator is cleared by naming one.
+  // `_require_a_source` flips `is_resolvable` for that case, and the source field is
+  // where it gets fixed — so it must not also demand a "keep mine" click, which would
+  // ask the reader to overrule a finding they have already satisfied. Anything the critic
+  // said about the *wording* still needs one.
+  return criteriaBlockIsOnlyTheSource() && hasResolutionSource();
+}
+
+/** Whether the critic faulted nothing but the missing resolution source. */
+function criteriaBlockIsOnlyTheSource() {
+  const c = state.critique;
+  if (!c) return false;
+  return critiqueFoundSomething() && c.ambiguities.length === 0 && !critiqueRewroteCriteria();
+}
+
+/** Whether somebody adjudicates this on resolution day.
+ *
+ *  Not dismissible, and enforced by the server too (`CreateRunRequest.resolution_source`).
+ *  Every other gate here is a judgment call the reader may overrule; this one is not,
+ *  because a forecast with no adjudicator cannot be scored at all — the whole run is
+ *  spent and the gap only becomes visible on the one day it is too late to fix. The
+ *  critic is asked to name a source for every question precisely so this costs a click. */
+function hasResolutionSource() {
+  return !!(state.fields && (state.fields.resolution_source || "").trim());
+}
+
+/** Everything that has to be true before a run is worth its cost. */
+function canRun() {
+  return isResolvable() && hasResolutionSource();
 }
 
 /** Whether the critic actually reached a verdict, or merely failed to clear the criteria.
  *
  *  The backend degrades to a critique with no ambiguities and the author's own text back
- *  as the "rewrite" when the critic hits its search wall — better than a 500 that throws
- *  away the parsed draft, but it is not a finding, and the copy below must not assert one.
- *  A real critique that blocks a run always offers criteria different from what was typed. */
+ *  as the "rewrite" when the critic hits its search wall or stops responding — better than
+ *  a 500 that throws away the parsed draft, but it is not a finding, and the copy below
+ *  must not assert one.
+ *
+ *  Three signals, any one of which means it got somewhere. The third matters because a
+ *  question can have flawless criteria and still name nobody who adjudicates them: that
+ *  block carries no ambiguities and no rewrite, and without this it would read as "not
+ *  checked" when the critic did its job and found the one thing that was wrong. A degraded
+ *  critique never names a source — see `agents.critic._unfinished`. */
 function critiqueFoundSomething() {
   const c = state.critique;
   if (!c) return false;
-  const rewritten = (c.suggested_criteria || "").trim() !== ((state.fields || {}).resolution_criteria || "").trim();
-  return c.ambiguities.length > 0 || rewritten;
+  return c.ambiguities.length > 0 || critiqueRewroteCriteria() || !!(c.suggested_resolution_source || "").trim();
+}
+
+/** Whether the critic's rewrite differs from what was typed.
+ *
+ *  Its own test because a source-only block leaves the criteria alone, and showing the
+ *  reader their own sentence back under the heading "Suggested rewrite" is worse than
+ *  showing nothing. */
+function critiqueRewroteCriteria() {
+  const c = state.critique;
+  if (!c) return false;
+  return (c.suggested_criteria || "").trim() !== ((state.fields || {}).resolution_criteria || "").trim();
 }
 
 function slotsFree() {
@@ -662,6 +718,7 @@ function runFieldsFrom(f) {
 
 async function onRunNow() {
   if (!isResolvable()) return toast("Fix the criteria first — an unscoreable forecast is wasted.");
+  if (!hasResolutionSource()) return toast("Name a resolution source — without one nobody can score this.");
   setState({ busy: true });
   try {
     const summary = await createRun(runFieldsFrom(state.fields));
@@ -765,6 +822,12 @@ async function onResume(runId) {
 async function onRunFromBacklog(id) {
   const item = state.backlog.find((b) => b.id === id);
   if (!item) return;
+  // Backlog entries predate this requirement, and the server now rejects a run with no
+  // source with a 422 the reader cannot act on from here. Send them to the form instead.
+  if (!(item.resolution_source || "").trim()) {
+    onEditBacklog(id);
+    return toast("Name a resolution source before running this one.");
+  }
   try {
     const summary = await createRun(runFieldsFrom(item));
     const backlog = state.backlog.filter((b) => b.id !== id);
@@ -1550,20 +1613,28 @@ function renderReview() {
   const f = state.fields;
   const c = state.critique;
   const ok = isResolvable();
+  const sourced = hasResolutionSource();
   const found = critiqueFoundSomething();
   const editing = !!state.editingBacklogId;
+  // `live` re-renders as the reader types. Only the resolution source needs it — it is
+  // the one field that gates the Run button, and a button that stays greyed out until
+  // you click elsewhere reads as broken. Focus survives the re-render; see `restoreFocus`.
+  const onInput = (key, opts) => (e) => {
+    f[key] = e.target.value;
+    if (opts.live) scheduleRender();
+  };
   const field = (label, key, opts = {}) =>
     h("label.field", {},
       h("span.micro", {}, label),
       opts.textarea
         ? h("textarea.ta", { "data-focus": key, class: opts.bad ? "bad" : "", value: f[key] || "",
-                             onInput: (e) => { f[key] = e.target.value; } })
+                             onInput: onInput(key, opts) })
         : opts.select
         ? h("select.inp", { "data-focus": key, onChange: (e) => { f[key] = e.target.value; } },
             CATEGORIES.map((cat) => h("option", { value: cat, selected: (f[key] || "general") === cat }, cat)))
         : h("input.inp", { "data-focus": key, class: opts.bad ? "bad" : "", type: opts.type || "text",
                            value: opts.type === "date" ? (f[key] || "").slice(0, 10) : (f[key] || ""),
-                           onInput: (e) => { f[key] = e.target.value; } }));
+                           onInput: onInput(key, opts) }));
 
   return h("div", {},
     h("section.panel", {},
@@ -1573,22 +1644,33 @@ function renderReview() {
           onClick: () => setState({ phase: "draft", editingBacklogId: null }),
         }, editing ? "Discard changes" : "Rewrite")),
       field("Question", "question", { textarea: true }),
-      field("Resolution criteria", "resolution_criteria", { textarea: true, bad: !ok }),
+      // Faulted only when the critic faulted the *wording*. A block that is really about
+      // the missing adjudicator must not put a red border on a sentence that reads fine.
+      field("Resolution criteria", "resolution_criteria",
+            { textarea: true, bad: !ok && !criteriaBlockIsOnlyTheSource() }),
       h("div.grid2", {},
         field("Resolution date", "resolution_date", { type: "date" }),
         field("Category", "category", { select: true })),
-      field("Resolution source", "resolution_source", { bad: !f.resolution_source }),
+      field("Resolution source", "resolution_source", { bad: !sourced, live: true }),
+      !sourced ? h("div.micro", { style: "margin-top:-4px" },
+        "Required. Who publishes the number that settles this — a named bulletin, "
+        + "register, or dataset. Without one the forecast cannot be scored.") : null,
 
       h("div", { style: "display:flex;gap:8px;align-items:center;margin-top:6px" },
+        // Ordered by what the reader has to do next, not by which check failed first.
+        // The missing source comes before the criteria block whenever the criteria are
+        // the *reason* the source block fired, or "fix the wording" would be the advice
+        // for a question whose wording is fine.
         h("span.micro", { style: "flex:1" },
-          !ok && found ? "Blocked: the criteria have to be adjudicable before a run is worth its cost."
+          !sourced ? "Blocked: name the source that settles this on resolution day."
+              : !ok && found ? "Blocked: the criteria have to be adjudicable before a run is worth its cost."
               : !ok ? "The resolvability check did not finish. Read the criteria yourself before spending a run on them."
               : editing ? "Editing a queued question. Saving updates the backlog; running it removes it from the queue."
               : slotsFree() <= 0 ? "All five run slots are busy. Add it to the backlog."
               : "Full graph, two clamped search tools. Expect five to eight minutes."),
         h("button.btn", { onClick: editing ? onSaveBacklog : onQueueToBacklog },
           editing ? "Save changes" : "Add to backlog"),
-        h("button.btn.primary", { disabled: !ok || slotsFree() <= 0 || state.busy, onClick: onRunNow },
+        h("button.btn.primary", { disabled: !canRun() || slotsFree() <= 0 || state.busy, onClick: onRunNow },
           state.busy ? "Starting…" : "Run now"))),
 
     c ? h("section.panel", {},
@@ -1598,28 +1680,50 @@ function renderReview() {
           ok ? "adjudicable" : found ? "not resolvable" : "not checked")),
       h("p.dim", {}, ok
         ? "Two people reading these criteria on resolution day would reach the same verdict. Cleared to run."
-        : found
-        ? `${c.ambiguities.length} ambiguities and ${c.missing.length} structural gaps. Two people reading this on resolution day could argue, so the forecast would not be scoreable.`
-        : "The check did not finish, so nothing here has been cleared or faulted. Read the criteria yourself and keep them, or edit and read the question back again."),
+        : !found
+        ? "The check did not finish, so nothing here has been cleared or faulted. Read the criteria yourself and keep them, or edit and read the question back again."
+        : c.ambiguities.length === 0 && !critiqueRewroteCriteria()
+        // The criteria themselves passed. What is missing is whoever adjudicates them,
+        // and "two people could argue" is the wrong sentence for that.
+        ? "The criteria read cleanly. What is missing is the source that settles them — without one there is nobody to score the forecast against."
+        : `${c.ambiguities.length} ambiguities and ${c.missing.length} structural gaps. Two people reading this on resolution day could argue, so the forecast would not be scoreable.`),
 
       c.ambiguities.length ? h("div", {},
         h("div.micro", { style: "margin-top:12px" }, `Ambiguities · ${c.ambiguities.length}`),
         c.ambiguities.map((t, i) => h("div.ev.note", { style: "margin-top:6px" },
           h("span.micro", {}, String(i + 1)), " ", t))) : null,
 
-      c.missing.length ? h("div", {},
-        h("div.micro", { style: "margin-top:12px" }, `Missing · ${c.missing.length}`),
-        c.missing.map((t) => h("div.ev.note", { style: "margin-top:6px" }, "— ", t))) : null,
+      // Dropped once satisfied. A finding that stays on screen after the reader fixed it
+      // reads as a second, unfixed problem — and this is the one finding the form itself
+      // can tell has been resolved.
+      c.missing.length && !(ok && sourced && criteriaBlockIsOnlyTheSource())
+        ? h("div", {},
+            h("div.micro", { style: "margin-top:12px" }, `Missing · ${c.missing.length}`),
+            c.missing.map((t) => h("div.ev.note", { style: "margin-top:6px" }, "— ", t)))
+        : null,
+
+      // Offered on its own, not only as part of the rewrite. A question can have
+      // perfectly adjudicable criteria and still name nobody who adjudicates them, and
+      // in that case there is no rewrite to apply — just a source to accept.
+      c.suggested_resolution_source && c.suggested_resolution_source.trim() !== (f.resolution_source || "").trim()
+        ? h("div", { style: "margin-top:12px" },
+            h("div.micro", {}, "Suggested resolution source"),
+            h("p", { style: "margin-top:6px" }, c.suggested_resolution_source),
+            h("button.btn.tiny", { style: "margin-top:6px", onClick: onUseSuggestedSource },
+              sourced ? "Use this instead" : "Use this source"))
+        : null,
 
       !ok ? h("div", { style: "margin-top:16px" },
-        found ? h("div", {},
+        critiqueRewroteCriteria() ? h("div", {},
           h("div.micro", {}, "Suggested rewrite"),
-          h("p", { style: "margin-top:6px" }, c.suggested_criteria),
-          h("div.micro", {}, `Source · ${c.suggested_resolution_source}`)) : null,
+          h("p", { style: "margin-top:6px" }, c.suggested_criteria)) : null,
         h("div", { style: "display:flex;gap:8px;margin-top:10px" },
-          found ? h("button.btn.primary", { onClick: onApplyRewrite }, "Apply rewrite") : null,
+          critiqueRewroteCriteria() ? h("button.btn.primary", { onClick: onApplyRewrite }, "Apply rewrite") : null,
+          // "Proceed anyway" dismisses the criteria finding only. It cannot dismiss the
+          // missing source — that gate is `hasResolutionSource`, and the server enforces
+          // it too, so there is nothing here to wave through.
           h("button.btn", { onClick: () => setState({ dismissed: true }) },
-            found ? "Keep mine" : "Proceed anyway"))) : null,
+            critiqueRewroteCriteria() ? "Keep mine" : "Proceed anyway"))) : null,
     ) : null,
   );
 }

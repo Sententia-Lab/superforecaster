@@ -455,12 +455,13 @@ class Reflection(BaseModel):
 class InsideView(BaseModel):
     """The inside-view row, merged. P5, P9, P14, P15.
 
-    `adjustments` is every column's, stamped with the column it came from.
-    `max_length` allows five columns times three adjustments each. The three
+    `adjustments` is every cell's, stamped with the lens it came from.
+    `max_length` allows fifteen cells — five sub-questions times three lenses —
+    times three adjustments each, matching `SubClaimAdjustments`. The three
     whole-question fields come from `Reflection`.
     """
 
-    adjustments: list[Adjustment] = Field(min_length=1, max_length=15)
+    adjustments: list[Adjustment] = Field(min_length=1, max_length=45)
     steel_man: str = Field(
         description="P14 — strongest case for the opposite conclusion"
     )
@@ -566,7 +567,12 @@ class CriteriaCritique(BaseModel):
         description="e.g. 'no resolution source', 'no timezone on the date'",
     )
     suggested_criteria: str
-    suggested_resolution_source: str = ""
+    suggested_resolution_source: str = Field(
+        default="",
+        description="REQUIRED in practice: the specific publication, dataset, register "
+        "or body that would settle this question. A critique that names none is forced "
+        "to `is_resolvable=False` — see `agents.critic._require_a_source`.",
+    )
 
 
 # ---------- Post-mortem (P13) ----------
@@ -868,7 +874,20 @@ class CreateRunRequest(BaseModel):
     resolution_criteria: str
     resolution_date: datetime
     category: str = "general"
-    resolution_source: str = ""
+    resolution_source: str = Field(
+        min_length=1,
+        description="Who adjudicates this on the resolution date — the publication, "
+        "dataset, register, or body whose output settles it.",
+    )
+    """Required, not defaulted to "".
+
+    A forecast whose resolution nobody adjudicates cannot be scored, which makes running
+    it a waste of the whole search budget — and the gap is invisible until resolution day,
+    which is the one day it is too late to fix. The critic is asked to name a source for
+    every question it reviews (`agents.critic._require_a_source`) precisely so this field
+    is cheap to fill; enforcing it here is what stops "the critic suggested one" from
+    being optional. A caller with no source in mind should type where they would look."""
+
     max_iterations: int = Field(default=5, ge=1, le=20)
 
 

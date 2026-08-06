@@ -6,7 +6,7 @@ judgment-required so effort goes where a base rate actually exists.
 
 from __future__ import annotations
 
-from config import resolve_agent_model
+from config import get_synthesis_limits, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
@@ -102,7 +102,15 @@ Return a Decomposition."""
     agent = get_decompose_agent()
     with with_model(agent, deps) as bound:
         result = await run_agent(
-            bound, prompt, deps=deps, verbose=deps.verbose, run_name="decompose"
+            bound,
+            prompt,
+            deps=deps,
+            verbose=deps.verbose,
+            # No tools, so the ceiling is zero rather than whatever the process-wide
+            # default happens to be. An agent that cannot search should not be holding a
+            # search budget it could spend on a tool it does not have.
+            usage_limits=get_synthesis_limits(),
+            run_name="decompose",
         )
     return _with_ids(result.output)
 

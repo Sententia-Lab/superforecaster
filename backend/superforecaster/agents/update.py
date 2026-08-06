@@ -11,7 +11,7 @@ graph routes back through `VerifyLargeMove`.
 
 from __future__ import annotations
 
-from config import get_settings, resolve_agent_model
+from config import get_monitor_limits, get_settings, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
@@ -166,6 +166,11 @@ posterior={prior:.3f} with an empty evidence list."""
     agent = get_update_agent()
     with with_model(agent, deps) as bound:
         result = await run_agent(
-            bound, prompt, deps=deps, verbose=deps.verbose, run_name=run_name
+            bound,
+            prompt,
+            deps=deps,
+            verbose=deps.verbose,
+            usage_limits=get_monitor_limits(),
+            run_name=run_name,
         )
     return result.output

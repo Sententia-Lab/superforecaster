@@ -39,6 +39,14 @@ def attach_budget_pressure(agent: Agent) -> None:
     makes the pressure escalate *within* a run instead of being a fixed sentence.
 
     Registered on the lazy singleton at construction, so it appends once.
+
+    **Never say "do not call another tool."** The structured answer is itself delivered as
+    a tool call — pydantic-ai puts the output schema in the toolset — so an instruction
+    against tool calls in general forbids the one thing that would end the run. A model
+    that obeys it answers in plain text, pydantic-ai replies "please include your response
+    in a tool call", the instruction is re-fetched and says the same thing again, and the
+    run burns every request it has without ever producing output. Name the search tools,
+    never tools as a category.
     """
 
     @agent.instructions
@@ -52,8 +60,9 @@ def attach_budget_pressure(agent: Agent) -> None:
                 "well-chosen searches over exhaustive looping."
             )
         return (
-            "SEARCH BUDGET SPENT. Do not call another tool. Shorten your reasoning and "
-            "return the structured answer now, from what you already found. Grade thin "
+            "SEARCH BUDGET SPENT. Run no further searches. Shorten your reasoning and "
+            "return your structured answer now, from what you already found — returning "
+            "it is the only thing left to do, and it is still a tool call. Grade thin "
             "evidence as thin rather than searching for better."
         )
 

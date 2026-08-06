@@ -3,7 +3,14 @@
 Three things happen here and nothing else does them:
 
 1. **A run is a background task**, not a blocked HTTP request. `POST /runs` returns in
-   milliseconds; the graph keeps going whether or not anyone is watching.
+   milliseconds and the graph runs behind it — but only for as long as somebody is
+   watching. A run with no subscriber for `RUN_WATCHER_GRACE_SECONDS` is cancelled, and
+   the whole thing is bounded by `RUN_TIMEOUT_SECONDS` regardless. A run is thirty-odd
+   agent invocations against a live search budget; continuing to spend that on a closed
+   tab was the largest source of wasted work here, and a run with no ceiling at all is
+   what left the browser on a loading state waiting for an `end` frame nobody would send.
+   The grace window exists because SSE reconnects: a laptop lid or a flaky network drops
+   the socket for seconds, and that must not read as "gone".
 2. **A run is durable.** Every agent call goes through `durability.agent_step`, which
    makes it a DBOS step, so a failed run resumes from the agent that died rather than
    re-paying for the whole graph. Resuming *forks* the workflow at the failed step —
@@ -25,15 +32,17 @@ the UI can say so instead of hanging on a stream that will never produce a frame
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from config import get_settings, resolve_agent_model
+from config import get_run_timeout, get_settings, resolve_agent_model
 from dbos import DBOS, SetWorkflowID
 
 from . import db, durability
+from .errors import AgentTimeout, RunAbandoned, RunTimeout
 from .eventstream import SUBSCRIBER_QUEUE_SIZE, EventStream
 from .graphs.forecast import STAGE_ORDER
 from .graphs.state import ForecastState
@@ -69,6 +78,15 @@ class Run:
     created_at: datetime = field(default_factory=utc_now)
     ended_at: datetime | None = None
     task: asyncio.Task[None] | None = None
+
+    watchdog: asyncio.Task[None] | None = None
+    """The task that stops this run when every client has gone. See `_watch_for_watchers`."""
+
+    abandoned: bool = False
+    """Set by the watchdog before it cancels, so `execute` can say *why* it was cancelled.
+
+    A cancellation is otherwise indistinguishable from an admin pressing stop, and the
+    two want different words on the card."""
 
     workflow_id: str | None = None
     """The DBOS workflow currently backing this run.
@@ -156,6 +174,11 @@ class Run:
     @property
     def seq(self) -> int:
         return self.stream.seq
+
+    @property
+    def watchers(self) -> int:
+        """How many clients have this run's stream open right now."""
+        return self.stream.subscriber_count
 
     def flush_thought(self, sub_claim=None) -> None:
         """Emit whatever narration is buffered. No argument means every column."""
@@ -291,9 +314,67 @@ registry = RunRegistry()
 def start(input: ForecastInput, resolution_source: str = "") -> Run:
     """Create a run and schedule it. Returns as soon as the task exists."""
     run = registry.create(input, resolution_source)
-    run.task = asyncio.create_task(execute(run))
-    run.task.add_done_callback(lambda _t: _finalize_if_orphaned(run))
+    _schedule(run)
     return run
+
+
+def _schedule(run: Run, *, resume: bool = False) -> None:
+    """Start the run task and the watchdog that outlives it by exactly nothing.
+
+    The watchdog is torn down from the run task's done callback rather than left to
+    notice on its own: a finished run must not leave a sleeping task behind, and a
+    pending task at loop shutdown is a warning at best and a hang at worst.
+    """
+    run.abandoned = False
+    run.task = asyncio.create_task(execute(run, resume=resume))
+    run.watchdog = asyncio.create_task(_watch_for_watchers(run))
+    run.task.add_done_callback(lambda _t: _on_task_done(run))
+
+
+def _on_task_done(run: Run) -> None:
+    if run.watchdog is not None:
+        run.watchdog.cancel()
+        run.watchdog = None
+    _finalize_if_orphaned(run)
+
+
+async def _watch_for_watchers(run: Run) -> None:
+    """Cancel a run that nobody is watching any more.
+
+    A run is a live search budget charged to somebody's key. Left to itself it finishes
+    a forecast for a tab that closed ten minutes ago, and the only trace is the bill.
+
+    The grace window is what makes this safe rather than hostile: SSE reconnects on its
+    own after a lid close, a proxy hiccup, or a subscriber dropped for falling behind, so
+    zero watchers *right now* is a normal thing that resolves itself. Only zero watchers
+    continuously across the window means gone. `RUN_WATCHER_GRACE_SECONDS=0` disables it
+    for a deployment that genuinely wants fire-and-forget runs.
+    """
+    grace = get_settings().run_watcher_grace_seconds
+    if grace <= 0:
+        return
+
+    tick = min(1.0, grace / 3)
+    idle = 0.0
+    while not run.is_terminal:
+        await asyncio.sleep(tick)
+        if run.watchers > 0:
+            idle = 0.0
+            continue
+        idle += tick
+        if idle >= grace:
+            run.abandoned = True
+            run.emit(
+                "error",
+                {
+                    "message": f"No client watched this run for {grace:g}s — stopping it "
+                    "rather than spending the rest of its search budget on nobody.",
+                    "resumable": durability.is_active(),
+                    "hint": "Reopen the question and resume to pick up where it stopped.",
+                },
+            )
+            registry.cancel(run.id)
+            return
 
 
 def _finalize_if_orphaned(run: Run) -> None:
@@ -352,33 +433,59 @@ than a flag checked inside it.
 """
 
 
+def _run_deadline():
+    """`asyncio.timeout` for the whole run, or a no-op when `RUN_TIMEOUT_SECONDS` is 0."""
+    seconds = get_run_timeout()
+    if seconds and seconds > 0:
+        return asyncio.timeout(seconds)
+    return contextlib.nullcontext()
+
+
 async def execute(run: Run, *, resume: bool = False) -> None:
     """Drive the graph, persist the forecast, close the stream.
 
-    Terminal in every branch. A client cannot tell a hung server from a silently crashed
-    one, so this always emits a last frame saying which happened.
+    Terminal in every branch — that is the whole contract. A client cannot tell a hung
+    server from a silently crashed one, so this always emits a last frame saying which
+    happened, and the deadline below is what guarantees the frame is eventually sent at
+    all. Without it a single provider request that never returns is a run that never
+    ends, a stream that never closes, and a browser that spins forever.
     """
     run.status = "running"
     run.error = None
     try:
-        if not durability.is_active():
-            # No checkpointing configured — same graph, one less layer. See
-            # `durability.is_active`.
-            await _run_forecast(run.id)
-        elif resume:
-            assert run.workflow_id is not None, "resume with nothing to resume from"
-            run.workflow_id, handle = await durability.resume_from_failure(
-                run.workflow_id
-            )
-            await handle.get_result()
-        else:
-            run.workflow_id = durability.workflow_id(run.id)
-            with SetWorkflowID(run.workflow_id):
-                await _forecast_workflow(run.id)
+        try:
+            async with _run_deadline():
+                if not durability.is_active():
+                    # No checkpointing configured — same graph, one less layer. See
+                    # `durability.is_active`.
+                    await _run_forecast(run.id)
+                elif resume:
+                    assert run.workflow_id is not None, "resume with nothing to resume from"
+                    run.workflow_id, handle = await durability.resume_from_failure(
+                        run.workflow_id
+                    )
+                    await handle.get_result()
+                else:
+                    run.workflow_id = durability.workflow_id(run.id)
+                    with SetWorkflowID(run.workflow_id):
+                        await _forecast_workflow(run.id)
+        except TimeoutError as exc:
+            # `asyncio.timeout` cancels the body and re-raises as TimeoutError at the
+            # boundary, so this never reaches the CancelledError arm below. Retyped so
+            # the frame says "took too long" rather than "was cancelled".
+            if isinstance(exc, (AgentTimeout, RunTimeout)):
+                raise
+            raise RunTimeout(
+                f"the run exceeded its {get_run_timeout():g}s deadline at stage "
+                f"'{run.stage or 'start'}'"
+            ) from exc
         run.status = "done"
         run.stage = ""
     except asyncio.CancelledError:
         run.status = "cancelled"
+        if run.abandoned:
+            # The watchdog already said why, in a frame that carries the resume hint.
+            raise
         run.emit("error", {"message": "run cancelled"})
         raise
     except Exception as exc:  # noqa: BLE001 — the message is the product here
@@ -417,6 +524,23 @@ def _failure_hint(exc: Exception) -> str:
             "higher search depth, or raise CELL_SOFT_CALLS_PER_ITERATION / "
             "CELL_HARD_HEADROOM."
         )
+
+    if isinstance(exc, AgentTimeout):
+        return (
+            "One agent stopped responding rather than doing too much — a provider "
+            "request that never came back. Resuming re-runs only that step. Raise "
+            "AGENT_TIMEOUT_SECONDS if this model is legitimately this slow."
+        )
+
+    if isinstance(exc, RunTimeout):
+        return (
+            "The run as a whole outlived RUN_TIMEOUT_SECONDS. Resuming keeps every "
+            "completed step; lower the search depth or raise the ceiling first, or it "
+            "will run out at the same place."
+        )
+
+    if isinstance(exc, RunAbandoned):
+        return "Reopen the question and resume to pick up where it stopped."
 
     if type(exc).__name__ == "ModelHTTPError":
         status = getattr(exc, "status_code", None)
@@ -469,8 +593,7 @@ def resume_run(run_id: str, *, max_iterations: int | None = None) -> Run:
     run.status = "queued"
     run.ended_at = None
     run.emit("resume", {"max_iterations": run.input.max_iterations})
-    run.task = asyncio.create_task(execute(run, resume=True))
-    run.task.add_done_callback(lambda _t: _finalize_if_orphaned(run))
+    _schedule(run, resume=True)
     return run
 
 

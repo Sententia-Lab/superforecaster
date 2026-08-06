@@ -8,7 +8,66 @@ implements — `P<n>` throughout this document refers to them.
 
 ---
 
-## What changed most recently (2026-08-05)
+## What changed most recently (2026-08-06)
+
+**Every `run_agent` call passes explicit `UsageLimits`, and a test enforces it.** Five call
+sites had none — `decompose`, `choose_lenses`, `resolution`, `update`, `postmortem` — and
+fell through to the process-wide default of 40 requests / 20 tool calls.
+`test_every_agent_run_passes_explicit_limits` walks the AST of `agents/` so a new call site
+cannot quietly inherit it. The critic drops to **2 searches, 3 the wall**; the no-tool
+agents get `tool_calls_limit=0`; the three agents outside the graph get
+`get_monitor_limits()` (4 calls). See ADR 43.
+
+**Three deadlines, because a usage limit cannot catch an agent that stops acting.**
+`AGENT_TIMEOUT_SECONDS` (180) bounds one agent run and raises `AgentTimeout`;
+`RUN_TIMEOUT_SECONDS` (1200) bounds the whole graph and raises `RunTimeout`. Both reach
+`runs.execute`'s catch-all, so every path now ends `error` → `end` — the frame pair that
+closes the SSE socket and the reason the browser no longer spins forever. New module
+`superforecaster/errors.py` holds all three types.
+
+**A run no longer outlives its audience.** `RUN_WATCHER_GRACE_SECONDS` (45): a run with
+zero SSE subscribers for that long is cancelled with a resumable error frame. The window
+absorbs an ordinary reconnect. `EventStream.subscriber_count` is the new read; `runs.start`
+and `runs.resume_run` both go through `_schedule`, which pairs the run task with a watchdog
+and tears the watchdog down from the run's done callback.
+
+**The prompt bug that caused the loops.** `attach_budget_pressure` said *"Do not call
+another tool"* to an exhausted agent — but pydantic-ai delivers structured output *as* a
+tool call, so that forbids the only call that ends the run. The budget channels now name
+searching, never tools as a category.
+
+**A forecast needs somebody to adjudicate it.** `CreateRunRequest.resolution_source` is
+required (`min_length=1`, 422 without it); the critic must name one for every question and
+`critic._require_a_source` forces `is_resolvable=False` when it does not; the UI blocks
+Run now and offers the critic's suggestion as its own one-click action. See ADR 44.
+
+### Agents per run, per layer
+
+Counted off the graph in `graphs/forecast.py`, not estimated. `S` = researchable
+sub-claims (`Decomposition.sub_claims` is 3–5); `L` = lenses per sub-claim
+(`SubClaimLenses.lenses` is 1–3).
+
+| Layer | Agents | Typical | Worst | Tools each |
+|---|---|---|---|---|
+| `run_draft` (pre-run, `/questions/draft` only) | 1 | 1 | 1 | 0 |
+| `run_critique` (pre-run) | 1 | 1 | 1 | 3 |
+| `decompose` | 1 | 1 | 1 | 0 |
+| `choose_lenses_cell` | `S` | 4 | 5 | 0 |
+| `research_lens_cell` | `S × L` | 8 | 15 | 8 |
+| `adjust_lens_cell` | `S × L` | 8 | 15 | 8 |
+| `reflect` | 1 | 1 | 1 | 0 |
+| `synthesize` | 1–2 | 1 | 2 | 0 |
+| `critique` (graph) | **0** | 0 | 0 | — pure code, `checks.run_forecast_checks` |
+| **one forecast run** (`decompose` → `finish`) | | **23** | **39** | |
+| **searches inside that run** | | ≈80 | **240** | at `max_iterations=5` |
+
+The two research rows are where a run's cost lives: at `max_iterations=5` a cell gets soft
+5 / hard 8, so fifteen cells across two stages is 240 searches before the ceiling bites.
+`max_iterations` is capped at 20, where the same shape is 690.
+
+---
+
+## What changed on 2026-08-05
 
 **Base rates are counted, not stated.** A `ResearchedLens` carries `evidence` blocks and
 the rate is `Σ hits / Σ n` — `7/10` enumerated plus `140/230` published is `147/240`.
@@ -312,8 +371,8 @@ BiasCheck
   bias           BiasName
   assessment     str
 
-InsideView                        # output of inside_view_agent
-  adjustments               list[Adjustment]  # min_length=1, max_length=8
+InsideView                        # merged by merge_inside/reflect, never an agent output
+  adjustments               list[Adjustment]  # min_length=1, max_length=45 (15 cells x 3)
   steel_man                 str               # P14 — the opposing case, argued properly
   what_would_change_my_mind str               # P14
   bias_checks               list[BiasCheck]   # exactly 5   <- P15
@@ -1352,8 +1411,8 @@ Backend reads everything through `config.py`. `backend/.env`; see `backend/.env.
 | `PYDANTIC_AI_GATEWAY_API_KEY` | Logfire Gateway (`pylf_v...`) | — (required unless Anthropic key set) |
 | `ANTHROPIC_API_KEY` | Direct Anthropic | — (alternative) |
 | `AGENT_MODEL` | Override the model for all agents | gateway or direct default |
-| `AGENT_REQUEST_LIMIT` | Max LLM requests per run | `40` |
-| `AGENT_TOOL_CALLS_LIMIT` | Max tool calls per run | `20` |
+| `AGENT_REQUEST_LIMIT` | Backstop only — every agent call site now passes explicit limits | `40` |
+| `AGENT_TOOL_CALLS_LIMIT` | Backstop only — see above | `20` |
 | `TAVILY_API_KEY` | Web search | — (optional; degrades gracefully) |
 | `LOGFIRE_TOKEN` | Observability | — (optional) |
 | `DATABASE_PATH` | SQLite file | `./superforecaster.db` |
@@ -1380,8 +1439,12 @@ Backend reads everything through `config.py`. `backend/.env`; see `backend/.env.
 | `RESEARCH_TOOL_CALLS_PER_ITERATION` | Tool calls per `max_iterations` unit (same) | `3` |
 | `CELL_SOFT_CALLS_PER_ITERATION` | The cline — searches per `max_iterations` unit, per cell | `1` |
 | `CELL_HARD_HEADROOM` | Calls between the cline and the wall | `3` |
-| `CRITIQUE_SOFT_CALLS` | The criteria critic's cline, flat (it runs before any forecast) | `3` |
-| `CRITIQUE_HARD_HEADROOM` | Calls between that cline and its wall | `2` |
+| `CRITIQUE_SOFT_CALLS` | The criteria critic's cline, flat (it runs before any forecast) | `2` |
+| `CRITIQUE_HARD_HEADROOM` | Calls between that cline and its wall | `1` |
+| `MONITOR_TOOL_CALLS` | Tool calls for the resolution check, daily update, and post-mortem | `4` |
+| `AGENT_TIMEOUT_SECONDS` | Wall-clock ceiling on one agent run; 0 disables | `180` |
+| `RUN_TIMEOUT_SECONDS` | Wall-clock ceiling on a whole forecast run; 0 disables | `1200` |
+| `RUN_WATCHER_GRACE_SECONDS` | How long a run may go unwatched before it is cancelled; 0 disables | `45` |
 | `FRONTEND_DIR` | Static files served at `/`; unset disables the mount | `../frontend` |
 
 Frontend: none. It is same-origin static files; `window.SF_API_URL` overrides the base URL when
@@ -1391,7 +1454,7 @@ the page is opened from somewhere other than the API.
 
 ## What Works
 
-Verified by `cd backend && uv run pytest` — **369 tests, no network, no API keys**:
+Verified by `cd backend && uv run pytest` — **387 tests, no network, no API keys**:
 
 - All eight agents import and build without keys (lazy construction)
 - The forecast graph runs its stages in methodology order — P4 asserted structurally

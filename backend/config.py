@@ -45,8 +45,25 @@ DEFAULT_RESEARCH_TOOL_CALLS_PER_ITERATION = 3
 DEFAULT_CELL_SOFT_CALLS_PER_ITERATION = 1
 DEFAULT_CELL_HARD_HEADROOM = 3
 
-DEFAULT_CRITIQUE_SOFT_CALLS = 3
-DEFAULT_CRITIQUE_HARD_HEADROOM = 2
+# The critic checks that a named resolution source exists and publishes what the criteria
+# assume. Two searches covers that; the third is headroom to write the verdict down. It
+# was 3/5, which in practice meant five searches on a question that needed one.
+DEFAULT_CRITIQUE_SOFT_CALLS = 2
+DEFAULT_CRITIQUE_HARD_HEADROOM = 1
+
+# Bounded, tool-using agents that are not cells: the resolution check, the daily update,
+# the post-mortem. They ran on the process-wide fallback of 20 tool calls, which is the
+# same "no ceiling anyone chose" the cells were moved off.
+DEFAULT_MONITOR_TOOL_CALLS = 4
+
+# Wall-clock ceilings. A usage limit bounds how many times an agent may act; it says
+# nothing about how long one act may take, and every stall this system has produced was
+# a request that never came back rather than a run that acted too often. Without these a
+# hung provider call hangs the run forever, and the browser sits on a loading state
+# waiting for an `end` frame that is never coming.
+DEFAULT_AGENT_TIMEOUT_SECONDS = 180
+DEFAULT_RUN_TIMEOUT_SECONDS = 1200
+DEFAULT_RUN_WATCHER_GRACE_SECONDS = 45
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +84,9 @@ class Settings:
     run_max_concurrent: int
     run_event_buffer: int
     run_retention_minutes: int
+    agent_timeout_seconds: float
+    run_timeout_seconds: float
+    run_watcher_grace_seconds: float
     dbos_database_url: str
     frontend_dir: str
 
@@ -132,6 +152,17 @@ def get_settings() -> Settings:
         run_max_concurrent=int(os.getenv("RUN_MAX_CONCURRENT", "5")),
         run_event_buffer=int(os.getenv("RUN_EVENT_BUFFER", "5000")),
         run_retention_minutes=int(os.getenv("RUN_RETENTION_MINUTES", "60")),
+        agent_timeout_seconds=float(
+            os.getenv("AGENT_TIMEOUT_SECONDS", str(DEFAULT_AGENT_TIMEOUT_SECONDS))
+        ),
+        run_timeout_seconds=float(
+            os.getenv("RUN_TIMEOUT_SECONDS", str(DEFAULT_RUN_TIMEOUT_SECONDS))
+        ),
+        run_watcher_grace_seconds=float(
+            os.getenv(
+                "RUN_WATCHER_GRACE_SECONDS", str(DEFAULT_RUN_WATCHER_GRACE_SECONDS)
+            )
+        ),
         dbos_database_url=os.getenv("DBOS_DATABASE_URL", "sqlite:///./run_durability.sqlite"),
         frontend_dir=os.getenv("FRONTEND_DIR", str(_BACKEND_ROOT.parent / "frontend")),
     )
@@ -221,8 +252,9 @@ def get_critique_budget() -> tuple[int, int]:
     Flat rather than scaled by `max_iterations` — the critic runs before a question is
     forecast at all, so there is no iteration count to scale by, and its job is bounded:
     check that a named resolution source exists and publishes what the criteria assume.
-    Three searches covers that. The headroom above the cline is where it writes the
-    critique down, not where it keeps looking.
+    **Two searches covers that, and three is the wall.** A resolvability review is one or
+    two lookups; anything past that is the critic drifting into forecasting the question,
+    which its prompt forbids and its budget should not fund.
 
     It was previously running on the process-wide default of 20 tool calls with no cline
     at all, and a question with several checkable sources would spend them all and die on
@@ -272,8 +304,51 @@ def get_research_limits(max_iterations: int) -> UsageLimits:
 
 
 def get_synthesis_limits() -> UsageLimits:
-    """Single-shot structured output — no tools, small retry budget."""
+    """Single-shot structured output — no tools, small retry budget.
+
+    Every no-tool step runs on this: decompose, choose-lenses, reflect, synthesize, draft.
+    `tool_calls_limit=0` is the point — those agents are built with no tools, and a
+    ceiling of zero is what makes that a fact the runtime enforces rather than a property
+    of how the agent happened to be constructed.
+    """
     return UsageLimits(request_limit=4, tool_calls_limit=0)
+
+
+def get_monitor_limits() -> UsageLimits:
+    """Budget for the tool-using agents outside the forecast graph.
+
+    The resolution check, the daily update, and the post-mortem. None of them is a cell,
+    none of them scales with `max_iterations`, and all three used to fall through to
+    `get_usage_limits()` — twenty tool calls and forty requests that nobody chose for
+    them. Each is a bounded lookup: has this resolved, what happened in the last two
+    days, what did the reasoning get wrong.
+    """
+    tool_calls = max(
+        1, int(os.getenv("MONITOR_TOOL_CALLS", str(DEFAULT_MONITOR_TOOL_CALLS)))
+    )
+    return UsageLimits(request_limit=tool_calls + 3, tool_calls_limit=tool_calls)
+
+
+def get_agent_timeout() -> float:
+    """Wall-clock ceiling on one agent run. 0 disables it.
+
+    Separate from the usage limits because they bound different failures. A usage limit
+    catches an agent that keeps searching; this catches one that is not doing anything at
+    all — a provider request that never returns, a stream that stops mid-token. The
+    second failure mode is the one that leaves the browser on a loading state forever,
+    because no limit is ever reached and no exception is ever raised.
+    """
+    return get_settings().agent_timeout_seconds
+
+
+def get_run_timeout() -> float:
+    """Wall-clock ceiling on a whole forecast run. 0 disables it.
+
+    Above the per-agent ceiling rather than instead of it: thirty-odd agent calls that
+    each finish just inside their own timeout still add up to a run nobody is waiting for
+    any more.
+    """
+    return get_settings().run_timeout_seconds
 
 
 def _validate_gateway_api_key(gateway_key: str) -> None:

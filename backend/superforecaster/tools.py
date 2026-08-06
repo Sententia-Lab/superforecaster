@@ -191,6 +191,10 @@ def _budget_notice(ctx: RunContext[ForecastDeps]) -> str:
     Increments at the *result*, not the call, so a search that errored still costs a
     call. That matches what pydantic-ai's own `UsageLimits` counts.
 
+    Every line here names *searching* rather than tool calls in general. The structured
+    answer is delivered as a tool call, so "stop calling tools" forbids the one call that
+    would end the run — see `agents.attach_budget_pressure` for what that costs.
+
     Empty when nothing fanned out — the CLI, the update graph, an eval.
     """
     b = ctx.deps.budget
@@ -212,7 +216,7 @@ def _budget_notice(ctx: RunContext[ForecastDeps]) -> str:
 
     b.exhausted = True
     return (
-        "\n\n[SEARCH BUDGET EXHAUSTED — this is your last tool result. Return your "
+        "\n\n[SEARCH BUDGET EXHAUSTED — this is your last search result. Return your "
         "structured answer now, from what you have.]"
     )
 
