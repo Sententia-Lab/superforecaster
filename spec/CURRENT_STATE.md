@@ -312,8 +312,8 @@ BiasCheck
   bias           BiasName
   assessment     str
 
-InsideView                        # output of inside_view_agent
-  adjustments               list[Adjustment]  # min_length=1, max_length=8
+InsideView                        # merged by merge_inside/reflect, never an agent output
+  adjustments               list[Adjustment]  # min_length=1, max_length=45 (15 cells x 3)
   steel_man                 str               # P14 — the opposing case, argued properly
   what_would_change_my_mind str               # P14
   bias_checks               list[BiasCheck]   # exactly 5   <- P15

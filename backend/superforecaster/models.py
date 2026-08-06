@@ -455,12 +455,13 @@ class Reflection(BaseModel):
 class InsideView(BaseModel):
     """The inside-view row, merged. P5, P9, P14, P15.
 
-    `adjustments` is every column's, stamped with the column it came from.
-    `max_length` allows five columns times three adjustments each. The three
+    `adjustments` is every cell's, stamped with the lens it came from.
+    `max_length` allows fifteen cells — five sub-questions times three lenses —
+    times three adjustments each, matching `SubClaimAdjustments`. The three
     whole-question fields come from `Reflection`.
     """
 
-    adjustments: list[Adjustment] = Field(min_length=1, max_length=15)
+    adjustments: list[Adjustment] = Field(min_length=1, max_length=45)
     steel_man: str = Field(
         description="P14 — strongest case for the opposite conclusion"
     )
