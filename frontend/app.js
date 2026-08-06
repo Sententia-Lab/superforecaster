@@ -244,6 +244,70 @@ function h(tag, attrs, ...children) {
   return el;
 }
 
+// ---------- markdown ----------
+//
+// The agents write prose, and prose from a model arrives with markdown in it. `h()`
+// appends text nodes, so `**bold**` reached the page as five characters and an asterisk
+// problem. This is the smallest renderer that fixes that honestly.
+//
+// **Escape first, always.** Everything below runs on agent-authored text, which is
+// untrusted: it is assembled from search results the model read. `md()` therefore escapes
+// the whole string before a single markdown rule runs, so the only tags that can ever
+// reach `innerHTML` are the ones generated here. Adding a rule that emits an attribute —
+// a link, an image — means escaping that attribute separately; the current grammar
+// deliberately has none.
+
+const escapeHtml = (s) =>
+  String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+/** Inline spans only: bold, italic, code. Runs on already-escaped text. */
+function mdInline(escaped) {
+  return escaped
+    // `code` first — its content must not then be read as emphasis.
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
+}
+
+/**
+ * Agent prose as HTML: paragraphs, `-` and `1.` lists, and inline emphasis.
+ *
+ * Blocks are split on blank lines, matching how the models actually write. A run of list
+ * items becomes one list; anything else becomes a paragraph with single newlines kept as
+ * breaks, because a model writing a numbered list with single newlines is common and
+ * collapsing it into one run-on line is how this looked before.
+ */
+function mdToHtml(text) {
+  if (!text) return "";
+  return String(text)
+    .split(/\n\s*\n/)
+    .map((block) => {
+      const lines = block.split("\n").map((l) => l.trim()).filter(Boolean);
+      if (!lines.length) return "";
+
+      const ordered = lines.every((l) => /^\d+[.)]\s+/.test(l));
+      const bulleted = lines.every((l) => /^[-*•]\s+/.test(l));
+      if ((ordered || bulleted) && lines.length > 1) {
+        const tag = ordered ? "ol" : "ul";
+        const items = lines
+          .map((l) => l.replace(/^(\d+[.)]|[-*•])\s+/, ""))
+          .map((l) => `<li>${mdInline(escapeHtml(l))}</li>`)
+          .join("");
+        return `<${tag}>${items}</${tag}>`;
+      }
+      return `<p>${mdInline(escapeHtml(block.trim())).replace(/\n/g, "<br>")}</p>`;
+    })
+    .join("");
+}
+
+/** Agent prose as a rendered element. The one sanctioned route to `innerHTML`. */
+const prose = (text, cls = "md") => h(`div.${cls}`, { html: mdToHtml(text) });
+
+/** Markdown markers stripped rather than rendered — for one-line clipped contexts. */
+const plain = (text) =>
+  String(text || "").replace(/[*`_]/g, "").replace(/^\s*(\d+[.)]|[-•])\s+/gm, "");
+
 const pct = (p) => (p === null || p === undefined ? "—" : `${Math.round(p * 100)}%`);
 const domainOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return u || ""; } };
 
@@ -989,8 +1053,8 @@ const EVENT_RENDERERS = {
 
   error: (p) =>
     h("div.ev.route", {},
-      h("div", {}, p.message),
-      p.hint ? h("div", { style: "margin-top:5px" }, p.hint) : null,
+      prose(p.message),
+      p.hint ? h("div", { style: "margin-top:5px" }, prose(p.hint)) : null,
       p.resumable
         ? h("div.micro", { style: "margin-top:6px" },
             "Resuming re-runs only the step that failed \u2014 everything before it keeps "
@@ -1067,7 +1131,7 @@ function renderColumnCard(run, group, col) {
             : "judgment \u2014 no base rate to look up")
       : null,
 
-    live ? h("div.collive", {}, liveText) : null,
+    live ? h("div.collive", {}, plain(liveText)) : null,
 
     log.length
       ? disclosure(`col-log-${key}`,
@@ -1101,8 +1165,10 @@ function renderAdjustment(a, key) {
       a.is_noise ? h("span.chip", {}, "noise") : null,
       h("div.spacer", {}),
       supportChip(claimSupport(a.sources))),
-    h("div", {}, a.evidence),
-    a.flip_test ? h("div.dim", {}, `flip test: ${a.flip_test}`) : null,
+    prose(a.evidence),
+    a.flip_test
+      ? h("div.dim", {}, h("span.micro", {}, "flip test"), prose(a.flip_test, "md"))
+      : null,
     addresses(a.sub_claim_ids),
     renderSources(`adjsrc-${key}`, a.sources));
 }
@@ -1150,8 +1216,8 @@ function renderClass(run, c, key) {
               h("span.chip", { class: a.outcome >= 1 ? "for" : "against" },
                 a.outcome >= 1 ? "yes" : "no"),
               h("div", {},
-                h("div", {}, a.description),
-                a.relevance ? h("div.dim", {}, a.relevance) : null))))
+                prose(a.description),
+                a.relevance ? prose(a.relevance, "dim md") : null))))
       : null);
 }
 
@@ -1168,7 +1234,7 @@ function renderSources(key, sources, seen) {
         supportChip(s.confidence),
         h("div", {},
           h("div", {}, link(s.url, sourceLabel(s))),
-          s.note ? h("div.dim", {}, s.note) : null,
+          s.note ? prose(s.note, "dim md") : null,
           record && record.query ? h("div.micro", {}, `found by: ${record.query}`) : null,
           // A cited URL no search returned is what `check_citations` fails a forecast
           // for. Saying so here means a reader sees it without running the check.
@@ -1557,7 +1623,7 @@ function renderResultCard(r) {
 
     r.reasoning ? h("div", { style: "margin-top:18px" },
       h("div.micro", {}, "Reasoning"),
-      r.reasoning.split(/\n\n+/).map((para) => h("p", {}, para))) : null,
+      prose(r.reasoning)) : null,
   );
 }
 
@@ -1698,10 +1764,10 @@ function renderDecomposition(d) {
           h("div.spacer", {}),
           h("span.micro", {}, pct(s.probability))),
         h("div", {}, s.question),
-        h("div.dim", {}, s.rationale))),
+        prose(s.rationale, "dim md"))),
     h("div.ev.note", {},
       h("div.micro", {}, "chain_note"),
-      h("div.dim", {}, d.chain_note)));
+      prose(d.chain_note, "dim md")));
 }
 
 /**
@@ -1713,9 +1779,10 @@ function renderDecomposition(d) {
 function renderAnchorNote(o) {
   return h("div.ev.note", {},
     h("div.micro", {}, `aggregate_base_rate — ${pct(o.aggregate_base_rate)}`),
-    h("div.dim", {},
+    prose(
       o.disagreement.trim()
-      || `${o.reference_classes.length} reference classes, broadly in agreement.`));
+      || `${o.reference_classes.length} reference classes, broadly in agreement.`,
+      "dim md"));
 }
 
 /** P14 + P15 — the case against, and the bias sweep. Whole-question by construction. */
@@ -1723,14 +1790,14 @@ function renderReflection(i) {
   return h("div", {},
     h("div.ev.note", {},
       h("div.micro", {}, "steel_man"),
-      h("div.dim", {}, i.steel_man)),
+      prose(i.steel_man, "dim md")),
     h("div.ev.note", {},
       h("div.micro", {}, "what_would_change_my_mind"),
-      h("div.dim", {}, i.what_would_change_my_mind)),
+      prose(i.what_would_change_my_mind, "dim md")),
     i.bias_checks.map((b) =>
       h("div.ev.bias", {},
         h("span.chip", {}, b.bias),
-        h("span.dim", {}, b.assessment))));
+        prose(b.assessment, "dim md"))));
 }
 
 /**
@@ -1757,7 +1824,7 @@ function renderChecks(run, group) {
           h("span", {}, v.name),
           h("div.spacer", {}),
           principleChip(v.principle)),
-        h("div.dim", {}, v.detail))),
+        prose(v.detail, "dim md"))),
     blocking.length && group.attempt < 2
       ? h("div.ev.route", {},
           `↩ ${blocking.length} blocking violation${blocking.length === 1 ? "" : "s"}. `
