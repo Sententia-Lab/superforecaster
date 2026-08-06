@@ -16,7 +16,7 @@ not see.
 
 from __future__ import annotations
 
-from config import get_synthesis_limits, resolve_agent_model
+from config import get_model_settings, get_synthesis_limits, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
@@ -74,6 +74,7 @@ def build_lenses_agent(model: str | None = None) -> Agent[ForecastDeps, SubClaim
     """Names populations for one sub-question. No tools, by design — see the module docstring."""
     return Agent[ForecastDeps, SubClaimLenses](
         model=model or resolve_agent_model(),
+        model_settings=get_model_settings(),
         name="lenses_agent",
         deps_type=ForecastDeps,
         output_type=SubClaimLenses,

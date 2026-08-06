@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from config import get_cell_budget, get_cell_limits, resolve_agent_model
+from config import get_model_settings, get_cell_budget, get_cell_limits, resolve_agent_model
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import UsageLimitExceeded
 
@@ -92,7 +92,8 @@ link.
 
 Padding the list with weak citations does not help you — a class is graded by its
 *strongest* source, so an extra thin one neither raises nor lowers it. If the evidence
-is genuinely thin, say so and lower `sample_size` rather than inventing a rate.
+is genuinely thin, say so in the evidence `note` and return fewer counted rows rather
+than inventing a rate.
 """
 
 def build_base_rate_cell_agent(
@@ -101,6 +102,7 @@ def build_base_rate_cell_agent(
     """One column's base-rate researcher."""
     agent = Agent[ForecastDeps, SubClaimBaseRates](
         model=model or resolve_agent_model(),
+        model_settings=get_model_settings(),
         name="base_rate_cell_agent",
         deps_type=ForecastDeps,
         output_type=SubClaimBaseRates,

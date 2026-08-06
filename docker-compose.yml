@@ -7,9 +7,9 @@ services:
       - "8000:8000"
     volumes:
       - sqlite_data:/app/data
-      # The frontend is static files with no build step, so it is bind-mounted and
-      # served by the API rather than built into an image of its own.
-      - ./frontend:/app/frontend:ro
+      # The built frontend (run `npm run build` in frontend/ first) is bind-mounted
+      # and served by the API rather than built into an image of its own.
+      - ./frontend/dist:/app/frontend:ro
     env_file: backend/.env
     environment:
       DATABASE_PATH: /app/data/superforecaster.db

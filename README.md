@@ -2,9 +2,10 @@
 
 Forecasting agents that implement Tetlock's superforecasting methodology, in Pydantic AI.
 
-You write a question in plain prose. The system breaks it into sub-questions, researches a
-base rate for each one concurrently, adjusts each from its own evidence, and commits to a
-probability — showing you the whole walk from anchor to answer while it happens.
+You write a question in plain prose. The AI drafts it into a resolvable question, then a
+gated pipeline breaks it into sub-questions, counts a base rate for each reference
+population, adjusts each from its own evidence, and commits to a probability — one stage
+per click, showing the whole walk from anchor to answer, with every step persisted.
 
 The 16 principles are enforced as **checks over typed output**, not as prompt instructions.
 A forecast that skips the outside view, or lands on a number its own adjustments do not
@@ -31,8 +32,10 @@ export TAVILY_API_KEY=tvly-...
 uv run python -m superforecaster serve
 ```
 
-Open **http://localhost:8000**. That is the whole setup — no `.env` to write, no admin
-token to invent, no database to create.
+Build the frontend once first (`cd ../frontend && npm install && npm run build`), then
+open **http://localhost:8000**. That is the whole setup — no `.env` to write, no admin
+token to invent, no database to create. (For frontend development, `npm run dev` starts a
+Vite server that proxies to the API on :8099.)
 
 The startup banner tells you exactly what you got:
 
@@ -80,47 +83,27 @@ From [logfire.pydantic.dev](https://logfire.pydantic.dev) → your org → **Gat
 
 ## What a run looks like
 
-Decompose fixes a **grid**. Rows are stages, columns are sub-questions. Each research row
-runs one agent per column concurrently, then waits for all of them.
+A run is a **persisted machine of gated stages** — nothing executes unless you click next,
+and every stage output lands in SQLite the moment it exists.
 
 ```
-                        Will OpenAI go public in 2026?
-                                    │
- Decompose  ┌───────────┬───────────┼───────────┬───────────┐
-           sc1         sc2         sc3         sc4
-        public       docs        market      choose
-       commitment   in time     appetite    exchange
-            │           │           │           │
- ═══════════╧═══════════╧═══ await decompose ═══╧═══════════╧═══════
-            │           │           │           │
- Find Base  ▼           ▼           ▼           ▼        one agent each, own budget,
-   Rates  agent       agent       agent       agent      own card, own live tool tail
-            │           │           │           │
-        sources     sources     sources     sources
-        analogs     analogs     analogs     analogs
-        rate %      rate %      rate %      rate %
-            │           │           │           │
- ═══════════╧═══════════╧═══ await base rates ══╧═══════════╧═══════
-            │           │           │           │
- Inside-    ▼           ▼           ▼           ▼        each seeded with ITS column's
-   View   agent       agent       agent       agent      rate, not a global anchor
-            │           │           │           │
-        modifiers   modifiers   modifiers   modifiers
-            │           │           │           │
- ═══════════╧═══════════╧═══ await inside-view ═╧═══════════╧═══════
-                              ▼
-                        reflect          ← P14 steel-man, P15 bias sweep, no tools
-                              ▼
- Synthesize             one forecast     ← anchor + signed adjustments, checked
+ 1  Decompose      one agent, live tail          → 3–5 sub-questions   [review, next]
+ 2  Find lenses    one agent per sub-question    → 1–3 populations each [all must finish]
+ 3  Base rates     one agent per (sub-Q, lens)   → a COUNTED rate Σhits/Σn  [per-cell next]
+ 4  Inside view    one agent per (sub-Q, lens)   → signed modifiers on THAT lens's rate
+ 5  Synthesis      arithmetic (not agentic), then reflect + synthesize + pure critique
 ```
 
-Every card streams its own searches while it works. The anchor is the **chain** the
-decomposition describes — the product of the per-column rates for a conjunction, not an
-average of lenses pointed at different questions.
+Each cell streams its searches inside its own card while it works. The anchor is the
+**chain** the decomposition describes — the product of the per-column rates for a
+conjunction, not an average of lenses pointed at different questions — and the final
+probability may deviate from the implied number by at most ±5 points
+(`CHECK_DERIVATION_SLACK`).
 
-Runs are checkpointed. A column that exhausts its search budget degrades to no result and
-the rest of the run carries on; a run that dies outright resumes from its last completed
-stage rather than starting over.
+The connection is the agent's lifetime: close the laptop and the in-flight step stops,
+lands as `cancelled`, and is one click to re-run. A step that fails is retryable from the
+database — there is no separate checkpoint system. `superforecaster forecast` (CLI) runs
+the same stages back-to-back with no gates.
 
 ---
 
@@ -138,11 +121,12 @@ All from `backend/`.
 | `uv run python -m superforecaster refresh --id <uuid>` | re-check an existing forecast against new evidence |
 | `uv run python -m superforecaster resolve --id <uuid>` | has this resolved yet? |
 | `uv run python -m superforecaster config` | every setting and **where its value came from** — secrets redacted |
-| `uv run python -m superforecaster diagram` | the real graph wiring, as mermaid |
-| `uv run pytest` | 402 tests, no network, no API keys |
+| `uv run python -m superforecaster diagram` | the pipeline shape, as mermaid |
+| `uv run pytest` | the whole suite — no network, no API keys |
 | `uv run python -m superforecaster --help` | everything else |
 
-**Docker**, from the repo root:
+**Docker**, from the repo root (build the frontend first — the compose file mounts
+`frontend/dist`):
 
 ```bash
 docker compose up --build
@@ -205,14 +189,15 @@ result and the run continues — one greedy column no longer costs the others th
 ```
 backend/
   superforecaster/
-    agents/          decompose, outside_view, inside_view, reflect, synthesize, critic, …
-    graphs/          the five-node forecast graph and the update graph
+    agents/          decompose, lenses, outside_view, inside_view, reflect, synthesize, …
+    stages.py        the per-stage functions + run_all (CLI/eval auto-advance)
+    machine.py       the gated state machine — every legal transition
+    graphs/          the update graph (resolution checks + Bayesian updates)
     checks.py        the 16 principles as pure functions over typed output
-    runs.py          live-run registry; typed state → SSE events
-    db.py            SQLite, with schema migrations
-  api/               FastAPI routes, including /runs and its SSE stream
+    db.py            SQLite: forecasts, gated_runs, run_steps — with schema migrations
+  api/               FastAPI routes, including /runs and its per-step SSE stream
   config.py          settings, budgets, check thresholds — every number an env var
-frontend/            zero-build static app: index.html, app.js, api.js
+frontend/            React + Vite: src/ components, derive.js mirrors checks.py
 spec/                CURRENT_STATE.md (what exists), ADR.md (why)
 ```
 

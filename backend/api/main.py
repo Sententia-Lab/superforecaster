@@ -1,7 +1,7 @@
 """FastAPI app entry point.
 
 - Initializes DB on startup
-- Starts the APScheduler (digest + daily refresh) on startup
+- Starts the APScheduler (daily refresh) on startup
 - Mounts all routers
 - Health check at /healthz (used by Docker healthcheck)
 - CORS open by default — public API
@@ -18,7 +18,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from superforecaster import cron, db, durability
+from superforecaster import cron, db
 
 from .admin import router as admin_router
 from .deps import is_local_mode
@@ -61,9 +61,6 @@ def _preflight() -> list[str]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
-    # Only the server checkpoints runs. A one-shot CLI forecast or an eval has nothing
-    # to resume into, so it runs the same graph without the workflow layer.
-    durability.configure()
     cron.start_scheduler()
     print("\nSuperforecaster", flush=True)
     for line in _preflight():
@@ -118,7 +115,6 @@ def client_config(request: Request) -> dict[str, object]:
         "auth_required": not is_local_mode(request),
         "search_enabled": bool(s.tavily_api_key),
         "model": model,
-        "max_concurrent_runs": s.run_max_concurrent,
     }
 
 

@@ -19,12 +19,13 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 MAX_SEARCH_DEPTH = 50
-"""Ceiling on `max_iterations`, and the one number the UI must not guess.
+"""Ceiling on a retried step's `max_iterations` override, and the one number the UI
+must not guess.
 
-A budget overrun is the usual reason to resume, and the error text tells the reader to
-come back with a higher depth — so this has to be high enough to accept what that
-invites. It was 20 while the resume prompt suggested doubling, which turned a reasonable
-"try 25" into a 422 the UI rendered as `[object Object]`.
+A budget overrun is the usual reason to retry a step, and the error text tells the
+reader to come back with a higher depth — so this has to be high enough to accept what
+that invites. It was 20 while the resume prompt suggested doubling, which turned a
+reasonable "try 25" into a 422 the UI rendered as `[object Object]`.
 """
 
 SourceConfidence = Literal["low", "medium", "high"]
@@ -43,7 +44,6 @@ A different axis from `SourceConfidence` — it grades an observation about the 
 not the support behind a claim. Kept separate so the two cannot drift into each other.
 """
 
-QuestionStatus = Literal["pending", "approved", "rejected", "forecasted"]
 Knowability = Literal["researchable", "judgment"]
 Direction = Literal["up", "down", "neutral"]
 BiasName = Literal[
@@ -526,15 +526,6 @@ class UpdateOutcome(BaseModel):
     reason: str = ""
 
 
-class ForecastRefreshResult(BaseModel):
-    """Output from refresh_agent — purely about probability updates."""
-
-    should_update: bool
-    new_probability: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    reasoning: str
-    evidence_found: list[str] = Field(default_factory=list)
-
-
 # ---------- Resolution agent ----------
 
 
@@ -660,24 +651,6 @@ class ForecastRecord(BaseModel):
     created_at: datetime
 
 
-class QuestionRecord(BaseModel):
-    """A community-submitted question idea (with computed net_score)."""
-
-    id: str
-    text: str
-    resolution_criteria: str
-    proposed_resolution_date: datetime
-    net_score: int
-    user_vote: Optional[int] = None  # populated when caller IP is known
-    is_own: bool = False  # True if caller IP matches submitter IP
-    status: QuestionStatus
-    edited_at: Optional[datetime] = None
-    is_deleted: bool = False
-    created_at: datetime
-    approved_at: Optional[datetime] = None
-    forecast_id: Optional[str] = None
-
-
 # ---------- Calibration ----------
 
 
@@ -729,34 +702,7 @@ class ResolveRequest(BaseModel):
     )
 
 
-class CreateQuestionRequest(BaseModel):
-    text: str
-    resolution_criteria: str
-    proposed_resolution_date: datetime
-
-
-class EditQuestionRequest(BaseModel):
-    text: Optional[str] = None
-    resolution_criteria: Optional[str] = None
-    proposed_resolution_date: Optional[datetime] = None  # admin-only field
-
-
-class VoteRequest(BaseModel):
-    vote: int = Field(description="+1 (upvote) or -1 (downvote)")
-
-
-class ApproveQuestionRequest(BaseModel):
-    resolution_date: Optional[datetime] = None
-    resolution_criteria: Optional[str] = None
-
-
 # ---------- API responses ----------
-
-
-class VoteResponse(BaseModel):
-    question_id: str
-    net_score: int
-    user_vote: Optional[int] = None
 
 
 class RefreshActionResponse(BaseModel):
@@ -807,106 +753,119 @@ class DraftResponse(BaseModel):
     critique: CriteriaCritique
 
 
-# ---------- Live runs ----------
+# ---------- Gated runs ----------
 
-RunStatus = Literal["queued", "running", "done", "error", "cancelled", "lost"]
+GatedRunStatus = Literal["backlog", "active", "complete"]
+"""Error is deliberately not a status — it is a nullable field on the run (the red
+chip), cleared when the failing step is retried. A run with a failed step is still
+`active`; it has not gone anywhere."""
+
+StepStatus = Literal["pending", "running", "complete", "error"]
+
+Stage = Literal["decompose", "lenses", "base_rates", "inside_view", "synthesis"]
 
 
-class RunEvent(BaseModel):
-    """One frame on the SSE wire.
+class BaseRateStepPayload(BaseModel):
+    """What one base-rate cell persists: the measured lens plus its audit trail."""
 
-    `payload` is an untyped dict deliberately. Sixteen event models would be sixteen
-    classes to keep in step with a JavaScript renderer that reads them as JSON
-    regardless; `spec/planned/spec3.3.md` §3.3 is the schema of record.
+    lens: ResearchedLens
+    disagreement: str = ""
+    sources: list[SourceRef] = Field(default_factory=list)
 
-    `sub_claim` sits here beside `stage` and `attempt` rather than inside `payload`
-    because it is a coordinate, not content: the client routes on it before it looks at
-    the payload at all, and `observability` — which builds the `query`/`source`/`thought`
-    payloads and has no idea the grid exists — would otherwise have to inject it into
-    three different payload shapes.
+
+class InsideStepPayload(BaseModel):
+    """What one inside-view cell persists: stamped adjustments plus audit trail."""
+
+    lens_name: str = ""
+    adjustments: list[Adjustment] = Field(default_factory=list)
+    steel_man: str = ""
+    sources: list[SourceRef] = Field(default_factory=list)
+
+
+class SynthesisStepPayload(BaseModel):
+    """Everything the final stage produced, persisted as one payload.
+
+    `anchor`, `implied`, and `derivation_slack` are stored as data so the UI can show
+    the arithmetic — and the ±slack rule the final probability obeyed — without
+    re-deriving thresholds that may have changed since the run.
     """
 
-    seq: int
+    reflection: Reflection
+    outside: OutsideView
+    inside: InsideView
+    forecast: Forecast
+    violations: list[CheckViolation] = Field(default_factory=list)
+    anchor: float
+    implied: float
+    derivation_slack: float
+    attempts: int = 1
+
+
+class RunStepOut(BaseModel):
+    """One gated step as the API returns it."""
+
+    id: str
     run_id: str
-    type: str
-    stage: str = ""
-    attempt: int = 1
-    sub_claim: Optional[str] = Field(
-        default=None,
-        description="Which column of the grid produced this — a sub-claim id like 'sc2' "
-        "— or None for work the stage did as a whole.",
-    )
-    ts: datetime
-    payload: dict[str, Any] = Field(default_factory=dict)
+    stage: Stage
+    sub_claim_id: str = ""
+    lens_name: str = ""
+    status: StepStatus
+    payload: Optional[dict[str, Any]] = None
+    error: Optional[str] = None
+    attempts: int = 0
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
 
 
-class RunSummary(BaseModel):
-    """A run as the home rail shows it — no events."""
+class GatedRunSummary(BaseModel):
+    """A run as the sidebar shows it — no steps, just counts."""
 
     id: str
     question: str
-    status: RunStatus
-    stage: str = ""
-    stage_index: int = 0
-    attempt: int = 1
-    tool_calls: int = 0
-    last_seq: int = 0
-    forecast_id: Optional[str] = None
+    status: GatedRunStatus
     error: Optional[str] = None
+    forecast_id: Optional[str] = None
+    stage_counts: dict[str, dict[str, int]] = Field(default_factory=dict)
     created_at: datetime
-    ended_at: Optional[datetime] = None
-    max_iterations: int = 5
-    """The depth this run is using. Present so the resume prompt can offer a real
-    number — it used to read this field, find nothing, and suggest 10 every time."""
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
 
 
-class RunSnapshot(BaseModel):
-    """Everything about a run without opening a stream. The polling fallback."""
+class GatedRunDetail(GatedRunSummary):
+    """The full tree — the reload path. The UI rebuilds the whole view from this."""
 
-    summary: RunSummary
-    events: list[RunEvent]
-
-
-class CreateRunRequest(BaseModel):
-    """Body of POST /runs."""
-
-    question: str
-    resolution_criteria: str
-    resolution_date: datetime
+    resolution_criteria: str = ""
+    resolution_source: str = ""
+    resolution_date: Optional[datetime] = None
     category: str = "general"
-    resolution_source: str = Field(
-        min_length=1,
-        description="Who adjudicates this on the resolution date — the publication, "
-        "dataset, register, or body whose output settles it.",
-    )
-    """Required, not defaulted to "".
+    max_iterations: int = 5
+    steps: list[RunStepOut] = Field(default_factory=list)
 
-    A forecast whose resolution nobody adjudicates cannot be scored, which makes running
-    it a waste of the whole search budget — and the gap is invisible until resolution day,
-    which is the one day it is too late to fix. The critic is asked to name a source for
-    every question it reviews (`agents.critic._require_a_source`) precisely so this field
-    is cheap to fill; enforcing it here is what stops "the critic suggested one" from
-    being optional. A caller with no source in mind should type where they would look."""
 
+class CreateGatedRunRequest(BaseModel):
+    """Body of POST /runs. Every field optional — the start gate checks completeness.
+
+    A run missing its question, criteria, date, or source can sit in the backlog
+    indefinitely; it just cannot *start*. That is where the four-field rule lives.
+    """
+
+    question: str = ""
+    resolution_criteria: str = ""
+    resolution_source: str = ""
+    resolution_date: Optional[datetime] = None
+    category: str = "general"
     max_iterations: int = Field(default=5, ge=1, le=20)
 
 
-class ResumeRunRequest(BaseModel):
-    """Body of POST /runs/{id}/resume.
+class UpdateGatedRunRequest(BaseModel):
+    """Body of PATCH /runs/{id} — backlog edits only."""
 
-    `max_iterations` raises the search budget for the retried node. The usual reason to
-    resume is that the old budget ran out, and resuming with the same one would fail at
-    the same place.
-    """
-
-    max_iterations: Optional[int] = Field(
-        default=None,
-        ge=1,
-        le=MAX_SEARCH_DEPTH,
-        description="Search depth for the retried node. The failure that sends people "
-        "here is a budget overrun, and the error text invites raising this — so the cap "
-        "has to be high enough to accept what it invites.",
-    )
+    question: Optional[str] = None
+    resolution_criteria: Optional[str] = None
+    resolution_source: Optional[str] = None
+    resolution_date: Optional[datetime] = None
+    category: Optional[str] = None
+    max_iterations: Optional[int] = Field(default=None, ge=1, le=20)
 
 
 # ---------- Model garden ----------

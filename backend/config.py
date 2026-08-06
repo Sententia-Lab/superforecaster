@@ -56,14 +56,25 @@ DEFAULT_CRITIQUE_HARD_HEADROOM = 1
 # same "no ceiling anyone chose" the cells were moved off.
 DEFAULT_MONITOR_TOOL_CALLS = 4
 
+# Output-token ceiling per model response. The provider default (4096 for Anthropic)
+# is too small for the synthesize agent's structured output — a full Forecast with
+# decompositions, research summary, and rationales is several thousand tokens of JSON,
+# and a response truncated mid-tool-call raises IncompleteToolCall, which a retry then
+# hits again, forever. One ceiling for every agent: the failure is invisible until the
+# largest output crosses it, so per-agent tuning would just move the cliff around.
+DEFAULT_AGENT_MAX_TOKENS = 16384
+
 # Wall-clock ceilings. A usage limit bounds how many times an agent may act; it says
 # nothing about how long one act may take, and every stall this system has produced was
 # a request that never came back rather than a run that acted too often. Without these a
 # hung provider call hangs the run forever, and the browser sits on a loading state
 # waiting for an `end` frame that is never coming.
+#
+# The stage ceiling sits above the per-agent one: a gated stage is at most a handful of
+# agent calls (synthesis worst case is reflect + two synthesize attempts), so a stage
+# that outlives this is stuck, not thorough.
 DEFAULT_AGENT_TIMEOUT_SECONDS = 180
-DEFAULT_RUN_TIMEOUT_SECONDS = 1200
-DEFAULT_RUN_WATCHER_GRACE_SECONDS = 45
+DEFAULT_STAGE_TIMEOUT_SECONDS = 600
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,18 +87,12 @@ class Settings:
     agent_model: str | None
     database_path: str
     refresh_cron_schedule: str
-    digest_cron_schedule: str
     min_probability_delta: float
     search_lookback_hours: int
     agent_request_limit: int | None
     agent_tool_calls_limit: int | None
-    run_max_concurrent: int
-    run_event_buffer: int
-    run_retention_minutes: int
     agent_timeout_seconds: float
-    run_timeout_seconds: float
-    run_watcher_grace_seconds: float
-    dbos_database_url: str
+    stage_timeout_seconds: float
     frontend_dir: str
 
 
@@ -144,27 +149,19 @@ def get_settings() -> Settings:
         agent_model=os.getenv("AGENT_MODEL"),
         database_path=os.getenv("DATABASE_PATH", "./superforecaster.db"),
         refresh_cron_schedule=os.getenv("REFRESH_CRON_SCHEDULE", "0 6 * * *"),
-        digest_cron_schedule=os.getenv("DIGEST_CRON_SCHEDULE", "0 9 28-31 * *"),
         min_probability_delta=float(os.getenv("MIN_PROBABILITY_DELTA", "0.03")),
         search_lookback_hours=int(os.getenv("SEARCH_LOOKBACK_HOURS", "48")),
         agent_request_limit=request_limit,
         agent_tool_calls_limit=tool_calls_limit,
-        run_max_concurrent=int(os.getenv("RUN_MAX_CONCURRENT", "5")),
-        run_event_buffer=int(os.getenv("RUN_EVENT_BUFFER", "5000")),
-        run_retention_minutes=int(os.getenv("RUN_RETENTION_MINUTES", "60")),
         agent_timeout_seconds=float(
             os.getenv("AGENT_TIMEOUT_SECONDS", str(DEFAULT_AGENT_TIMEOUT_SECONDS))
         ),
-        run_timeout_seconds=float(
-            os.getenv("RUN_TIMEOUT_SECONDS", str(DEFAULT_RUN_TIMEOUT_SECONDS))
+        stage_timeout_seconds=float(
+            os.getenv("STAGE_TIMEOUT_SECONDS", str(DEFAULT_STAGE_TIMEOUT_SECONDS))
         ),
-        run_watcher_grace_seconds=float(
-            os.getenv(
-                "RUN_WATCHER_GRACE_SECONDS", str(DEFAULT_RUN_WATCHER_GRACE_SECONDS)
-            )
+        frontend_dir=os.getenv(
+            "FRONTEND_DIR", str(_BACKEND_ROOT.parent / "frontend" / "dist")
         ),
-        dbos_database_url=os.getenv("DBOS_DATABASE_URL", "sqlite:///./run_durability.sqlite"),
-        frontend_dir=os.getenv("FRONTEND_DIR", str(_BACKEND_ROOT.parent / "frontend")),
     )
 
 
@@ -329,6 +326,18 @@ def get_monitor_limits() -> UsageLimits:
     return UsageLimits(request_limit=tool_calls + 3, tool_calls_limit=tool_calls)
 
 
+def get_model_settings() -> dict:
+    """Model settings shared by every agent. `AGENT_MAX_TOKENS` overrides the ceiling.
+
+    Read per call, matching the budget getters, so tests can monkeypatch the env var.
+    """
+    return {
+        "max_tokens": int(
+            os.getenv("AGENT_MAX_TOKENS", str(DEFAULT_AGENT_MAX_TOKENS))
+        )
+    }
+
+
 def get_agent_timeout() -> float:
     """Wall-clock ceiling on one agent run. 0 disables it.
 
@@ -341,14 +350,15 @@ def get_agent_timeout() -> float:
     return get_settings().agent_timeout_seconds
 
 
-def get_run_timeout() -> float:
-    """Wall-clock ceiling on a whole forecast run. 0 disables it.
+def get_stage_timeout() -> float:
+    """Wall-clock ceiling on one gated stage step. 0 disables it.
 
-    Above the per-agent ceiling rather than instead of it: thirty-odd agent calls that
-    each finish just inside their own timeout still add up to a run nobody is waiting for
-    any more.
+    Above the per-agent ceiling rather than instead of it: a handful of agent calls that
+    each finish just inside their own timeout still add up to a step nobody is waiting
+    for any more. There is no whole-run timeout — a gated run is *supposed* to sit idle
+    at a gate indefinitely; only the work between two clicks is bounded.
     """
-    return get_settings().run_timeout_seconds
+    return get_settings().stage_timeout_seconds
 
 
 def _validate_gateway_api_key(gateway_key: str) -> None:

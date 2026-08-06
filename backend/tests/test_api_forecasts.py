@@ -102,7 +102,7 @@ def test_create_forecast_requires_admin(client):
 
 def test_create_forecast(client, admin_headers):
     async def mock_run_forecast(input):
-        # run_forecast_graph returns (forecast, surviving violations)
+        # run_all returns (forecast, surviving violations)
         return (
             _mock_forecast().model_copy(
                 update={
@@ -115,7 +115,7 @@ def test_create_forecast(client, admin_headers):
             [],
         )
 
-    with patch("api.forecasts.run_forecast_graph", side_effect=mock_run_forecast):
+    with patch("api.forecasts.run_all", side_effect=mock_run_forecast):
         resp = client.post(
             "/forecasts",
             json={
@@ -136,7 +136,7 @@ def test_create_forecast(client, admin_headers):
 
 def test_list_and_get_forecast(client, admin_headers):
     async def mock_run_forecast(input):
-        # run_forecast_graph returns (forecast, surviving violations)
+        # run_all returns (forecast, surviving violations)
         return (
             _mock_forecast().model_copy(
                 update={
@@ -149,7 +149,7 @@ def test_list_and_get_forecast(client, admin_headers):
             [],
         )
 
-    with patch("api.forecasts.run_forecast_graph", side_effect=mock_run_forecast):
+    with patch("api.forecasts.run_all", side_effect=mock_run_forecast):
         create = client.post(
             "/forecasts",
             json={
@@ -174,7 +174,7 @@ def test_list_and_get_forecast(client, admin_headers):
 
 def test_resolve_forecast(client, admin_headers):
     async def mock_run_forecast(input):
-        # run_forecast_graph returns (forecast, surviving violations)
+        # run_all returns (forecast, surviving violations)
         return (
             _mock_forecast().model_copy(
                 update={
@@ -187,7 +187,7 @@ def test_resolve_forecast(client, admin_headers):
             [],
         )
 
-    with patch("api.forecasts.run_forecast_graph", side_effect=mock_run_forecast):
+    with patch("api.forecasts.run_all", side_effect=mock_run_forecast):
         create = client.post(
             "/forecasts",
             json={
@@ -215,7 +215,7 @@ def test_resolve_forecast(client, admin_headers):
 
 def test_resolve_with_null_marks_ambiguous(client, admin_headers):
     async def mock_run_forecast(input):
-        # run_forecast_graph returns (forecast, surviving violations)
+        # run_all returns (forecast, surviving violations)
         return (
             _mock_forecast().model_copy(
                 update={
@@ -228,7 +228,7 @@ def test_resolve_with_null_marks_ambiguous(client, admin_headers):
             [],
         )
 
-    with patch("api.forecasts.run_forecast_graph", side_effect=mock_run_forecast):
+    with patch("api.forecasts.run_all", side_effect=mock_run_forecast):
         create = client.post(
             "/forecasts",
             json={
@@ -255,7 +255,7 @@ def test_resolve_with_null_marks_ambiguous(client, admin_headers):
 
 def test_manual_refresh_endpoint(client, admin_headers):
     async def mock_run_forecast(input):
-        # run_forecast_graph returns (forecast, surviving violations)
+        # run_all returns (forecast, surviving violations)
         return (
             _mock_forecast().model_copy(
                 update={
@@ -268,7 +268,7 @@ def test_manual_refresh_endpoint(client, admin_headers):
             [],
         )
 
-    with patch("api.forecasts.run_forecast_graph", side_effect=mock_run_forecast):
+    with patch("api.forecasts.run_all", side_effect=mock_run_forecast):
         create = client.post(
             "/forecasts",
             json={

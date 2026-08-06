@@ -21,7 +21,7 @@ they cannot be asked of one lens.
 
 from __future__ import annotations
 
-from config import get_cell_limits, resolve_agent_model
+from config import get_model_settings, get_cell_limits, resolve_agent_model
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import UsageLimitExceeded
 
@@ -117,6 +117,7 @@ def build_inside_view_agent(
     """One column's inside-view researcher."""
     agent = Agent[ForecastDeps, SubClaimAdjustments](
         model=model or resolve_agent_model(),
+        model_settings=get_model_settings(),
         name="inside_view_agent",
         deps_type=ForecastDeps,
         output_type=SubClaimAdjustments,

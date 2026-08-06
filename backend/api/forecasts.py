@@ -5,7 +5,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from superforecaster import db
-from superforecaster.graphs import run_forecast_graph, run_update_graph
+from superforecaster.graphs import run_update_graph
+from superforecaster.stages import run_all
 from superforecaster.models import (
     AddUpdateRequest,
     CreateForecastRequest,
@@ -26,12 +27,13 @@ router = APIRouter(prefix="/forecasts", tags=["forecasts"])
 async def create_forecast(
     body: CreateForecastRequest, _: None = Depends(require_admin)
 ) -> ForecastRecord:
-    """Run the forecast graph and persist the result. Admin only.
+    """Run the whole pipeline back-to-back (no gates) and persist. Admin only.
 
-    Runs live: no `as_of` or `model` clamp. Those exist for backtesting, where the
-    question predates the model; a forecast made now should use everything available.
+    The gated flow (`/runs`) is the primary path; this blocking endpoint is the API
+    twin of `superforecaster forecast` for scripted use. Runs live: no `as_of` or
+    `model` clamp — those exist for backtesting.
     """
-    forecast, _violations = await run_forecast_graph(
+    forecast, _violations = await run_all(
         ForecastInput(
             question=body.question,
             resolution_criteria=body.resolution_criteria,

@@ -1,10 +1,11 @@
 """CLI entry point for the forecasting agents and the model garden.
 
-Three subcommands, one per agent. All print formatted JSON to stdout.
+All print formatted JSON to stdout.
 
-- forecast: interactive prompts (or --fixture) → run forecast_agent → save to DB
-- refresh:  --fixture (in-memory, no DB) or --id (load from DB) → run refresh_agent
-- resolve:  --fixture (in-memory, no DB) or --id (load from DB) → run resolution_agent
+- forecast: interactive prompts (or --fixture) → `stages.run_all` (every stage
+  back-to-back, no gates — the gated flow is the web UI's) → save to DB
+- refresh:  --fixture (in-memory, no DB) or --id (load from DB) → the update graph
+- resolve:  --fixture (in-memory, no DB) or --id (load from DB) → resolution check
 """
 
 from __future__ import annotations
@@ -29,12 +30,8 @@ from .agents.postmortem import run_postmortem
 from .agents.resolution import run_resolution_check
 from .agents.update import run_update
 from .deps import ForecastDeps
-from .graphs import (
-    forecast_mermaid,
-    run_forecast_graph,
-    run_update_graph,
-    update_mermaid,
-)
+from .graphs import run_update_graph, update_mermaid
+from .stages import run_all
 from .models import (
     Forecast,
     ForecastInput,
@@ -155,7 +152,7 @@ async def _cmd_forecast(args: argparse.Namespace) -> int:
         resolution_date = datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
         category = input("Category: ").strip()
 
-    forecast, violations = await run_forecast_graph(
+    forecast, violations = await run_all(
         ForecastInput(
             question=question,
             resolution_criteria=criteria,
@@ -290,10 +287,22 @@ async def _cmd_models(args: argparse.Namespace) -> int:
 
 # ---------- diagram subcommand ----------
 
+_FORECAST_MERMAID = """\
+stateDiagram-v2
+    [*] --> decompose
+    decompose --> lenses : gate (next)
+    lenses --> base_rates : gate (all sub-questions have lenses)
+    base_rates --> inside_view : gate (all lenses measured)
+    inside_view --> synthesis : gate (all rates adjusted)
+    synthesis --> [*]
+"""
+
 
 async def _cmd_diagram(args: argparse.Namespace) -> int:
-    """Render the real graph wiring, so docs cannot drift from code."""
-    print(update_mermaid() if args.graph == "update" else forecast_mermaid())
+    """Render the pipeline shape. The update graph is generated from real wiring;
+    the forecast pipeline is a gated state machine, so its diagram is the machine's
+    stage table rather than graph edges."""
+    print(update_mermaid() if args.graph == "update" else _FORECAST_MERMAID)
     return 0
 
 

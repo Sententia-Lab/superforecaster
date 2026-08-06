@@ -1,12 +1,12 @@
 """Failures this system raises on purpose.
 
-Its own module because the two timeouts are raised in `observability` and `runs` and
-caught in `agents.critic`, `api.questions`, and `runs` — a shared home keeps that from
-becoming an import cycle between the agent layer and the run layer.
+Its own module because the timeouts are raised in `observability` and `machine` and
+caught in `agents.critic`, `api.questions`, and `api.runs` — a shared home keeps that
+from becoming an import cycle between the agent layer and the run layer.
 
 Both subclass `TimeoutError` so a caller that only cares that something ran out of time
-can catch one thing, and both are `Exception`s so `runs.execute`'s catch-all still turns
-them into an `error` frame followed by an `end` frame.
+can catch one thing, and both are `Exception`s so `machine.execute_step`'s catch-all
+still lands them as the step's `error` text.
 """
 
 from __future__ import annotations
@@ -22,18 +22,11 @@ class AgentTimeout(TimeoutError):
     """
 
 
-class RunTimeout(TimeoutError):
-    """A whole forecast run exceeded `RUN_TIMEOUT_SECONDS`.
+class StageTimeout(TimeoutError):
+    """One gated stage step exceeded `STAGE_TIMEOUT_SECONDS`.
 
-    The backstop above `AgentTimeout`: thirty-odd agent calls that each land just inside
-    their own ceiling still add up to a run nobody is waiting for.
-    """
-
-
-class RunAbandoned(RuntimeError):
-    """Every client watching this run went away and none came back.
-
-    Not an error in the run — the reason it was stopped. A run is a live search budget
-    charged to somebody's API key, and continuing to spend it for a closed tab is the
-    single largest source of wasted work here.
+    The backstop above `AgentTimeout`: a handful of agent calls that each land just
+    inside their own ceiling still add up to a step nobody is waiting for. There is
+    deliberately no whole-run timeout — a gated run sits idle at a gate indefinitely;
+    only the work between two clicks is bounded.
     """

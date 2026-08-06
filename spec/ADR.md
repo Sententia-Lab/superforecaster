@@ -42,12 +42,16 @@ Sources: `spec/implemented/SPEC_04_26_2026.md` (v3), `spec/implemented/spec3.md`
 | [21](#adr-21--the-end-to-end-backtest-is-deferred) | The end-to-end backtest is deferred | Accepted |
 | [22](#adr-22--flat-modules-except-agents-graphs-evals) | Flat modules, except agents / graphs / evals | Accepted |
 | [23](#adr-23--spec-lifecycle-planned--implemented) | Spec lifecycle: planned → implemented | Accepted |
-| [24](#adr-24--a-zero-build-static-frontend) | A zero-build static frontend | Accepted |
-| [25](#adr-25--sse-for-live-runs-not-websockets) | SSE for live runs, not WebSockets | Accepted |
-| [26](#adr-26--runs-are-memory-resident-the-trail-is-kept-client-side) | Runs are memory-resident; the trail is kept client-side | Accepted |
+| [24](#adr-24--a-zero-build-static-frontend) | A zero-build static frontend | **Superseded by 47** |
+| [25](#adr-25--sse-for-live-runs-not-websockets) | SSE for live runs, not WebSockets | Accepted, amended by 46 |
+| [26](#adr-26--runs-are-memory-resident-the-trail-is-kept-client-side) | Runs are memory-resident; the trail is kept client-side | **Superseded by 45** |
 | [27](#adr-27--the-ui-projects-typed-state-it-never-asks-for-narration) | The UI projects typed state; it never asks for narration | Accepted |
-| [28](#adr-28--a-failed-run-resumes-from-its-last-completed-node) | A failed run resumes from its last completed node | Accepted |
+| [28](#adr-28--a-failed-run-resumes-from-its-last-completed-node) | A failed run resumes from its last completed node | **Superseded by 45** |
 | [29](#adr-29--an-extreme-probability-is-justified-not-forbidden) | An extreme probability is justified, not forbidden | Accepted |
+| [45](#adr-45--a-run-is-a-persisted-machine-of-gated-stages) | A run is a persisted machine of gated stages | Accepted |
+| [46](#adr-46--the-connection-is-the-agents-lifetime) | The connection is the agent's lifetime | Accepted |
+| [47](#adr-47--react--vite-for-the-frontend) | React + Vite for the frontend | Accepted |
+| [48](#adr-48--community-features-removed) | Community features removed | Accepted |
 
 ---
 
@@ -505,6 +509,8 @@ this file.
 
 ## ADR 24 — A zero-build static frontend
 
+**Superseded by ADR 47.**
+
 **Status:** Accepted (spec3.1)
 
 **Decision.** `frontend/` is five static files — `index.html`, `app.js`, `api.js`,
@@ -537,6 +543,9 @@ as product, because the new design does not cover them.
 
 ## ADR 25 — SSE for live runs, not WebSockets
 
+**Amended by ADR 46.** SSE stays, but a stream now covers one gated step, not a whole run,
+and the client consumes it with `fetch` + `ReadableStream` rather than `EventSource`.
+
 **Status:** Accepted (spec3.1)
 
 **Decision.** `GET /runs/{id}/stream` is `text/event-stream`, hand-rolled over a
@@ -563,6 +572,8 @@ means a shared bus behind `Run.emit` / `Run.subscribe`, which is why those are t
 ---
 
 ## ADR 26 — Runs are memory-resident; the trail is kept client-side
+
+**Superseded by ADR 45.** The trail is now persisted server-side as `run_steps` rows.
 
 **Status:** Accepted (spec3.1, amended)
 
@@ -681,6 +692,8 @@ The rule holds: no prompt was changed to make either event possible.
 ---
 
 ## ADR 28 — A failed run resumes from its last completed node
+
+**Superseded by ADR 45** (via ADR 37). Retry is re-running one gated step from database state.
 
 **Status:** Accepted (2026-08-04)
 
@@ -1102,6 +1115,10 @@ to the trace, and to the checkpoint. Every agent run is a node now.
 
 ## ADR 37 — Durability is DBOS, not a checkpoint file
 
+**Superseded by ADR 45.** With every stage output persisted as a `run_steps` row, retry re-runs one
+bounded step from database state; DBOS's per-step checkpointing became a second copy of the
+same information in a second database, and both are gone.
+
 **Supersedes ADR 28**, which resumed a failed run from `pydantic_graph`'s
 `FileStatePersistence`.
 
@@ -1442,3 +1459,112 @@ Three changes, deliberately at three layers, because each alone is bypassable:
 
 `ForecastInput` is unchanged. Who adjudicates a question is a property of the run, not
 something the agents are asked to reason about.
+
+---
+
+## ADR 45 — A run is a persisted machine of gated stages
+
+**Supersedes ADR 26, ADR 28, and ADR 37.**
+
+The monolithic run — decompose through synthesis as one 20-minute graph execution, its trail
+alive only in an in-memory ring buffer and the browser's localStorage — collapsed under its
+own recovery machinery: DBOS checkpoints in a second database, a watcher-grace watchdog, a
+resume path that forked workflows, and a frontend whose main job had become reconstructing
+state from a lossy, resumable frame stream. Meanwhile the actual product need was the
+opposite of autonomy: a person reviewing each methodology step before paying for the next.
+
+**Decision.** A forecast run is a row in `gated_runs` plus a set of `run_steps` rows — one
+per stage cell — and nothing executes unless a user asks for that specific step. Five
+stages, gated in order: `decompose` (1 step) → `lenses` (one per researchable sub-question)
+→ `base_rates` (one per (sub-question, lens)) → `inside_view` (same cells) → `synthesis`
+(1 step). A stage's steps are materialized by the *previous* stage completing, reading the
+just-written payloads to know the fan-out; a step in stage N cannot be claimed while any
+step in stages < N is incomplete. Every step's output is its typed payload,
+`model_dump_json`'d into the row — the whole reasoning trail survives restart, reload, and
+the passage of time, and `GET /runs/{id}` rebuilds the entire view from SQLite alone.
+
+**Consequences.**
+- Run status is `backlog → active → complete`; error is a nullable field (the red chip),
+  not a status — a run with a failed step has not gone anywhere, and retrying clears it.
+- Retry = re-claim the errored step (`error → running` CAS) and re-run it from the payloads
+  already in the database. This replaces DBOS, `resume_from_failure`, and the checkpoint
+  database outright.
+- One agent step in flight per process, enforced by a lock: the budget is one person's API
+  key, and a run idling at a gate costs nothing.
+- There is no whole-run timeout any more — a gated run is *supposed* to sit idle
+  indefinitely. The bounded thing is one step: `AGENT_TIMEOUT_SECONDS` per agent call
+  (ADR 43, kept) and `STAGE_TIMEOUT_SECONDS` per step (new, default 600).
+- The startup sweep marks still-`running` steps `error='interrupted by restart'` — the
+  honest successor to `mark_orphaned_runs_lost`.
+- The CLI and evals drive the same stage functions back-to-back with no gates
+  (`stages.run_all`), so there is one implementation of the methodology, not two.
+
+**Rules out.** Concurrent multi-run streaming (deliberately — one run at a time is the
+product), and background execution nobody asked for.
+
+---
+
+## ADR 46 — The connection is the agent's lifetime
+
+**Amends ADR 25.**
+
+`POST /runs/{id}/steps/{step_id}/stream` does not *start* a step — it **is** the step. The
+SSE response executes the agent inside its own generator: progress frames (`thought`,
+`query`, `source`) go out as they happen, then `result` (the finished step) and `run` (the
+updated tree, including newly materialized pending steps), then the stream closes. If the
+client disconnects — laptop closed, tab gone, request aborted — the generator is cancelled,
+which cancels the step, which lands it as `error='cancelled'` in the database, immediately
+claimable again.
+
+This is the requested semantic ("when the laptop closes, the agent stops") implemented as
+the transport's own behavior rather than as a watchdog watching subscriber counts. It also
+deletes the entire apparatus the old semantics required: the background task registry, the
+ring buffer with sequence numbers and replay, `Last-Event-ID`, the delta coalescer, and the
+watcher-grace watchdog — a gated step is one bounded agent call, so the reconnect/replay
+value that justified the buffer for 20-minute monolithic runs no longer exists. A dropped
+connection is a re-click.
+
+The client consumes the stream with `fetch` + `ReadableStream` + `AbortController`, not
+`EventSource`: EventSource auto-reconnects on error, and under these semantics a reconnect
+would silently *re-run* a step the user cancelled; it also cannot send an Authorization
+header, and the trigger is semantically a POST.
+
+---
+
+## ADR 47 — React + Vite for the frontend
+
+**Supersedes ADR 24.**
+
+The zero-build frontend grew a 2,059-line hand-rolled renderer that rebuilt the whole
+document several times a second while a run streamed, and then grew focus-capture,
+scroll-capture, and animation-guard machinery to hide that. Reopening a saved run crashed
+it. The gated pipeline's UI is a nested tree of stateful cards — exactly the shape a
+component model is for.
+
+**Decision.** React 18 + Vite, four dependencies total (`react`, `react-dom`, `vite`,
+`@vitejs/plugin-react`). Dev server proxies API routes to FastAPI on 8099; `npm run build`
+emits `frontend/dist`, which FastAPI serves as static files — deployment shape is unchanged
+from ADR 24, one process serving everything. The design tokens (`--pv-*`) and the pure
+derivation helpers (`derive.js`, mirroring `checks.py`) ported verbatim.
+
+**Layout contract (from the rebuild PRD, non-negotiable).** Stages stack vertically. The
+decompose section is the only raw live tail. Sections 2–4 render cards up front — headline
+first, from already-persisted parent payloads — with processing *inside* the active card
+and results appended at its bottom. Section 5 is arithmetic + probability + rationale +
+violations.
+
+---
+
+## ADR 48 — Community features removed
+
+Public question submission, voting, admin moderation, and the monthly digest were built for
+a crowd that never arrived, and every rebuild had to carry them. Removed: the
+`questions`, `votes`, and `refresh_runs` tables (dropped by migration v2, alongside the old
+write-only `runs` table), their `db.py` functions, the submit/vote/approve/reject API
+routes, the digest cron job and admin endpoints, the moderation page, and the IP-hashing
+helpers. The backlog moved from browser localStorage to the server: it is simply a
+`gated_runs` row with `status='backlog'`.
+
+Kept: `POST /questions/draft` and `POST /questions/critique` (the drafting agents are the
+"AI-suggested forecast" flow), the forecasts/calibration read API, and the daily refresh
+cron over the update graph. The code stays in git history if a crowd ever shows up.

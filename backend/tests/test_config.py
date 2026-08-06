@@ -156,3 +156,45 @@ def test_every_agent_run_passes_explicit_limits():
                 unbounded.append(path.name)
 
     assert unbounded == []
+
+
+def test_every_agent_constructor_sets_model_settings():
+    """Every `Agent(...)` must pass `model_settings` — the output-token ceiling.
+
+    The provider default (4096) truncates the synthesize agent's Forecast mid-tool-call
+    (`IncompleteToolCall`), and a retry hits the same wall forever. The failure is
+    invisible until the largest output crosses the ceiling, so it is enforced at every
+    construction site rather than remembered.
+    """
+    import ast
+    import pathlib
+
+    agents_dir = (
+        pathlib.Path(__file__).resolve().parent.parent / "superforecaster" / "agents"
+    )
+    unbounded = []
+    for path in sorted(agents_dir.glob("*.py")):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            is_agent = (isinstance(fn, ast.Name) and fn.id == "Agent") or (
+                isinstance(fn, ast.Subscript)
+                and isinstance(fn.value, ast.Name)
+                and fn.value.id == "Agent"
+            )
+            if not is_agent:
+                continue
+            if not any(kw.arg == "model_settings" for kw in node.keywords):
+                unbounded.append(path.name)
+
+    assert unbounded == []
+
+
+def test_model_settings_ceiling_is_configurable(monkeypatch):
+    from config import get_model_settings
+
+    assert get_model_settings()["max_tokens"] == 16384
+    monkeypatch.setenv("AGENT_MAX_TOKENS", "32000")
+    assert get_model_settings()["max_tokens"] == 32000
