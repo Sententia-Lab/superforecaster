@@ -58,6 +58,17 @@ from .models import (
 
 MAX_SYNTHESIS_ATTEMPTS = 2
 
+SYNTHESIS_FIXABLE = frozenset({"linkage", "derivation", "calibration_hygiene"})
+"""The checks a second synthesis attempt can actually repair.
+
+The synthesize agent controls the forecast's probability, reasoning,
+extreme_justification, and carried-through decomposition ids — so `linkage`,
+`derivation`, and `calibration_hygiene` are correctable. Everything else audits
+evidence produced by *earlier* stages (a lens whose counted hits disagree with its
+analogs, a one-sided inside view): no rewrite of the final forecast can fix those, and
+retrying against them burned a full agent call per run before this set existed. Such a
+violation still travels out with the result, visibly."""
+
 
 async def run_decompose_stage(
     input: ForecastInput, deps: ForecastDeps
@@ -226,7 +237,12 @@ async def run_synthesis_stage(
             inside,
             sources_seen=deps.sources_seen,
         )
-        if not checks.blocking(violations):
+        blocking = checks.blocking(violations)
+        if not blocking:
+            break
+        if not any(v.name in SYNTHESIS_FIXABLE for v in blocking):
+            # Every blocking violation indicts evidence from an earlier stage.
+            # A retry would be told to fix something it cannot touch.
             break
 
     assert forecast is not None
