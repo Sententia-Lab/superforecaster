@@ -106,13 +106,18 @@ def score_outside_view(out: Any, expect: dict) -> ComponentScore:
     tolerance = expect.get("tolerance", 0.15)
     truth = expect.get("true_base_rate")
     assertions = {
-        "two_or_more_classes": len(out.reference_classes) >= 2,
-        "every_class_sourced": all(
-            any(s.source.strip() for s in rc.sources) for rc in out.reference_classes
+        "two_or_more_lenses": len(out.lenses) >= 2,
+        # A published block must cite; a counted one is audited by its analogs instead,
+        # so "sourced" means every lens is backed one way or the other.
+        "every_lens_sourced": all(
+            any(e.source and e.source.source.strip() for e in l.evidence)
+            or any(e.kind == "counted" for e in l.evidence)
+            for l in out.lenses
         ),
-        "every_class_has_sample": all(
-            rc.sample_size >= 1 for rc in out.reference_classes
+        "every_lens_has_cases": all(
+            sum(e.n for e in l.evidence) >= 1 for l in out.lenses
         ),
+        "rates_are_derived": checks.check_base_rate_derivation(out) is None,
         "check_clean": checks.check_dragonfly(out) is None,
         "anchor_matches_weights": checks.check_aggregation(out) is None,
     }
@@ -123,7 +128,7 @@ def score_outside_view(out: Any, expect: dict) -> ComponentScore:
     return _score(
         expect.get("id", ""),
         assertions,
-        detail=f"aggregate {out.aggregate_base_rate:.3f} from {len(out.reference_classes)} classes",
+        detail=f"aggregate {out.aggregate_base_rate:.3f} from {len(out.lenses)} lenses",
     )
 
 

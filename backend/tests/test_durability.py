@@ -25,9 +25,14 @@ import pytest
 
 from superforecaster import durability, runs
 from superforecaster.graphs import forecast as fg
-from superforecaster.models import Reflection, SubClaimAdjustments, SubClaimBaseRates
+from superforecaster.models import (
+    Reflection,
+    SubClaimAdjustments,
+    SubClaimBaseRates,
+    SubClaimLenses,
+)
 from tests.test_checks import adjustment, all_bias_checks, ref
-from tests.test_graph_forecast import a_decomposition, a_forecast, forecast_input
+from tests.test_graph_forecast import a_decomposition, a_forecast, a_lens, forecast_input
 
 
 _LOOP: asyncio.AbstractEventLoop | None = None
@@ -69,13 +74,14 @@ class Counting:
     """Stubs for every agent, counting how many times each actually executed."""
 
     def __init__(self, fail_synth_times: int = 0) -> None:
-        self.calls = {"decompose": 0, "base_rate": 0, "inside": 0, "reflect": 0, "synth": 0}
+        self.calls = {"decompose": 0, "lenses": 0, "base_rate": 0, "inside": 0, "reflect": 0, "synth": 0}
         self._fails_left = fail_synth_times
 
     def install(self, monkeypatch) -> None:
         monkeypatch.setattr(fg, "run_decompose", self.decompose)
-        monkeypatch.setattr(fg, "run_base_rate_cell", self.base_rate)
-        monkeypatch.setattr(fg, "run_inside_view_cell", self.inside)
+        monkeypatch.setattr(fg, "run_choose_lenses", self.choose)
+        monkeypatch.setattr(fg, "run_research_lens", self.base_rate)
+        monkeypatch.setattr(fg, "run_adjust_lens", self.inside)
         monkeypatch.setattr(fg, "run_reflect", self.reflect)
         monkeypatch.setattr(fg, "run_synthesize", self.synth)
 
@@ -83,13 +89,15 @@ class Counting:
         self.calls["decompose"] += 1
         return a_decomposition()
 
-    async def base_rate(self, input, decomposition, sub_claim, deps):
-        self.calls["base_rate"] += 1
-        return SubClaimBaseRates(
-            reference_classes=[ref("a", 0.20), ref("b", 0.24)], disagreement=""
-        )
+    async def choose(self, input, decomposition, sub_claim, deps):
+        self.calls["lenses"] += 1
+        return SubClaimLenses(lenses=[a_lens(f"{sub_claim.id}-lens")])
 
-    async def inside(self, input, sub_claim, outside, deps):
+    async def base_rate(self, input, sub_claim, lens, deps):
+        self.calls["base_rate"] += 1
+        return SubClaimBaseRates(lens=ref(lens.name, 0.22), disagreement="")
+
+    async def inside(self, input, sub_claim, lens, already_controlled_for, deps):
         self.calls["inside"] += 1
         moves = (
             [adjustment("up", 0.10), adjustment("down", 0.04)]
@@ -97,7 +105,10 @@ class Counting:
             else [adjustment("neutral", 0.0, is_noise=True)]
         )
         return SubClaimAdjustments(
-            adjustments=moves, steel_man="x", what_would_change_my_mind="y"
+            lens_name=lens.name,
+            adjustments=moves,
+            steel_man="x",
+            what_would_change_my_mind="y",
         )
 
     async def reflect(self, input, d, o, adjustments, steel_mans, deps):
@@ -167,6 +178,7 @@ def test_resume_does_not_re_pay_for_completed_research(monkeypatch):
 
     # The research is the expensive part and it must not run twice.
     assert redone["decompose"] == 0
+    assert redone["lenses"] == 0
     assert redone["base_rate"] == 0
     assert redone["inside"] == 0
     assert redone["reflect"] == 0

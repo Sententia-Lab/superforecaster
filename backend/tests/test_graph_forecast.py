@@ -23,11 +23,13 @@ from superforecaster.models import (
     Forecast,
     ForecastInput,
     InsideView,
+    Lens,
     OutsideView,
     Reflection,
     ResearchSummary,
     SubClaimAdjustments,
     SubClaimBaseRates,
+    SubClaimLenses,
 )
 from tests.test_checks import (  # reuse the model factories
     adjustment,
@@ -58,9 +60,20 @@ def a_decomposition() -> Decomposition:
 
 def an_outside_view() -> OutsideView:
     return OutsideView(
-        reference_classes=[ref("a", 0.20), ref("b", 0.24)],
+        lenses=[ref("a", 0.22), ref("b", 0.22)],
         aggregate_base_rate=0.22,
         disagreement="",
+    )
+
+
+def a_lens(name: str = "L", weight: float = 1.0) -> Lens:
+    """A chosen population, before anything has measured it."""
+    return Lens(
+        name=name,
+        population=f"cases comparable to {name}",
+        why_it_fits="it is the population this sub-question belongs to",
+        weight=weight,
+        weight_rationale="the closest available population",
     )
 
 
@@ -98,6 +111,7 @@ def stub_agents(monkeypatch):
     """
     calls = {
         "decompose": 0,
+        "lenses": 0,
         "outside": 0,
         "inside": 0,
         "reflect": 0,
@@ -108,17 +122,20 @@ def stub_agents(monkeypatch):
         calls["decompose"] += 1
         return a_decomposition()
 
-    async def fake_base_rate_cell(input, decomposition, sub_claim, deps):
-        calls["outside"] += 1
-        return SubClaimBaseRates(
-            reference_classes=[ref("a", 0.20), ref("b", 0.24)], disagreement=""
-        )
+    async def fake_choose_lenses(input, decomposition, sub_claim, deps):
+        calls["lenses"] += 1
+        return SubClaimLenses(lenses=[a_lens(f"{sub_claim.id}-broad")])
 
-    async def fake_inside_cell(input, sub_claim, outside, deps):
-        # Only the first column moves the number; the others return evidence they
-        # judged to be noise. Net effect is +0.06 on a 0.22 anchor, which is the 0.28
-        # `a_forecast` states — so a clean pass really is clean and does not trip
-        # `check_derivation` into a retry.
+    async def fake_research_lens(input, sub_claim, lens, deps):
+        # Every lens measures 0.22, so the anchor is 0.22 regardless of how the chain
+        # rule combines them and the clean-pass arithmetic below is exact.
+        calls["outside"] += 1
+        return SubClaimBaseRates(lens=ref(lens.name, 0.22), disagreement="")
+
+    async def fake_adjust_lens(input, sub_claim, lens, already_controlled_for, deps):
+        # Only the first sub-question's lens moves; the others return evidence they
+        # judged to be noise. Net +0.06 on a 0.22 anchor is the 0.28 `a_forecast`
+        # states, so a clean pass really is clean and does not trip `check_derivation`.
         calls["inside"] += 1
         moves = (
             [adjustment("up", 0.10), adjustment("down", 0.04)]
@@ -126,6 +143,7 @@ def stub_agents(monkeypatch):
             else [adjustment("neutral", 0.0, is_noise=True)]
         )
         return SubClaimAdjustments(
+            lens_name=lens.name,
             adjustments=moves,
             steel_man="regulators could block it",
             what_would_change_my_mind="a second request",
@@ -145,8 +163,9 @@ def stub_agents(monkeypatch):
         return a_forecast()
 
     monkeypatch.setattr(fg, "run_decompose", fake_decompose)
-    monkeypatch.setattr(fg, "run_base_rate_cell", fake_base_rate_cell)
-    monkeypatch.setattr(fg, "run_inside_view_cell", fake_inside_cell)
+    monkeypatch.setattr(fg, "run_choose_lenses", fake_choose_lenses)
+    monkeypatch.setattr(fg, "run_research_lens", fake_research_lens)
+    monkeypatch.setattr(fg, "run_adjust_lens", fake_adjust_lens)
     monkeypatch.setattr(fg, "run_reflect", fake_reflect)
     monkeypatch.setattr(fg, "run_synthesize", fake_synthesize)
     return calls
@@ -201,7 +220,9 @@ async def test_visits_nodes_in_methodology_order(stub_agents):
     state = ForecastState(input=forecast_input())
     seen = await visited_steps(state, ForecastDeps())
 
-    assert seen == ["decompose", "outside", "inside", "reflect", "synth", "critique"]
+    assert seen == [
+        "decompose", "lenses", "outside", "inside", "reflect", "synth", "critique"
+    ]
 
 
 async def test_outside_view_runs_before_inside_view(stub_agents):
@@ -381,8 +402,9 @@ def test_mermaid_shows_the_retry_edge():
     # Each research row forks through a decision, so an empty row can bypass the
     # map rather than stalling in it.
     assert "decompose --> decision" in code
-    assert "--> base_rate_cell" in code
-    assert "--> inside_cell" in code
+    assert "--> choose_lenses_cell" in code
+    assert "--> research_lens_cell" in code
+    assert "--> adjust_lens_cell" in code
     # The retry cycle: critique routes through a decision back to synthesize.
     assert "critique --> decision" in code
     assert "--> synthesize" in code

@@ -385,6 +385,13 @@ p  { margin:0 0 10px; }
   background:var(--pv-surface); padding:9px 11px; min-width:0;
 }
 .colcard.busy { border-color:var(--pv-border-strong); background:var(--pv-surface-2); }
+/* One population inside a sub-question card. Indented so the nesting reads as
+   "this sub-question, viewed these ways" rather than as a flat list. */
+.lenses { display:flex; flex-direction:column; gap:8px; margin-top:9px; }
+.lens {
+  border-left:2px solid var(--pv-border-2); padding:7px 0 7px 10px;
+}
+.lens .minibar { margin:4px 0 5px; }
 /* One clipped line of what the agent is doing right now. Fixed height so a card does
    not jump every time the narration changes length. */
 .collive {

@@ -54,7 +54,10 @@ async def test_a_run_nobody_watches_is_unchanged(stub_agents):  # noqa: F811
 
     assert stub_agents == {
         "decompose": 1,
-        # One cell per column, and the decomposition has three.
+        # One lens chosen per researchable sub-question, then one cell per lens. The
+        # decomposition has three researchable sub-questions and the stub names one lens
+        # each, so the two research rows run three cells apiece.
+        "lenses": 3,
         "outside": 3,
         "inside": 3,
         "reflect": 1,
@@ -79,6 +82,7 @@ async def test_all_six_stages_arrive_in_methodology_order(stub_agents):  # noqa:
 
     assert rec.stages == [
         "decompose",
+        "lenses",
         "outside",
         "inside",
         "reflect",
@@ -96,8 +100,8 @@ async def test_a_stage_opens_before_it_closes(stub_agents):  # noqa: F811
     assert rec.timeline[:4] == [
         "start:decompose",
         "finish:decompose",
-        "start:outside",
-        "finish:outside",
+        "start:lenses",
+        "finish:lenses",
     ]
 
 
@@ -127,6 +131,7 @@ async def test_the_retry_shows_up_as_a_second_synth(monkeypatch, stub_agents):  
 
     assert rec.stages == [
         "decompose",
+        "lenses",
         "outside",
         "inside",
         "reflect",
@@ -180,4 +185,4 @@ async def test_the_stage_result_is_the_model_the_agent_returned(stub_agents):  #
     assert decompose["chain_note"] == "multiply"
 
     outside = next(p for t, p, _ in rec.events if t == "outside")
-    assert "reference_classes" in outside and "aggregate_base_rate" in outside
+    assert "lenses" in outside and "aggregate_base_rate" in outside

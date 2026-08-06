@@ -1,26 +1,26 @@
-"""The forecast graph — six steps, two fan-outs, one retry cycle.
+"""The forecast graph — seven steps, three fan-outs, one retry cycle.
 
-    decompose ──▶ base rates ──▶ inside view ──▶ reflect ──▶ synthesize ──▶ critique
-                     ╱│╲            ╱│╲                          ▲             │
-                 map over        map over                        └─────────────┘
-                sub-claims      sub-claims                    (blocking violations, once)
-                     ╲│╱            ╲│╲
-                    join           join
+    decompose ─▶ choose lenses ─▶ research ─▶ adjust ─▶ reflect ─▶ synthesize ─▶ critique
+                     ╱│╲            ╱│╲        ╱│╲                                  │
+                 per sub-Q      per lens    per lens                    ▲           │
+                     ╲│╱            ╲│╱        ╲│╱                      └───────────┘
+                    join           join        join            (blocking violations, once)
 
-Why a graph rather than six function calls in a row:
+Why the shape:
 
-- **Principle 4 becomes structural.** "Outside view first" is a prompt instruction a
-  model can ignore. As an edge it is impossible to violate — the inside-view step reads
-  the base rate off state, so it cannot run before one exists.
-- **The retry is a real cycle**, not an `if`. `critique` routes back to `synthesize` with
-  the specific failed check attached.
-- **The fan-out is declared, not hand-rolled.** Each research row is one `.map()` edge
-  and one join, so "one agent per sub-question, then a barrier" is something you read off
-  the graph rather than reconstruct from `asyncio.gather` and a `zip`.
+- **Principle 4 becomes structural.** "Outside view first" is a prompt instruction a model
+  can ignore. As an edge it is impossible to violate — the adjust step reads the measured
+  rate off state, so it cannot run before one exists.
+- **Choosing populations is its own step**, and it runs with no rates in front of it. An
+  agent that chose and measured in one pass could settle on whichever population gave the
+  answer it already liked, and the output would look identical either way. Naming them
+  blind is pre-registration.
+- **The lens is the unit of parallelism.** Three lenses on five sub-questions is fifteen
+  independent searches, not five.
+- **The retry is a real cycle**, not an `if`. `critique` routes back through a decision.
 
-Durability is DBOS's job, not this module's. Every agent call goes through
-`durability.agent_step`, which makes it a checkpointed step when the process is
-checkpointing, so a run that dies resumes from the agent that died rather than the top.
+Durability is DBOS's job. Every agent call goes through `durability.agent_step`, so a run
+that dies resumes from the agent that died rather than the top.
 """
 
 from __future__ import annotations
@@ -32,19 +32,19 @@ from pydantic_graph.beta import GraphBuilder, StepContext
 from pydantic_graph.beta.join import reduce_list_append
 from pydantic_graph.beta.util import TypeExpression
 
-from .. import checks
+from .. import checks, durability
 from ..agents.decompose import run_decompose
-from ..agents.inside_view import run_inside_view_cell, whole_question_adjustments
+from ..agents.inside_view import run_adjust_lens, whole_question_adjustments
+from ..agents.lenses import run_choose_lenses
 from ..agents.outside_view import (
     cell_deps,
     exhausted_notice,
     merge_base_rates,
-    run_base_rate_cell,
+    run_research_lens,
     whole_question_outside,
 )
 from ..agents.reflect import run_reflect
 from ..agents.synthesize import run_synthesize
-from .. import durability
 from ..deps import ForecastDeps
 from ..models import (
     Adjustment,
@@ -52,6 +52,8 @@ from ..models import (
     Forecast,
     ForecastInput,
     InsideView,
+    Lens,
+    ResearchedLens,
     SourceRef,
     SubClaimAdjustments,
     SubClaimBaseRates,
@@ -63,6 +65,7 @@ MAX_SYNTHESIS_ATTEMPTS = 2
 
 STAGE_ORDER: tuple[str, ...] = (
     "decompose",
+    "lenses",
     "outside",
     "inside",
     "reflect",
@@ -73,18 +76,31 @@ STAGE_ORDER: tuple[str, ...] = (
 
 
 @dataclass
-class Cell:
-    """One column's work, carried back to the barrier.
+class LensGroup:
+    """One sub-question's chosen populations, on the way back from the first fan-out."""
 
-    `sources` travels with the result rather than being appended to the shared list as
-    the cell goes: `observability` detects new sources by slicing the tail off
+    sub_claim: SubPrediction
+    lenses: list[Lens] = field(default_factory=list)
+    error: str = ""
+
+
+@dataclass
+class LensTask:
+    """One (sub-question, population) pair, carried through both research fan-outs.
+
+    `sources` travels with the task rather than being appended to the shared list as the
+    cell goes: `observability` detects new sources by slicing the tail off
     `deps.sources_seen`, and concurrent cells writing to one list hand each other's
-    sources to the wrong column. The merge step folds them in after the join, which is
-    the only moment nothing else is writing.
+    sources to the wrong lens. The merge folds them in after the join, the only moment
+    nothing else is writing.
     """
 
     sub_claim: SubPrediction
-    result: Any | None = None
+    lens: Lens
+    researched: ResearchedLens | None = None
+    already_controlled_for: str = ""
+    adjustments: list[Adjustment] = field(default_factory=list)
+    steel_man: str = ""
     sources: list[SourceRef] = field(default_factory=list)
     error: str = ""
 
@@ -121,9 +137,9 @@ async def decompose(
 ) -> list[SubPrediction]:
     """Principles 1 and 2 — Fermi-ize, and label what is researchable.
 
-    Returns the researchable columns, which is what the next row maps over. A `judgment`
-    column has, by its own label, no base rate to look up; it still gets a card and still
-    contributes its own working estimate via `checks.chain_inputs`.
+    Returns the researchable sub-questions, which is what the next row maps over. A
+    `judgment` sub-question has, by its own label, no population to measure; it still
+    gets a card and still contributes its own working estimate via `checks.chain_inputs`.
     """
     _stage(ctx.deps, "decompose")
     ctx.state.decomposition = await durability.agent_step(
@@ -132,81 +148,157 @@ async def decompose(
     _emit(ctx.deps, "decompose", ctx.state.decomposition.model_dump())
     _stage_end(ctx.deps, "decompose")
 
-    _stage(ctx.deps, "outside")
-    return [s for s in ctx.state.decomposition.sub_claims if s.knowability == "researchable"]
+    _stage(ctx.deps, "lenses")
+    return [
+        s for s in ctx.state.decomposition.sub_claims if s.knowability == "researchable"
+    ]
 
 
-# ---------- base rates, one agent per column ----------
+# ---------- choose lenses, one agent per sub-question ----------
 
 
 @g.step
-async def base_rate_cell(
+async def choose_lenses_cell(
     ctx: StepContext[ForecastState, ForecastDeps, SubPrediction],
-) -> Cell:
-    """Research base rates for exactly one column. Searches; budget-limited."""
+) -> LensGroup:
+    """Name populations for one sub-question. No tools, no rates."""
     sub_claim = ctx.inputs
     assert ctx.state.decomposition is not None
-    deps = cell_deps(ctx.deps, sub_claim.id or "", ctx.state.input.max_iterations)
     try:
         result = await durability.agent_step(
-            run_base_rate_cell, ctx.state.input, ctx.state.decomposition, sub_claim, deps
+            run_choose_lenses,
+            ctx.state.input,
+            ctx.state.decomposition,
+            sub_claim,
+            ctx.deps,
         )
-        return Cell(sub_claim=sub_claim, result=result, sources=deps.sources_seen)
+        return LensGroup(sub_claim=sub_claim, lenses=list(result.lenses))
     except Exception as exc:
-        # A cell failing must not take its siblings down: the row degrades to whatever
-        # the other columns found, and this one falls back to its own working estimate.
-        if type(exc).__name__ == "UsageLimitExceeded":
-            exhausted_notice(deps)
-        return Cell(
-            sub_claim=sub_claim,
-            sources=deps.sources_seen,
-            error=f"{type(exc).__name__}: {exc}",
-        )
+        return LensGroup(sub_claim=sub_claim, error=f"{type(exc).__name__}: {exc}")
 
 
 @g.step
-async def no_base_rate_cells(
+async def no_lens_cells(
     ctx: StepContext[ForecastState, ForecastDeps, list[SubPrediction]],
-) -> list[Cell]:
+) -> list[LensGroup]:
     """The empty-row bypass.
 
     `.map()` over an empty list stalls the beta graph runner — it completes without
-    producing a result — so a row with no columns to research must not enter the fork at
-    all. Routing to an empty barrier instead keeps `merge_outside` the single place that
-    decides what to do about it.
+    producing a result — so a row with nothing to fan out over must not enter the fork.
     """
     return []
 
 
-collect_base_rates = g.join(reduce_list_append, initial_factory=list[Cell])
+collect_lens_groups = g.join(reduce_list_append, initial_factory=list[LensGroup])
+
+
+@g.step
+async def merge_lenses(
+    ctx: StepContext[ForecastState, ForecastDeps, list[LensGroup]],
+) -> list[LensTask]:
+    """Flatten to one task per (sub-question, population). The research maps over these."""
+    tasks = [
+        LensTask(sub_claim=group.sub_claim, lens=lens)
+        for group in ctx.inputs
+        for lens in group.lenses
+    ]
+    _emit(
+        ctx.deps,
+        "lenses",
+        {
+            "lenses": [
+                {"sub_claim_id": t.sub_claim.id, **t.lens.model_dump()} for t in tasks
+            ]
+        },
+    )
+    _stage_end(ctx.deps, "lenses")
+
+    _stage(ctx.deps, "outside")
+    return tasks
+
+
+# ---------- research, one agent per lens ----------
+
+
+@g.step
+async def research_lens_cell(
+    ctx: StepContext[ForecastState, ForecastDeps, LensTask],
+) -> LensTask:
+    """Measure exactly one population. Searches; budget-limited."""
+    task = ctx.inputs
+    deps = cell_deps(
+        ctx.deps, task.sub_claim.id or "", ctx.state.input.max_iterations
+    )
+    try:
+        result: SubClaimBaseRates = await durability.agent_step(
+            run_research_lens, ctx.state.input, task.sub_claim, task.lens, deps
+        )
+        # The weight and the population definition come from the *chosen* lens, never
+        # from what came back — a research cell must not re-weight its own population
+        # after seeing what it measured.
+        researched = result.lens.model_copy(
+            update={
+                "name": task.lens.name,
+                "population": task.lens.population,
+                "why_it_fits": task.lens.why_it_fits,
+                "weight": task.lens.weight,
+                "weight_rationale": task.lens.weight_rationale,
+            }
+        )
+        task.researched = researched
+        task.already_controlled_for = result.disagreement
+        task.sources = deps.sources_seen
+        return task
+    except Exception as exc:
+        # A cell failing must not take its siblings down: the row degrades to whatever
+        # the other populations found.
+        if type(exc).__name__ == "UsageLimitExceeded":
+            exhausted_notice(deps)
+        task.sources = deps.sources_seen
+        task.error = f"{type(exc).__name__}: {exc}"
+        return task
+
+
+@g.step
+async def no_research_cells(
+    ctx: StepContext[ForecastState, ForecastDeps, list[LensTask]],
+) -> list[LensTask]:
+    """The empty-row bypass. See `no_lens_cells`."""
+    return []
+
+
+collect_research = g.join(reduce_list_append, initial_factory=list[LensTask])
 
 
 @g.step
 async def merge_outside(
-    ctx: StepContext[ForecastState, ForecastDeps, list[Cell]],
-) -> list[SubPrediction]:
-    """The base-rate barrier. Folds every column's classes into one OutsideView.
+    ctx: StepContext[ForecastState, ForecastDeps, list[LensTask]],
+) -> list[LensTask]:
+    """The research barrier. Folds every measured population into one OutsideView.
 
-    Returns the columns that ended up with at least one reference class — the ones the
-    inside-view row maps over. A column with nothing researched has no base rate to
-    adjust *from*, which is principle 5's whole premise.
+    Returns the tasks whose lens actually landed — the ones the adjust row maps over. A
+    population that was never measured has no rate to adjust *from*, which is principle
+    5's whole premise.
     """
-    cells = list(ctx.inputs)
-    for cell in cells:
-        ctx.deps.sources_seen.extend(cell.sources)
+    tasks = list(ctx.inputs)
+    for task in tasks:
+        ctx.deps.sources_seen.extend(task.sources)
 
-    found = [c for c in cells if isinstance(c.result, SubClaimBaseRates)]
+    found = [t for t in tasks if t.researched is not None]
     if not found:
-        # Either nothing was labelled researchable, or every column failed. Both leave
-        # no outside view to build, and `OutsideView` requires two classes.
+        # Either nothing was researchable, or every lens failed. Both leave no outside
+        # view to build.
         ctx.state.outside = await whole_question_outside(
-            ctx.state.input, ctx.state.decomposition, ctx.deps, [c.error for c in cells]
+            ctx.state.input,
+            ctx.state.decomposition,
+            ctx.deps,
+            [t.error for t in tasks],
         )
     else:
         assert ctx.state.decomposition is not None
         ctx.state.outside = merge_base_rates(
-            [c.sub_claim for c in found],
-            [c.result for c in found],
+            [t.sub_claim for t in found],
+            [SubClaimBaseRates(lens=t.researched, disagreement=t.already_controlled_for) for t in found],
             ctx.state.decomposition,
         )
 
@@ -215,81 +307,88 @@ async def merge_outside(
     _stage_end(ctx.deps, "outside")
 
     _stage(ctx.deps, "inside")
-    assert ctx.state.decomposition is not None
-    return [
-        s
-        for s in ctx.state.decomposition.sub_claims
-        if s.id and checks.classes_for(s.id, ctx.state.outside)
-    ]
+    # Re-read the lenses off state so the stamped `sub_claim_ids` travel with them.
+    by_name = {l.name: l for l in ctx.state.outside.lenses}
+    for t in found:
+        t.researched = by_name.get(t.lens.name, t.researched)
+    return found
 
 
-# ---------- inside view, one agent per column ----------
+# ---------- adjust, one agent per lens ----------
 
 
 @g.step
-async def inside_cell(
-    ctx: StepContext[ForecastState, ForecastDeps, SubPrediction],
-) -> Cell:
-    """Adjust from ONE column's base rate. Searches; budget-limited."""
-    sub_claim = ctx.inputs
-    assert ctx.state.outside is not None
-    deps = cell_deps(ctx.deps, sub_claim.id or "", ctx.state.input.max_iterations)
+async def adjust_lens_cell(
+    ctx: StepContext[ForecastState, ForecastDeps, LensTask],
+) -> LensTask:
+    """Move exactly one population's rate by its own modifiers."""
+    task = ctx.inputs
+    assert task.researched is not None
+    deps = cell_deps(
+        ctx.deps, task.sub_claim.id or "", ctx.state.input.max_iterations
+    )
     try:
-        result = await durability.agent_step(
-            run_inside_view_cell, ctx.state.input, sub_claim, ctx.state.outside, deps
+        result: SubClaimAdjustments = await durability.agent_step(
+            run_adjust_lens,
+            ctx.state.input,
+            task.sub_claim,
+            task.researched,
+            task.already_controlled_for,
+            deps,
         )
-        return Cell(sub_claim=sub_claim, result=result, sources=deps.sources_seen)
+        # Stamped by code for the same reason the lenses are: a cell moved exactly one
+        # population, and a link it volunteered could point anywhere.
+        task.adjustments = [
+            a.model_copy(
+                update={
+                    "lens_name": task.lens.name,
+                    "sub_claim_ids": [task.sub_claim.id],
+                }
+            )
+            for a in result.adjustments
+        ]
+        task.steel_man = result.steel_man
+        task.sources = deps.sources_seen
+        return task
     except Exception as exc:
         if type(exc).__name__ == "UsageLimitExceeded":
             exhausted_notice(deps)
-        return Cell(
-            sub_claim=sub_claim,
-            sources=deps.sources_seen,
-            error=f"{type(exc).__name__}: {exc}",
-        )
+        task.sources = deps.sources_seen
+        task.error = f"{type(exc).__name__}: {exc}"
+        return task
 
 
 @g.step
-async def no_inside_cells(
-    ctx: StepContext[ForecastState, ForecastDeps, list[SubPrediction]],
-) -> list[Cell]:
-    """The same bypass for the inside-view row. See `no_base_rate_cells`."""
+async def no_adjust_cells(
+    ctx: StepContext[ForecastState, ForecastDeps, list[LensTask]],
+) -> list[LensTask]:
+    """The empty-row bypass. See `no_lens_cells`."""
     return []
 
 
-collect_adjustments = g.join(reduce_list_append, initial_factory=list[Cell])
+collect_adjustments = g.join(reduce_list_append, initial_factory=list[LensTask])
 
 
 @g.step
 async def merge_inside(
-    ctx: StepContext[ForecastState, ForecastDeps, list[Cell]],
+    ctx: StepContext[ForecastState, ForecastDeps, list[LensTask]],
 ) -> None:
-    """The inside-view barrier. Stamps every adjustment with the column that made it.
-
-    Stamped by code for the same reason the reference classes are: a cell worked on
-    exactly one column, and a link it volunteered could point anywhere.
-    """
-    cells = list(ctx.inputs)
-    for cell in cells:
-        ctx.deps.sources_seen.extend(cell.sources)
+    """The adjust barrier. Collects every population's moves."""
+    tasks = list(ctx.inputs)
+    for task in tasks:
+        ctx.deps.sources_seen.extend(task.sources)
 
     adjustments: list[Adjustment] = []
     steel_mans: dict[str, str] = {}
-    for cell in cells:
-        if not isinstance(cell.result, SubClaimAdjustments):
-            continue
-        adjustments.extend(
-            a.model_copy(update={"sub_claim_ids": [cell.sub_claim.id]})
-            for a in cell.result.adjustments
-        )
-        steel_mans[cell.sub_claim.id or ""] = cell.result.steel_man
+    for task in tasks:
+        adjustments.extend(task.adjustments)
+        if task.steel_man:
+            steel_mans[task.lens.name] = task.steel_man
 
     if not adjustments:
-        # No column carried a reference class, or every one of them failed. Adjust from
-        # the whole-question anchor rather than crashing.
         assert ctx.state.outside is not None
         adjustments, steel_mans = await whole_question_adjustments(
-            ctx.state.input, ctx.state.outside, ctx.deps, [c.error for c in cells]
+            ctx.state.input, ctx.state.outside, ctx.deps, [t.error for t in tasks]
         )
 
     ctx.state.adjustments = adjustments
@@ -305,10 +404,10 @@ async def merge_inside(
 async def reflect(ctx: StepContext[ForecastState, ForecastDeps, None]) -> None:
     """Principles 14 and 15 — the case against, and the bias sweep.
 
-    Its own step rather than a tail call inside the inside-view row, because it is an
-    agent run and every agent run should be a node: it gets its own stage in the UI, its
-    own span in the trace, and its own DBOS checkpoint. It reads every column's
-    counter-argument together, which is exactly why it cannot be asked of one column.
+    Its own step rather than a tail call, because it is an agent run and every agent run
+    should be a node: it gets its own stage in the UI, its own span in the trace, and its
+    own durable checkpoint. It reads every population's counter-argument together, which
+    is exactly why it cannot be asked of one lens.
     """
     _stage(ctx.deps, "reflect")
     assert ctx.state.decomposition is not None
@@ -416,22 +515,29 @@ async def finish(ctx: StepContext[ForecastState, ForecastDeps, None]) -> Forecas
 
 g.add(
     g.edge_from(g.start_node).to(decompose),
-    # `.map()` is the fan-out: one cell task per column. The empty branch exists because
-    # mapping over an empty list stalls the runner — see `no_base_rate_cells`.
+    # Each fan-out routes through a decision so an empty row bypasses the fork rather
+    # than stalling in it — mapping over an empty list hangs the beta runner.
     g.edge_from(decompose).to(
         g.decision()
-        .branch(g.match(list, matches=bool).map().to(base_rate_cell))
-        .branch(g.match(list).to(no_base_rate_cells))
+        .branch(g.match(list, matches=bool).map().to(choose_lenses_cell))
+        .branch(g.match(list).to(no_lens_cells))
     ),
-    g.edge_from(base_rate_cell).to(collect_base_rates),
-    g.edge_from(collect_base_rates, no_base_rate_cells).to(merge_outside),
+    g.edge_from(choose_lenses_cell).to(collect_lens_groups),
+    g.edge_from(collect_lens_groups, no_lens_cells).to(merge_lenses),
+    g.edge_from(merge_lenses).to(
+        g.decision()
+        .branch(g.match(list, matches=bool).map().to(research_lens_cell))
+        .branch(g.match(list).to(no_research_cells))
+    ),
+    g.edge_from(research_lens_cell).to(collect_research),
+    g.edge_from(collect_research, no_research_cells).to(merge_outside),
     g.edge_from(merge_outside).to(
         g.decision()
-        .branch(g.match(list, matches=bool).map().to(inside_cell))
-        .branch(g.match(list).to(no_inside_cells))
+        .branch(g.match(list, matches=bool).map().to(adjust_lens_cell))
+        .branch(g.match(list).to(no_adjust_cells))
     ),
-    g.edge_from(inside_cell).to(collect_adjustments),
-    g.edge_from(collect_adjustments, no_inside_cells).to(merge_inside),
+    g.edge_from(adjust_lens_cell).to(collect_adjustments),
+    g.edge_from(collect_adjustments, no_adjust_cells).to(merge_inside),
     g.edge_from(merge_inside).to(reflect),
     g.edge_from(reflect).to(synthesize),
     g.edge_from(synthesize).to(critique),
@@ -462,8 +568,7 @@ async def run_forecast_graph(
 
     `emit` rides on `ForecastDeps` down to the agents' own event stream handler, so tool
     calls and token deltas surface without any agent knowing about it. `state` lets a
-    caller keep the reference the graph mutates — a streamed run needs it to build the
-    final result frame.
+    caller keep the reference the graph mutates.
     """
     deps = ForecastDeps(as_of=as_of, model=model, verbose=verbose, emit=emit)
     state = state if state is not None else ForecastState(input=input)

@@ -10,6 +10,25 @@ implements — `P<n>` throughout this document refers to them.
 
 ## What changed most recently (2026-08-05)
 
+**Base rates are counted, not stated.** A `ResearchedLens` carries `evidence` blocks and
+the rate is `Σ hits / Σ n` — `7/10` enumerated plus `140/230` published is `147/240`.
+`check_base_rate_derivation` matches a counted block against the analogs listed. The old
+`base_rate` / `sample_size` fields were model assertions no code read. See ADR 39.
+
+**Modifiers move one lens, and lenses are chosen before they are measured.** A modifier is
+only meaningful relative to a population, so each lens is adjusted by its own before the
+blend. Sub-questions blend their adjusted lenses by relevance — never by `n` — and combine
+by `chain_rule`. `choose_lenses` is its own step with no tools and no rates, which stops a
+population being fitted to the answer it produces. See ADR 40.
+
+**The graph is seven steps and three fan-outs:** `decompose → ⑂choose_lenses⑃ →
+⑂research_lens⑃ → ⑂adjust_lens⑃ → reflect → synthesize → critique ⟲`. The lens is the unit
+of parallelism — three lenses across five sub-questions is fifteen concurrent searches.
+
+**`weight` is the only unverifiable number left.** Everything else is derived and
+re-derivable, so `weight_rationale` is mandatory and the UI shows each lens's own rate.
+
+
 **The forecast graph is built on `pydantic_graph.beta`'s `GraphBuilder`.** The fan-out is now a
 `.map()` edge and a join per research row rather than an `asyncio.gather` inside the agent
 module — `asyncio.gather` no longer appears anywhere in production code. Six steps:
@@ -189,7 +208,7 @@ backend/
     fixtures/                    # JSON inputs for manual CLI runs
   api/
     main.py  deps.py  forecasts.py  questions.py  calibration.py  admin.py  runs.py
-  tests/                         # 374 tests, no network required
+  tests/                         # 360 tests, no network required
   test_forecasting_baseline/     # 66 legacy questions; raises on import, never run
 
 frontend/                        # static, zero build — served by FastAPI at /
@@ -1356,7 +1375,7 @@ the page is opened from somewhere other than the API.
 
 ## What Works
 
-Verified by `cd backend && uv run pytest` — **374 tests, no network, no API keys**:
+Verified by `cd backend && uv run pytest` — **360 tests, no network, no API keys**:
 
 - All eight agents import and build without keys (lazy construction)
 - The forecast graph runs its stages in methodology order — P4 asserted structurally
