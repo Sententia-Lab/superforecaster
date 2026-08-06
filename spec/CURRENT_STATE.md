@@ -89,7 +89,10 @@ backend/
   Dockerfile
 frontend/
   package.json                 # react, react-dom; dev deps vite, @vitejs/plugin-react
-  vite.config.js               # dev proxy of API routes to :8099; build → dist/
+  vite.config.js               # dev proxy of API routes to :8099 (VITE_API_PROXY_TARGET
+                                #   overrides, for the dockerized dev server); build → dist/
+  Dockerfile.dev              # dev-only: npm run dev in a container, not part of the
+                               #   default docker compose up (ADR 47 keeps prod one-process)
   src/
     main.jsx, App.jsx          # shell: header, sidebar, main pane, theme toggle
     api.js                     # fetch wrappers + streamStep (fetch/ReadableStream SSE)
@@ -102,7 +105,8 @@ frontend/
                                #   LiveTail, SynthesisSection
 .github/workflows/ci.yml       # push/PR: uv run pytest + npm run build
 scripts/hooks/pre-push         # runs backend tests; enable with core.hooksPath
-docker-compose.yml             # one api service; frontend/dist bind-mounted
+docker-compose.yml             # api service (frontend/dist bind-mounted); dev-only
+                                #   frontend service behind the "dev" profile
 spec/                          # ADR.md, this file, methodology, implemented/, planned/
 ```
 
@@ -126,6 +130,10 @@ uv run python -m superforecaster serve          # API + built UI on :8000
   npm run build`, on push to main and on PRs.
 - Docker: `docker compose up` — build `frontend/dist` first; it is bind-mounted read-only
   and served by the API container.
+- Docker frontend dev: `docker compose --profile dev up` also starts a `frontend` service
+  (`frontend/Dockerfile.dev`, hot-reloading Vite on :5173) proxying to the `api` service via
+  `VITE_API_PROXY_TARGET=http://api:8000`. Not part of the default `docker compose up` —
+  production stays one process, per ADR 47.
 
 ### CLI (`uv run python -m superforecaster <cmd>`, typer)
 

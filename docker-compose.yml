@@ -22,5 +22,23 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  # Dev-only: hot-reloading Vite server, not part of the default `docker compose up`.
+  # Production still ships as one process — see ADR 47 — this just saves installing
+  # Node locally. Run with `docker compose --profile dev up`.
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      VITE_API_PROXY_TARGET: http://api:8000
+    depends_on:
+      - api
+    profiles: ["dev"]
+
 volumes:
   sqlite_data:
