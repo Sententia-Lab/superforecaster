@@ -13,7 +13,7 @@ at the time (noise). Only the first kind should change how the agent forecasts.
 
 from __future__ import annotations
 
-from config import get_monitor_limits, resolve_agent_model
+from config import get_model_settings, get_monitor_limits, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
@@ -64,6 +64,7 @@ You may search to establish what was publicly knowable before the forecast date.
 def build_postmortem_agent(model: str | None = None) -> Agent[ForecastDeps, PostMortem]:
     return Agent[ForecastDeps, PostMortem](
         model=model or resolve_agent_model(),
+        model_settings=get_model_settings(),
         name="postmortem_agent",
         deps_type=ForecastDeps,
         output_type=PostMortem,

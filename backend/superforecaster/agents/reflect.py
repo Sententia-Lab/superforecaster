@@ -22,7 +22,7 @@ so the wording that produced today's outputs is preserved.
 
 from __future__ import annotations
 
-from config import get_synthesis_limits, resolve_agent_model
+from config import get_model_settings, get_synthesis_limits, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
@@ -71,6 +71,7 @@ bias check that would read the same on any forecast is not a bias check.
 def build_reflect_agent(model: str | None = None) -> Agent[ForecastDeps, Reflection]:
     return Agent[ForecastDeps, Reflection](
         model=model or resolve_agent_model(),
+        model_settings=get_model_settings(),
         name="reflect_agent",
         deps_type=ForecastDeps,
         output_type=Reflection,

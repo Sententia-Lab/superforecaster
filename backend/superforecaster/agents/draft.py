@@ -12,7 +12,7 @@ date as separate fields, so something has to split them before any of that can r
 
 from __future__ import annotations
 
-from config import get_synthesis_limits, resolve_agent_model
+from config import get_model_settings, get_synthesis_limits, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
@@ -55,6 +55,7 @@ FIELDS
 def build_draft_agent(model: str | None = None) -> Agent[ForecastDeps, DraftedQuestion]:
     return Agent[ForecastDeps, DraftedQuestion](
         model=model or resolve_agent_model(),
+        model_settings=get_model_settings(),
         name="draft_agent",
         deps_type=ForecastDeps,
         output_type=DraftedQuestion,

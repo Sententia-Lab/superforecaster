@@ -6,7 +6,7 @@ judgment-required so effort goes where a base rate actually exists.
 
 from __future__ import annotations
 
-from config import get_synthesis_limits, resolve_agent_model
+from config import get_model_settings, get_synthesis_limits, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
@@ -73,6 +73,7 @@ def build_decompose_agent(
 ) -> Agent[ForecastDeps, Decomposition]:
     return Agent[ForecastDeps, Decomposition](
         model=model or resolve_agent_model(),
+        model_settings=get_model_settings(),
         name="decompose_agent",
         deps_type=ForecastDeps,
         output_type=Decomposition,

@@ -1,18 +1,19 @@
-"""Orchestration. Agents know nothing about each other; sequencing lives here."""
+"""Orchestration for the update path. Agents know nothing about each other.
+
+The forecast pipeline no longer lives here — it is a persisted machine of gated
+stages (`superforecaster.machine` + `superforecaster.stages`, ADR 45). The update
+graph stays: resolution checks and Bayesian updates run unattended, so a graph with
+routing is still the right shape for them.
+"""
 
 from __future__ import annotations
 
-from .forecast import forecast_graph, forecast_mermaid, run_forecast_graph
-from .state import ForecastDeps, ForecastState, UpdateState
+from .state import ForecastDeps, UpdateState
 from .update import run_update_graph, update_graph, update_mermaid
 
 __all__ = [
     "ForecastDeps",
-    "ForecastState",
     "UpdateState",
-    "forecast_graph",
-    "forecast_mermaid",
-    "run_forecast_graph",
     "update_graph",
     "update_mermaid",
     "run_update_graph",

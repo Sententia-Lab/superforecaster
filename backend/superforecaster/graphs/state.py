@@ -1,8 +1,11 @@
-"""State carried through the graphs.
+"""State carried through the update graph.
 
 `ForecastDeps` lives in `superforecaster.deps` rather than here, because `tools`
 needs it and `graphs` imports `agents` which imports `tools`. It is re-exported so
 callers have one obvious import site.
+
+The forecast pipeline no longer carries graph state — its state is the `run_steps`
+table (ADR 45).
 """
 
 from __future__ import annotations
@@ -11,48 +14,13 @@ from dataclasses import dataclass, field
 
 from ..deps import ForecastDeps
 from ..models import (
-    Adjustment,
     CheckViolation,
-    Decomposition,
-    Forecast,
-    ForecastInput,
     ForecastRecord,
-    InsideView,
-    OutsideView,
     ResolutionCheckResult,
-    SourceRef,
     UpdateDecision,
 )
 
-__all__ = ["ForecastDeps", "ForecastState", "UpdateState"]
-
-
-@dataclass
-class ForecastState:
-    """Mutated as the forecast graph walks. Each node writes exactly one field.
-
-    The fields being `None` until their node runs is what makes the ordering
-    inspectable: `inside` cannot exist before `outside` does, because the node that
-    writes it takes the other as input.
-    """
-
-    input: ForecastInput
-    decomposition: Decomposition | None = None
-    outside: OutsideView | None = None
-    inside: InsideView | None = None
-    forecast: Forecast | None = None
-    violations: list[CheckViolation] = field(default_factory=list)
-    synthesis_attempts: int = 0
-
-    # Written by the inside-view barrier and read by `reflect`, which needs every
-    # column's adjustments and counter-argument together — that is the whole reason it
-    # is a step of its own rather than a tail call inside one column's cell.
-    adjustments: list[Adjustment] = field(default_factory=list)
-    steel_mans: dict[str, str] = field(default_factory=dict)
-    # Snapshotted from `deps.sources_seen` by `Critique`, because `check_citations`
-    # needs it and the UI re-runs the same checks without access to deps. Two callers
-    # reading different inputs is how a UI ends up reporting a pass the graph failed.
-    sources_seen: list[SourceRef] = field(default_factory=list)
+__all__ = ["ForecastDeps", "UpdateState"]
 
 
 @dataclass

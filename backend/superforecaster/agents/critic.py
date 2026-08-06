@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 
-from config import get_critique_budget, get_critique_limits, resolve_agent_model
+from config import get_model_settings, get_critique_budget, get_critique_limits, resolve_agent_model
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import UsageLimitExceeded
 
@@ -76,6 +76,7 @@ def build_critic_agent(
 ) -> Agent[ForecastDeps, CriteriaCritique]:
     agent = Agent[ForecastDeps, CriteriaCritique](
         model=model or resolve_agent_model(),
+        model_settings=get_model_settings(),
         name="critic_agent",
         deps_type=ForecastDeps,
         output_type=CriteriaCritique,

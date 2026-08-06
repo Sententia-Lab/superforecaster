@@ -1,202 +1,230 @@
-"""Live run endpoints — start a forecast, then watch it think.
+"""Gated run endpoints — the sidebar CRUD plus the step stream.
 
-Starting a run is admin-gated for the same reason `POST /forecasts` is: it is five
-agent invocations with a live search budget. Watching one is public — a stream costs
-a queue.
-
-The transport is server-sent events rather than WebSockets. The data is one-directional
-(the only client-to-server message is "cancel", which is a DELETE), SSE reconnects
-itself via `Last-Event-ID`, and it survives ordinary HTTP proxies. `sse-starlette`
-supplies the framing, the keep-alive pings, and disconnect detection.
+The load-bearing decision here is ADR 46: `POST .../steps/{id}/stream` *is* the step's
+execution. The SSE response runs the agent inside its own generator, so the connection
+is the agent's lifetime — the client hanging up (laptop closed, tab gone) cancels the
+generator, which cancels the step, which lands it as `error='cancelled'` in the
+database, immediately claimable again. There is no background task registry, no ring
+buffer, no replay, and no watchdog, because there is nothing running that nobody is
+watching.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import asyncio
+import json
+from contextlib import suppress
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from sse_starlette.sse import EventSourceResponse, ServerSentEvent
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
+from sse_starlette.sse import EventSourceResponse
 
-from superforecaster import runs
+from superforecaster import db, machine
+from superforecaster.errors import AgentTimeout, StageTimeout
 from superforecaster.models import (
-    CreateRunRequest,
-    ForecastInput,
-    ResumeRunRequest,
-    RunEvent,
-    RunSnapshot,
-    RunSummary,
+    MAX_SEARCH_DEPTH,
+    CreateGatedRunRequest,
+    GatedRunDetail,
+    GatedRunSummary,
+    UpdateGatedRunRequest,
 )
 
 from .deps import require_admin
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
-HEARTBEAT_SECONDS = 15.0
-"""A `:` comment this often. Idle proxies close silent connections, and a forecast
-stage can legitimately spend a minute inside one search."""
+
+def _404(msg: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=msg)
 
 
-@router.post("", status_code=status.HTTP_202_ACCEPTED)
-async def create_run(
-    body: CreateRunRequest, _: None = Depends(require_admin)
-) -> RunSummary:
-    """Start a forecast run in the background.
+def _409(msg: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=msg)
 
-    202 rather than 201: nothing exists yet but a job. The client then opens
-    `GET /runs/{id}/stream`. A 429 means every slot is busy — the UI parks the question
-    in its own backlog and offers it again when one frees up.
 
-    `async` is load-bearing: `runs.start` calls `asyncio.create_task`, which needs a
-    running loop. A sync handler would run in FastAPI's threadpool and have none.
-    """
-    try:
-        run = runs.start(
-            ForecastInput(
-                question=body.question,
-                resolution_criteria=body.resolution_criteria,
-                resolution_date=body.resolution_date,
-                category=body.category,
-                max_iterations=body.max_iterations,
-            ),
-            resolution_source=body.resolution_source,
-        )
-    except runs.SlotsFullError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)
-        )
-    return run.summary()
+@router.post("", status_code=status.HTTP_201_CREATED)
+def create_run(body: CreateGatedRunRequest) -> GatedRunDetail:
+    """Create a run in the backlog. Partial fields are fine — starting is what gates."""
+    run = db.create_gated_run(
+        question=body.question,
+        resolution_criteria=body.resolution_criteria,
+        resolution_source=body.resolution_source,
+        resolution_date=body.resolution_date,
+        category=body.category,
+        max_iterations=body.max_iterations,
+    )
+    return GatedRunDetail(**{**run, "steps": []})
 
 
 @router.get("")
-def list_runs(limit: int = 20) -> list[RunSummary]:
-    """Active runs first, then recently finished. Backs the home rail."""
-    return [r.summary() for r in runs.registry.recent(limit=limit)]
+def list_runs(limit: int = Query(default=100, ge=1, le=500)) -> list[GatedRunSummary]:
+    return [GatedRunSummary(**r) for r in db.list_gated_runs(limit=limit)]
 
 
 @router.get("/{run_id}")
-def get_run(run_id: str, from_seq: int = Query(default=0, ge=0)) -> RunSnapshot:
-    """The full buffered event list — the no-SSE fallback and the debugging view."""
-    run = runs.registry.get(run_id)
-    if run is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="run not found"
-        )
-    return run.snapshot(from_seq)
-
-
-@router.get("/{run_id}/stream")
-async def stream_run(
-    run_id: str,
-    from_seq: int = Query(default=0, ge=0),
-    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
-) -> EventSourceResponse:
-    """Server-sent events for one run: buffered replay, then the live tail.
-
-    `Last-Event-ID` wins over `from_seq` so a browser's automatic reconnect resumes
-    without the client tracking anything itself.
-    """
-    run = runs.registry.get(run_id)
-    if run is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="run not found"
-        )
-
-    start_at = from_seq
-    if last_event_id is not None:
-        try:
-            start_at = int(last_event_id) + 1
-        except ValueError:
-            pass
-
-    return EventSourceResponse(
-        _events(run, start_at),
-        ping=HEARTBEAT_SECONDS,
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            # Without this an nginx in front will buffer the whole stream into one
-            # response, which turns a live view into a very slow page load.
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-@router.post("/{run_id}/resume", status_code=status.HTTP_202_ACCEPTED)
-async def resume_run(
-    run_id: str,
-    body: ResumeRunRequest | None = None,
-    _: None = Depends(require_admin),
-) -> RunSummary:
-    """Re-run a failed run from its last completed node.
-
-    Only the node that died runs again — everything before it keeps the result it was
-    already paid for. `max_iterations` raises the search budget, which is the point
-    when the failure was `UsageLimitExceeded`: resuming with the old budget would walk
-    into the same wall.
-
-    The event stream continues rather than restarting, so a client watching from
-    `?from_seq=` sees the resume as more of the same run.
-    """
+def get_run(run_id: str) -> GatedRunDetail:
     try:
-        run = runs.resume_run(
-            run_id, max_iterations=body.max_iterations if body else None
+        return GatedRunDetail(**machine.detail(run_id))
+    except db.NotFoundError as exc:
+        raise _404(str(exc))
+
+
+@router.patch("/{run_id}")
+def edit_run(run_id: str, body: UpdateGatedRunRequest) -> GatedRunDetail:
+    try:
+        db.update_gated_run_fields(
+            run_id,
+            question=body.question,
+            resolution_criteria=body.resolution_criteria,
+            resolution_source=body.resolution_source,
+            resolution_date=body.resolution_date,
+            category=body.category,
+            max_iterations=body.max_iterations,
         )
-    except LookupError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
-    return run.summary()
+    except db.NotFoundError as exc:
+        raise _404(str(exc))
+    except db.StateError as exc:
+        raise _409(str(exc))
+    return GatedRunDetail(**machine.detail(run_id))
 
 
 @router.delete("/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
-def cancel_run(run_id: str, _: None = Depends(require_admin)) -> None:
-    if not runs.registry.cancel(run_id):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="run not found or already finished",
-        )
-
-
-async def _events(run: runs.Run, from_seq: int) -> AsyncIterator[ServerSentEvent]:
-    """Replay the buffer, then tail.
-
-    Subscribing BEFORE snapshotting the buffer is load-bearing: the other order drops
-    any event emitted in the gap between the two, which is exactly the window a busy
-    run is most likely to emit in.
-
-    Heartbeats and client-disconnect detection belong to `EventSourceResponse` — it
-    sends a comment every `ping` seconds and cancels this generator when the socket
-    goes, which is what the hand-rolled `wait_for` loop here used to do by hand.
-    """
-    queue = run.subscribe()
+def delete_run(run_id: str, _: None = Depends(require_admin)) -> None:
     try:
-        seen = from_seq - 1
-        for event in run.replay(from_seq):
-            seen = max(seen, event.seq)
-            yield _sse(event)
-
-        if run.is_terminal and queue.empty():
-            return
-
-        while True:
-            event = await queue.get()
-            if event.seq <= seen:
-                continue  # already replayed from the buffer
-            seen = event.seq
-            yield _sse(event)
-            if event.type == "end":
-                return
-    finally:
-        run.unsubscribe(queue)
+        db.delete_gated_run(run_id)
+    except db.NotFoundError as exc:
+        raise _404(str(exc))
 
 
-def _sse(event: RunEvent) -> ServerSentEvent:
-    """One frame.
+@router.post("/{run_id}/start", status_code=status.HTTP_202_ACCEPTED)
+def start_run(run_id: str, _: None = Depends(require_admin)) -> GatedRunDetail:
+    """The four-field gate, then `backlog → active` with a pending decompose step.
 
-    `id` is the sequence number, which is what makes `Last-Event-ID` resumption work.
-    The payload goes through `model_dump_json`, so no newline inside a string can break
-    the framing.
+    Nothing executes here — the decompose step sits pending until its stream is
+    opened. 422 on missing fields so the UI can say exactly which ones.
     """
-    return ServerSentEvent(
-        id=str(event.seq), event="run", data=event.model_dump_json()
+    try:
+        return GatedRunDetail(**machine.start_run(run_id))
+    except db.NotFoundError as exc:
+        raise _404(str(exc))
+    except machine.GateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        )
+    except db.StateError as exc:
+        raise _409(str(exc))
+
+
+def _failure_hint(exc: BaseException) -> str:
+    """One honest sentence about why the step died, with the fix when there is one."""
+    if isinstance(exc, UsageLimitExceeded):
+        return (
+            f"{exc} — the step ran out of search budget. Retry with a higher "
+            f"max_iterations (up to {MAX_SEARCH_DEPTH})."
+        )
+    if isinstance(exc, AgentTimeout):
+        return f"{exc} — the model stopped responding. Retrying usually clears this."
+    if isinstance(exc, StageTimeout):
+        return str(exc)
+    if isinstance(exc, ModelHTTPError):
+        if exc.status_code in (401, 403):
+            return f"{exc} — the model API rejected the configured key."
+        if exc.status_code == 429:
+            return f"{exc} — the model API is rate-limiting. Wait a moment and retry."
+        return str(exc)
+    return f"{type(exc).__name__}: {exc}"
+
+
+@router.post("/{run_id}/steps/{step_id}/stream")
+async def stream_step(
+    run_id: str,
+    step_id: str,
+    max_iterations: int | None = Query(default=None, ge=1, le=MAX_SEARCH_DEPTH),
+    _: None = Depends(require_admin),
+) -> EventSourceResponse:
+    """The gated "next": execute one step, streaming its progress until it lands.
+
+    Frames are `data:` JSON with a `type` field — `thought`/`query`/`source`/
+    `exhausted` while the agent works, then `result` (the finished step) and `run`
+    (the updated tree, including any newly materialized pending steps), or `error`.
+    Disconnecting cancels the step (ADR 46).
+    """
+    step = db.get_step(step_id)
+    if step is None or step["run_id"] != run_id:
+        raise _404(f"step {step_id} not found on run {run_id}")
+    run = db.get_gated_run(run_id)
+    if run is None:
+        raise _404(f"run {run_id}")
+    if run["status"] != "active":
+        raise _409(f"run is {run['status']}, not active")
+    if step["status"] not in ("pending", "error"):
+        raise _409(f"step is {step['status']} and cannot be started")
+    offender = machine.gate_offender(step, db.list_steps(run_id))
+    if offender is not None:
+        raise _409(f"gate not satisfied: {offender}")
+    if machine.busy():
+        raise _409("another step is already running — one at a time, everywhere")
+
+    async def generate():
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def emit(type: str, payload: dict, sub_claim: str | None = None) -> None:
+            # Must stay synchronous and non-blocking — it is called from inside the
+            # agent's event handler, where an await would stall token delivery.
+            queue.put_nowait({"type": type, "sub_claim": sub_claim, "payload": payload})
+
+        async def work() -> None:
+            try:
+                finished = await machine.execute_step(
+                    step_id, max_iterations=max_iterations, emit=emit
+                )
+                payload = (
+                    json.loads(finished["payload_json"])
+                    if finished.get("payload_json")
+                    else None
+                )
+                queue.put_nowait(
+                    {
+                        "type": "result",
+                        "payload": {
+                            "step": {
+                                k: v
+                                for k, v in finished.items()
+                                if k != "payload_json"
+                            }
+                            | {"payload": payload},
+                        },
+                    }
+                )
+                queue.put_nowait({"type": "run", "payload": machine.detail(run_id)})
+            except asyncio.CancelledError:
+                raise
+            except (machine.GateError, machine.BusyError, db.NotFoundError) as exc:
+                queue.put_nowait({"type": "error", "payload": {"message": str(exc)}})
+            except Exception as exc:  # noqa: BLE001 — every failure must reach the wire
+                queue.put_nowait(
+                    {"type": "error", "payload": {"message": _failure_hint(exc)}}
+                )
+            finally:
+                queue.put_nowait(None)
+
+        task = asyncio.create_task(work())
+        try:
+            while True:
+                frame = await queue.get()
+                if frame is None:
+                    break
+                yield {"data": json.dumps(frame, default=str)}
+        finally:
+            # The client hung up (or the loop above finished). Cancelling a finished
+            # task is a no-op; cancelling a live one is exactly ADR 46.
+            if not task.done():
+                task.cancel()
+                with suppress(BaseException):
+                    await task
+
+    return EventSourceResponse(
+        generate(),
+        ping=15,
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
     )

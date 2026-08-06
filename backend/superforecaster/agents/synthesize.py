@@ -11,6 +11,7 @@ is a correction rather than a re-roll.
 from __future__ import annotations
 
 from config import (
+    get_model_settings,
     CheckThresholds,
     get_check_thresholds,
     get_synthesis_limits,
@@ -77,6 +78,7 @@ into `decompositions` and the research into `research`.
 def build_synthesize_agent(model: str | None = None) -> Agent[ForecastDeps, Forecast]:
     return Agent[ForecastDeps, Forecast](
         model=model or resolve_agent_model(),
+        model_settings=get_model_settings(),
         name="synthesize_agent",
         deps_type=ForecastDeps,
         output_type=Forecast,
@@ -144,30 +146,6 @@ def _calibration_block(t: CheckThresholds | None = None) -> str:
         f"CALIBRATION BAND — [{th.calibration_floor:.2f}, {th.calibration_ceiling:.2f}].\n"
         f"Outside it, `extreme_justification` is required; inside it, leave that field empty."
     )
-
-
-def retry_brief(
-    outside: OutsideView,
-    inside: InsideView,
-    violations: list[CheckViolation],
-) -> dict[str, object]:
-    """What a second synthesis attempt is actually told, as structured data.
-
-    Built from the same two formatters `run_synthesize` uses, so this is the real
-    prompt text and not a description of it. A retry that looks like a re-roll from
-    outside is one nobody can audit; showing the correction verbatim is what makes the
-    difference between the two attempts inspectable.
-    """
-    implied = _implied(outside, inside, decomposition)
-    return {
-        "anchor": outside.aggregate_base_rate,
-        "implied": implied,
-        "unchanged": ["decomposition", "outside view", "inside view"],
-        "violations": [v.model_dump() for v in violations],
-        "arithmetic": _arithmetic_block(outside, implied),
-        "calibration": _calibration_block(),
-        "correction": _violation_block(violations).strip(),
-    }
 
 
 async def run_synthesize(

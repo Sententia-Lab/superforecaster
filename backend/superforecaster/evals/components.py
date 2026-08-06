@@ -284,36 +284,67 @@ SCORERS: dict[str, Callable[[Any, dict], ComponentScore]] = {
 async def _score_outside_row(input, decomposition, deps):
     """One research row, run for scoring rather than for a forecast.
 
-    Sequential on purpose. In the pipeline this row is a `.map()` fan-out in
-    `graphs.forecast`; here the only thing that matters is the merged view a scorer
-    reads, and a plain loop is the version you can single-step through.
+    Sequential on purpose. In the pipeline this row is a per-lens fan-out; here the only
+    thing that matters is the merged view a scorer reads, and a plain loop is the version
+    you can single-step through.
     """
-    from ..agents.outside_view import merge_base_rates, run_base_rate_cell
+    from ..agents.lenses import run_choose_lenses
+    from ..agents.outside_view import cell_deps, merge_base_rates, run_research_lens
+    from ..models import SubClaimBaseRates
 
     cells = [s for s in decomposition.sub_claims if s.knowability == "researchable"]
-    results = [
-        await run_base_rate_cell(input, decomposition, s, deps) for s in cells
-    ]
-    return merge_base_rates(cells, results, decomposition)
+    claims: list = []
+    results: list[SubClaimBaseRates] = []
+    for s in cells:
+        chosen = await run_choose_lenses(input, decomposition, s, deps)
+        for lens in chosen.lenses:
+            cdeps = cell_deps(deps, s.id or "", input.max_iterations)
+            result = await run_research_lens(input, s, lens, cdeps)
+            # Identity and weight come from the *chosen* lens, same as the pipeline.
+            researched = result.lens.model_copy(
+                update={
+                    "name": lens.name,
+                    "population": lens.population,
+                    "why_it_fits": lens.why_it_fits,
+                    "weight": lens.weight,
+                    "weight_rationale": lens.weight_rationale,
+                }
+            )
+            claims.append(s)
+            results.append(
+                SubClaimBaseRates(lens=researched, disagreement=result.disagreement)
+            )
+            deps.sources_seen.extend(cdeps.sources_seen)
+    return merge_base_rates(claims, results, decomposition)
 
 
 async def _score_inside_row(input, decomposition, outside, deps):
     """The inside-view row plus its reflect pass, run for scoring. See above."""
-    from ..agents.inside_view import run_inside_view_cell
+    from ..agents.inside_view import run_adjust_lens
+    from ..agents.outside_view import cell_deps
     from ..agents.reflect import run_reflect
     from ..models import InsideView
 
-    cells = [
-        s for s in decomposition.sub_claims if s.id and checks.classes_for(s.id, outside)
-    ]
+    by_id = {s.id: s for s in decomposition.sub_claims if s.id}
     adjustments = []
     steel_mans = {}
-    for s in cells:
-        result = await run_inside_view_cell(input, s, outside, deps)
-        adjustments.extend(
-            a.model_copy(update={"sub_claim_ids": [s.id]}) for a in result.adjustments
+    for lens in outside.lenses:
+        sub_claim = next((by_id[i] for i in lens.sub_claim_ids if i in by_id), None)
+        if sub_claim is None:
+            continue
+        cdeps = cell_deps(deps, sub_claim.id or "", input.max_iterations)
+        result = await run_adjust_lens(
+            input, sub_claim, lens, outside.disagreement, cdeps
         )
-        steel_mans[s.id or ""] = result.steel_man
+        adjustments.extend(
+            a.model_copy(
+                update={"lens_name": lens.name, "sub_claim_ids": [sub_claim.id]}
+            )
+            for a in result.adjustments
+        )
+        if result.steel_man:
+            steel_mans[lens.name] = result.steel_man
+        deps.sources_seen.extend(cdeps.sources_seen)
 
     reflection = await run_reflect(
         input, decomposition, outside, adjustments, steel_mans, deps

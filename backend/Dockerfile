@@ -24,7 +24,7 @@ RUN mkdir -p /app/data
 
 EXPOSE 8000
 
-# --workers 1 is load-bearing, not a default. The live-run registry is in-process, so
-# a second worker would hold half the runs and a stream opened on the wrong one would
-# replay nothing. Scaling out means a shared bus behind Run.emit/subscribe first.
+# --workers 1 is load-bearing, not a default. The one-step-in-flight lock
+# (machine._slot) is per-process, so a second worker could run two agent steps at
+# once; SQLite writes are also single-writer. Scaling out starts with Postgres.
 CMD ["uv", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

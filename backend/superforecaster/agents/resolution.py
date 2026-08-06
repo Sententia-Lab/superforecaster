@@ -12,7 +12,7 @@ Prompt text ported from the previous `superforecaster/resolution.py`.
 
 from __future__ import annotations
 
-from config import get_monitor_limits, resolve_agent_model
+from config import get_model_settings, get_monitor_limits, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
@@ -57,6 +57,7 @@ def build_resolution_agent(
 ) -> Agent[ForecastDeps, ResolutionCheckResult]:
     return Agent[ForecastDeps, ResolutionCheckResult](
         model=model or resolve_agent_model(),
+        model_settings=get_model_settings(),
         name="resolution_agent",
         deps_type=ForecastDeps,
         output_type=ResolutionCheckResult,
