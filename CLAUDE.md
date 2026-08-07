@@ -7,6 +7,11 @@ This project uses spec-driven development. Before implementing anything:
 2. Read `spec/CURRENT_STATE.md` to understand what already exists.
 3. Read `spec/ADR.md` to understand architecture decisions before making new ones.
 
+`spec/BACKLOG.md` is the layer before design: broad features, one line each. Keep it that way —
+no estimates, no owners, no status columns, no ticket-sized detail. Add a line when something
+worth doing surfaces, delete the line when it ships or stops mattering. An item only earns a
+real description when it graduates to `spec/planned/specN.md`.
+
 Do not introduce architecture patterns or dependencies that conflict with `spec/ADR.md` without flagging the conflict and getting explicit approval. When a decision is reversed, supersede the ADR entry rather than deleting it — the history is the useful part.
 
 ---
