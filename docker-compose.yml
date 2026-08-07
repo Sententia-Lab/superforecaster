@@ -1,15 +1,14 @@
 services:
   api:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      # Repo root, not ./backend — the Dockerfile's frontend-build stage needs to see
+      # frontend/ too, so `docker compose up --build` needs no separate npm build step.
+      context: .
+      dockerfile: backend/Dockerfile
     ports:
       - "8000:8000"
     volumes:
       - sqlite_data:/app/data
-      # The built frontend (run `npm run build` in frontend/ first) is bind-mounted
-      # and served by the API rather than built into an image of its own.
-      - ./frontend/dist:/app/frontend:ro
     env_file: backend/.env
     environment:
       DATABASE_PATH: /app/data/superforecaster.db

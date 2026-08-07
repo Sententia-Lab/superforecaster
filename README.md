@@ -37,6 +37,10 @@ open **http://localhost:8000**. That is the whole setup — no `.env` to write, 
 token to invent, no database to create. (For frontend development, `npm run dev` starts a
 Vite server that proxies to the API on :8099.)
 
+Or, from the repo root: `make install && make dev` runs both hot-reloading, or
+`docker compose up --build` if you'd rather not install `uv`/`npm` at all — see
+[Commands](#commands) for both.
+
 The startup banner tells you exactly what you got:
 
 ```
@@ -129,14 +133,14 @@ All from `backend/`.
 first — a container is not localhost:
 
 ```bash
-cd frontend && npm install && npm run build && cd ..
 docker compose up --build
 ```
 
-Also :8000, SQLite in the `sqlite_data` volume. The compose file mounts `frontend/dist`
-read-only into the API container rather than building a frontend image — that's ADR 47's
-"one process serving everything," unchanged from local. Re-run `npm run build` (or
-`docker compose up --build`) after any frontend edit; nothing rebuilds it for you.
+That's the whole thing — no `npm run build` first. The image builds the frontend in a
+Node stage and copies `dist/` in, then serves it from FastAPI on :8000, SQLite in the
+`sqlite_data` volume. Still ADR 47's "one process serving everything" — the frontend build
+just moved from your machine into the image, so a fresh clone with nothing installed but
+Docker works.
 
 <details>
 <summary>Dockerized frontend dev loop (hot reload, no local Node needed)</summary>
@@ -150,6 +154,22 @@ This also starts a `frontend` service (`frontend/Dockerfile.dev`) running `npm r
 via the `dev` profile — plain `docker compose up` never starts it, so production stays the
 single-process deploy above.
 </details>
+
+**Makefile**, wraps the commands above:
+
+| | |
+|---|---|
+| `make install` | `uv sync` + `npm install` |
+| `make dev` | backend on :8099 and `npm run dev` on :5173, both hot-reloading, one Ctrl+C stops both |
+| `make backend` / `make frontend` | either one alone |
+| `make build` | `npm run build` |
+| `make test` | `uv run pytest` |
+| `make docker` | `docker compose up --build` |
+| `make docker-dev` | `docker compose --profile dev up --build` |
+| `make docker-down` | stop the compose stack |
+
+Every target that touches the backend depends on `backend/.env` and creates it from
+`backend/.env.example` if missing — you still have to fill in the keys yourself.
 
 ---
 
@@ -215,6 +235,8 @@ backend/
   config.py          settings, budgets, check thresholds — every number an env var
 frontend/            React + Vite: src/ components, derive.js mirrors checks.py
 spec/                CURRENT_STATE.md (what exists), ADR.md (why)
+Makefile             install / dev / build / test / docker / docker-dev
+docker-compose.yml   api (prod, builds frontend in-image) + frontend (dev profile only)
 ```
 
 - **What exists and what it does** → [`spec/CURRENT_STATE.md`](spec/CURRENT_STATE.md)

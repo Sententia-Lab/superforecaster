@@ -1,3 +1,16 @@
+# Build context is the repo root (see docker-compose.yml) so this stage can reach
+# frontend/ — that's what lets `docker compose up --build` work from a fresh clone
+# with no local npm run build first.
+FROM node:20-slim AS frontend-build
+
+WORKDIR /frontend
+
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend/ ./
+RUN npm run build
+
 FROM python:3.12-slim
 
 # Install curl for the docker-compose healthcheck
@@ -11,13 +24,17 @@ WORKDIR /app
 RUN pip install --no-cache-dir uv
 
 # Install Python dependencies (cached layer)
-COPY pyproject.toml uv.lock* ./
+COPY backend/pyproject.toml backend/uv.lock* ./
 RUN uv sync --no-dev
 
 # Copy application code
-COPY config.py ./
-COPY superforecaster/ ./superforecaster/
-COPY api/ ./api/
+COPY backend/config.py ./
+COPY backend/superforecaster/ ./superforecaster/
+COPY backend/api/ ./api/
+
+# The built frontend — see the frontend-build stage above. Deployment shape is still
+# ADR 47's "one process serving everything"; only the build step moved into the image.
+COPY --from=frontend-build /frontend/dist ./frontend
 
 # Persistent data goes here (mounted as a volume in docker-compose)
 RUN mkdir -p /app/data

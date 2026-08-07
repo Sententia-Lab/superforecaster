@@ -86,7 +86,9 @@ backend/
     fixtures/                  # CLI fixture JSONs
   tests/                       # 285 tests, all passing (see Tests)
   pyproject.toml               # uv-managed; Python >= 3.12
-  Dockerfile
+  Dockerfile                   # multi-stage: node stage builds frontend/, copied into
+                                #   the python stage's ./frontend — build context is repo
+                                #   root (docker-compose.yml), not backend/
 frontend/
   package.json                 # react, react-dom; dev deps vite, @vitejs/plugin-react
   vite.config.js               # dev proxy of API routes to :8099 (VITE_API_PROXY_TARGET
@@ -105,8 +107,13 @@ frontend/
                                #   LiveTail, SynthesisSection
 .github/workflows/ci.yml       # push/PR: uv run pytest + npm run build
 scripts/hooks/pre-push         # runs backend tests; enable with core.hooksPath
-docker-compose.yml             # api service (frontend/dist bind-mounted); dev-only
-                                #   frontend service behind the "dev" profile
+docker-compose.yml             # api service (builds frontend in-image, needs only
+                                #   backend/.env + docker); dev-only frontend service
+                                #   behind the "dev" profile
+.dockerignore                  # repo-root context for the api build; excludes
+                                #   backend/.env, node_modules, .venv, dist, .git
+Makefile                       # install / dev / backend / frontend / build / test /
+                                #   docker / docker-dev / docker-down / clean
 spec/                          # ADR.md, this file, methodology, implemented/, planned/
 ```
 
@@ -128,12 +135,20 @@ uv run python -m superforecaster serve          # API + built UI on :8000
 - Pre-push hook: `git config core.hooksPath scripts/hooks` (runs pytest before push).
 - CI (`.github/workflows/ci.yml`): backend `uv run pytest -q` and frontend `npm ci &&
   npm run build`, on push to main and on PRs.
-- Docker: `docker compose up` — build `frontend/dist` first; it is bind-mounted read-only
-  and served by the API container.
+- Docker: `docker compose up --build` — self-contained, no local `npm run build` needed.
+  `backend/Dockerfile`'s frontend-build stage runs `npm ci && npm run build` and the
+  python stage `COPY --from=` it in; build context is the repo root, not `backend/`.
+  Requires `backend/.env` to exist (`env_file:`) — the Makefile target creates it from
+  `.env.example` if missing.
 - Docker frontend dev: `docker compose --profile dev up` also starts a `frontend` service
   (`frontend/Dockerfile.dev`, hot-reloading Vite on :5173) proxying to the `api` service via
   `VITE_API_PROXY_TARGET=http://api:8000`. Not part of the default `docker compose up` —
   production stays one process, per ADR 47.
+- Makefile: `make install` (`uv sync` + `npm install`), `make dev` (backend :8099 +
+  `npm run dev` :5173, both hot-reloading, one Ctrl+C stops both), `make build`, `make
+  test`, `make docker` / `make docker-dev` (wrap the two compose invocations above),
+  `make docker-down`, `make clean`. Targets that touch the backend depend on
+  `backend/.env` and create it from `.env.example` if absent.
 
 ### CLI (`uv run python -m superforecaster <cmd>`, typer)
 
@@ -528,4 +543,5 @@ Removed: `dbos`. Frontend: `react` 18, `react-dom` 18; dev `vite` 6,
 ## Deployment assets
 
 Nothing is hosted. `docker-compose.yml` runs the API with a named SQLite volume and the
-bind-mounted `frontend/dist`; `.github/workflows/ci.yml` is the only automation.
+frontend built into the image (`backend/Dockerfile`'s node stage); `.github/workflows/ci.yml`
+is the only automation.
