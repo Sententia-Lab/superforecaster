@@ -13,28 +13,46 @@ Do not introduce architecture patterns or dependencies that conflict with `spec/
 
 ## Keeping CURRENT_STATE.md Up to Date
 
-After any session where you add, remove, or change code, update `spec/CURRENT_STATE.md` to reflect reality. This is not optional — it is part of completing any task.
+`spec/CURRENT_STATE.md` is a **data lineage document**. It has exactly one job: trace every user
+interaction from start to finish — through each key function, showing how the data changes, how
+it is stored in or retrieved from the database, and back to the frontend. Updating it is part of
+completing any task, not optional.
 
-Specifically, update it when:
-- A new file, module, or package is created or deleted
-- A new feature is implemented or an existing one is removed
-- A known bug is fixed (remove it from "Known Issues")
-- A new dependency is added to `pyproject.toml`
-- A new environment variable is required
-- A deployment asset is added or changed (database, API server, frontend build)
+**Its structure is fixed. Do not add sections to it.**
+
+| Section | Contains |
+|---|---|
+| Storage map | the SQLite tables and which functions write them |
+| Endpoint index | **every** route, each pointing at its lineage section |
+| Numbered lineage sections | per-endpoint trace: FE call → API handler → functions → DB writes → response → what the UI does with it |
+| Module reference | one line per module saying what lives there. **Light.** |
+| What actually works | accurate current status |
+| Known issues | accurate current status |
+
+**Update it when:**
+- An endpoint is added, removed, or changes what it reads or writes
+- A function in a traced path is added, renamed, or changes behavior
+- A database table or column changes
+- A known bug is fixed (remove it) or found (add it)
 - A spec in `spec/planned/` is completed and moved to `spec/implemented/`
 
-**What to update:**
-- Repository layout (if structure changed)
-- Data models section (if models changed)
-- Tools section (if tools changed)
-- Core functions (if functions added/removed/renamed)
-- What Actually Works / Known Issues (accurate current status)
-- Dependencies table (if pyproject.toml changed)
-- Environment variables (if .env changed)
-- Deployment Assets (if anything is now deployed or hosted)
+**Rules:**
+- **Every endpoint must appear in the endpoint index and be traced in a section.** An endpoint
+  the frontend never calls still gets traced — say so, don't omit it.
+- No line counts anywhere. `file.py:42` pointers are fine and useful; `(333 lines)` is not.
+- Keep it factual and present-tense. Only what exists and works right now, never plans.
 
-Keep entries factual and brief. Do not describe what you plan to do — only what exists and works right now.
+**Deliberately NOT in this document** — do not re-add these, they belong elsewhere:
+
+| Not this | It lives here |
+|---|---|
+| Repository layout / file tree | the tree itself; people can read it |
+| How to run, install, or deploy | `README.md` |
+| Data models | `backend/superforecaster/models.py` |
+| Environment variables | `backend/.env.example`, `backend/config.py` |
+| Dependencies | `backend/pyproject.toml` |
+| Test inventory | the `tests/` directory (may return later if it earns its place) |
+| Why it is shaped this way | `spec/ADR.md` |
 
 ---
 

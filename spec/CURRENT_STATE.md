@@ -1,517 +1,459 @@
-# Current State
+# Current State — Data Lineage
 
-Every module, function, and model that exists today. Generated against the code, not memory.
+**This document has one job: trace every byte from a user action, through each function that
+touches it, into SQLite, and back to the screen.** If you want to know where a number came
+from or where a click ends up, it is in here.
 
-Read this to answer "what is there and what does it do." Read `spec/ADR.md` for *why* it is
-shaped this way. Read `spec/superforecasting_methodology.md` for the 16 principles the code
-implements — `P<n>` throughout this document refers to them.
+Deliberately not here:
+- **Repository layout** — read the tree.
+- **How to run** — `README.md`.
+- **Data models** — `backend/superforecaster/models.py`.
+- **Environment variables** — `backend/.env.example` and `backend/config.py`.
+- **Dependencies** — `backend/pyproject.toml`.
+- **Why it is shaped this way** — `spec/ADR.md`.
+- **The 16 principles** (`P<n>` below) — `spec/superforecasting_methodology.md`.
 
-Last regenerated: 2026-08-06, after the gated rebuild (`spec/implemented/spec5.md`,
-ADRs 45–48).
-
----
-
-## Current shape
-
-The forecast pipeline is a **persisted state machine of user-gated stages**. A run is a row
-in `gated_runs` plus one `run_steps` row per stage cell; nothing executes unless a user
-asks for that specific step. Five stages, gated in order:
-
-```
-decompose (1) → lenses (per researchable sub-question) → base_rates (per sub-question × lens)
-              → inside_view (same cells) → synthesis (1)
-```
-
-- `machine.py` decides every legal transition; `stages.py` holds the per-stage forecast
-  functions; `db.py` reads and writes rows. `stages.run_all` drives the same functions
-  back-to-back with no gates for the CLI and evals — one implementation of the
-  methodology, not two (ADR 45).
-- `POST /runs/{id}/steps/{step_id}/stream` **is** the step: the SSE response executes the
-  agent inside its own generator, and a client disconnect cancels the step, landing it as
-  `error='cancelled'`, immediately claimable again (ADR 46).
-- One agent step in flight per process (`machine._slot`); a run idling at a gate costs
-  nothing, and there is deliberately no whole-run timeout. The bounded thing is one step:
-  `AGENT_TIMEOUT_SECONDS` (180) per agent call, `STAGE_TIMEOUT_SECONDS` (600) per step.
-- Every step's output is a typed payload `model_dump_json`'d into its row, so the whole
-  reasoning trail survives restart and reload — `GET /runs/{id}` rebuilds the entire view
-  from SQLite alone.
-- The frontend is React 18 + Vite (`frontend/`), built to `frontend/dist` and served as
-  static files by FastAPI (ADR 47).
-- Community features (public questions, votes, digest) are removed; migration v2 dropped
-  their tables (ADR 48). The backlog is now a `gated_runs` row with `status='backlog'`.
-
-Deleted in the rebuild: `superforecaster/runs.py`, `eventstream.py`, `durability.py`,
-`graphs/forecast.py`, the DBOS dependency, the ring buffer/replay apparatus, the
-watcher-grace watchdog, and the 2,059-line hand-rolled frontend renderer.
-
-Preserved untouched: `checks.py`, `scoring.py`, all agents, `tools.py`, `deps.py`,
-`observability.py`, the model garden, the component evals, `graphs/update.py`, and the
-daily refresh cron.
+Last regenerated: 2026-08-07.
 
 ---
 
-## Repository layout
+## Storage map
 
-```
-backend/
-  config.py                    # env loading, typed settings, budgets, timeouts
-  api/
-    main.py                    # FastAPI app; startup preflight; serves frontend/dist at /
-    deps.py                    # require_admin, is_local_mode (localhost = no token)
-    runs.py                    # gated run CRUD + the step stream endpoint
-    questions.py               # POST /questions/draft, /critique
-    forecasts.py               # forecast reads + admin writes + single refresh
-    calibration.py             # GET /calibration
-    admin.py                   # POST /admin/refresh/run
-  superforecaster/
-    __main__.py                # typer CLI: forecast/refresh/resolve/critique/postmortem/
-                               #   models/diagram/test/config/serve
-    machine.py                 # gated-run state machine: start_run, advance, execute_step
-    stages.py                  # per-stage forecast functions + run_all (no gates)
-    db.py                      # SQLite; forecasts + gated_runs/run_steps; migrations
-    models.py                  # every Pydantic model
-    checks.py                  # the 16 principles as pure functions over typed output
-    scoring.py                 # time-weighted probability, Brier, calibration (pure)
-    errors.py                  # AgentTimeout, StageTimeout
-    deps.py                    # ForecastDeps, SearchBudget (per-cell budget)
-    tools.py                   # search_web (Tavily), search_wikipedia, as_of clamps
-    observability.py           # logfire config, run_agent wrapper, event handler
-    cron.py                    # APScheduler daily refresh over the update graph
-    model_garden.py/.json      # model registry with training cutoffs (backtest clamp 2)
-    graphs/
-      update.py                # the ONLY graph left: resolution check + Bayes update
-      state.py                 # UpdateState
-    agents/                    # eleven agents, one module each (see Module reference)
-    evals/components.py        # per-agent eval harness (+ components/*.json cases)
-    fixtures/                  # CLI fixture JSONs
-  tests/                       # 285 tests, all passing (see Tests)
-  pyproject.toml               # uv-managed; Python >= 3.12
-  Dockerfile                   # multi-stage: node stage builds frontend/, copied into
-                                #   the python stage's ./frontend — build context is repo
-                                #   root (docker-compose.yml), not backend/
-frontend/
-  package.json                 # react, react-dom; dev deps vite, @vitejs/plugin-react
-  vite.config.js               # dev proxy of API routes to :8099 (VITE_API_PROXY_TARGET
-                                #   overrides, for the dockerized dev server); build → dist/
-  Dockerfile.dev              # dev-only: npm run dev in a container, not part of the
-                               #   default docker compose up (ADR 47 keeps prod one-process)
-  src/
-    main.jsx, App.jsx          # shell: header, sidebar, main pane, theme toggle
-    api.js                     # fetch wrappers + streamStep (fetch/ReadableStream SSE)
-    derive.js                  # pure derivations mirroring checks.py
-    theme.css                  # the --pv-* design tokens, light + dark
-    hooks/useRuns.js           # sidebar list, refetch on demand
-    hooks/useStepStream.js     # one step stream at a time; AbortController = lifetime
-    components/                # Sidebar, NewForecastView, BacklogView, RunView,
-                               #   FieldEditor, StepControls, LensCard, CellActivity,
-                               #   LiveTail, SynthesisSection
-.github/workflows/ci.yml       # push/PR: uv run pytest + npm run build
-scripts/hooks/pre-push         # runs backend tests; enable with core.hooksPath
-docker-compose.yml             # api service (builds frontend in-image, needs only
-                                #   backend/.env + docker); dev-only frontend service
-                                #   behind the "dev" profile
-.dockerignore                  # repo-root context for the api build; excludes
-                                #   backend/.env, node_modules, .venv, dist, .git
-Makefile                       # install / dev / backend / frontend / build / test /
-                                #   docker / docker-dev / docker-down / clean
-spec/                          # ADR.md, this file, methodology, implemented/, planned/
-```
+Everything persists in four SQLite tables (`backend/superforecaster/db.py`, `SCHEMA_VERSION = 2`).
 
----
-
-## How to run
-
-```bash
-cd backend && uv sync
-export ANTHROPIC_API_KEY=sk-ant-...   # or PYDANTIC_AI_GATEWAY_API_KEY
-export TAVILY_API_KEY=tvly-...        # optional; Wikipedia-only without it
-uv run python -m superforecaster serve          # API + built UI on :8000
-```
-
-- Frontend dev loop: `cd frontend && npm install && npm run dev` (Vite proxies API routes
-  to FastAPI on 8099, matching `.claude/launch.json`). Production: `npm run build`, then
-  FastAPI serves `frontend/dist` at `/`.
-- Tests: `cd backend && uv run pytest` — 285 pass, no network, no API keys.
-- Pre-push hook: `git config core.hooksPath scripts/hooks` (runs pytest before push).
-- CI (`.github/workflows/ci.yml`): backend `uv run pytest -q` and frontend `npm ci &&
-  npm run build`, on push to main and on PRs.
-- Docker: `docker compose up --build` — self-contained, no local `npm run build` needed.
-  `backend/Dockerfile`'s frontend-build stage runs `npm ci && npm run build` and the
-  python stage `COPY --from=` it in; build context is the repo root, not `backend/`.
-  Requires `backend/.env` to exist (`env_file:`) — the Makefile target creates it from
-  `.env.example` if missing.
-- Docker frontend dev: `docker compose --profile dev up` also starts a `frontend` service
-  (`frontend/Dockerfile.dev`, hot-reloading Vite on :5173) proxying to the `api` service via
-  `VITE_API_PROXY_TARGET=http://api:8000`. Not part of the default `docker compose up` —
-  production stays one process, per ADR 47.
-- Makefile: `make install` (`uv sync` + `npm install`), `make dev` (backend :8099 +
-  `npm run dev` :5173, both hot-reloading, one Ctrl+C stops both), `make build`, `make
-  test`, `make docker` / `make docker-dev` (wrap the two compose invocations above),
-  `make docker-down`, `make clean`. Targets that touch the backend depend on
-  `backend/.env` and create it from `.env.example` if absent.
-
-### CLI (`uv run python -m superforecaster <cmd>`, typer)
-
-| Command | Does |
-|---|---|
-| `forecast` | full pipeline, no gates (`stages.run_all`), saves unless `--no-save` |
-| `refresh` | update graph by `--id`, or `run_update` on a `--fixture` |
-| `resolve` | resolution check by `--id` or `--fixture` |
-| `critique` | P3 resolvability review of a question + criteria |
-| `postmortem` | P13 review of a resolved forecast |
-| `models` | model garden `list` / `probe` / `pick --as-of` |
-| `diagram` | mermaid: gated stage machine (`forecast`) or update graph (`update`) |
-| `test component [agent]` | component evals (`e2e` is spec4, not built) |
-| `config` | every setting and whether it came from env, `.env`, or nowhere |
-| `serve` | uvicorn on `127.0.0.1:8000` (`--host`, `--port`, `--reload`) |
-
----
-
-## The gated run machine
-
-**Run status** is `backlog → active → complete`. Error is a nullable field on the run
-(the sidebar's red chip), not a status — a run with a failed step has gone nowhere, and
-claiming the step again (retry) clears it.
-
-**Step status** is `pending → running → complete | error`, with `error → running` on
-retry (a CAS in `db.claim_step`, which also increments `attempts`).
-
-**Transitions** (`machine.py`):
-- `start_run` — the four-field gate (`question`, `resolution_criteria`,
-  `resolution_source`, `resolution_date`), then `backlog → active` and one pending
-  `decompose` step. Checked at start, not creation: a half-formed backlog idea is
-  legitimate.
-- `advance` — called after every non-synthesis step completes; materializes the next
-  stage's pending rows from the just-written payloads (decompose fixes the sub-questions,
-  each lenses step fixes its cells). Idempotent via `INSERT OR IGNORE` on
-  `UNIQUE(run_id, stage, sub_claim_id, lens_name)`. Zero researchable sub-questions
-  bypasses straight to synthesis.
-- `gate_offender` — a step is claimable only when every step in every earlier stage is
-  complete; returns the first offender.
-- `execute_step` — global one-slot lock → claim CAS → `_dispatch` to the stage function
-  under `asyncio.timeout(STAGE_TIMEOUT_SECONDS)` → persist. `CancelledError` (client hung
-  up) lands as `error='cancelled'`; `AgentTimeout` and `StageTimeout` land distinctly;
-  every other exception lands as `TypeName: message`. A completed synthesis step saves the
-  forecast (`db.save_forecast`) and completes the run.
-- `detail` — run + steps with payloads parsed; what `GET /runs/{id}` returns.
-- `busy` — true while any step is in flight in this process.
-
-**Restart sweep**: `db.init_db` calls `mark_interrupted_steps`, flipping any
-still-`running` step to `error='interrupted by restart'` (a step can only be running while
-a live connection executes it).
-
-**Stage functions** (`stages.py`) carry the old graph's code-stamped invariants:
-- `run_lenses_stage` never receives a rate — populations are chosen blind (ADR 40).
-- `run_base_rate_step` re-stamps the lens identity (name, population, weight, rationale,
-  `sub_claim_ids`) from the *chosen* lens, so a cell cannot re-weight its population after
-  measuring it. Catches `UsageLimitExceeded` to emit an `exhausted` notice before re-raising.
-- `run_inside_step` requires a measured `BaseRateStepPayload` by signature (P4 as a call
-  signature); `lens_name`/`sub_claim_ids` on adjustments are stamped by code.
-- `run_synthesis_stage` — arithmetic first: `checks.anchor_from` and
-  `checks.implied_probability` compute the anchor and implied probability (never the
-  model); reflect runs over every column's adjustments together; synthesize loops against
-  `checks.run_forecast_checks` with one retry (`MAX_SYNTHESIS_ATTEMPTS = 2`); the
-  question metadata is re-stamped from the caller's input. Falls back to
-  `whole_question_outside` / `whole_question_adjustments` when no cells exist.
-- `run_all` — the same functions back-to-back for CLI/evals; per-stage fan-out is a plain
-  `gather` with `return_exceptions=True`, so a failed cell degrades instead of killing the
-  run. Returns `(forecast, violations)`.
-
-**Budgets** (unchanged from ADR 43): per-cell soft/hard search budget
-(`get_cell_budget`: soft `max_iterations×1`, hard soft+3), explicit `UsageLimits` on every
-agent call (AST-enforced by `test_critic_budget`), 180s per agent call, 600s per step.
-
----
-
-## API endpoints
-
-| Method + path | Auth | Purpose |
+| Table | One row means | Written by |
 |---|---|---|
-| `GET /healthz` | — | liveness |
-| `GET /config` | — | `auth_required`, `search_enabled`, `model` — the client asks the server about its own auth |
-| `POST /runs` | — | create a backlog run; every field optional (201) |
-| `GET /runs` | — | sidebar list, newest first, with per-stage status counts |
-| `GET /runs/{id}` | — | the full persisted tree — the reload path |
-| `PATCH /runs/{id}` | — | edit fields while `backlog`; 409 otherwise |
-| `DELETE /runs/{id}` | admin | delete run, cascade steps (saved forecast stays) |
-| `POST /runs/{id}/start` | admin | four-field gate → `active` + pending decompose; 422 names missing fields (202) |
-| `POST /runs/{id}/steps/{step_id}/stream?max_iterations=N` | admin | **the gated "next"** — SSE that executes the step; 409 on gate/busy/double-claim; disconnect cancels |
-| `POST /questions/draft` | — | freeform text → `DraftedQuestion` + its critique; 504 on parse timeout |
-| `POST /questions/critique` | — | P3 resolvability review |
-| `POST /forecasts` | admin | run the whole pipeline blocking (`run_all`), persist — API twin of the CLI |
-| `GET /forecasts`, `GET /forecasts/{id}` | — | reads (`?status=active\|resolved\|ambiguous`) |
-| `POST /forecasts/{id}/updates` | admin | manual probability update |
-| `PATCH /forecasts/{id}/resolve` | admin | record outcome (0/1) or ambiguous (null) |
-| `POST /forecasts/{id}/refresh` | admin | one update-graph cycle for one forecast |
-| `GET /calibration` | — | Brier + calibration buckets over resolved forecasts |
-| `POST /admin/refresh/run` | admin | trigger the daily refresh now |
-| `GET /` | — | the built frontend (StaticFiles over `FRONTEND_DIR`), mounted last |
+| `gated_runs` | one forecast question + its lifecycle | `create/update/start/complete/delete_gated_run` |
+| `run_steps` | one stage cell (`UNIQUE(run_id, stage, sub_claim_id, lens_name)`) | `insert/claim/finish/fail_step` |
+| `forecasts` | a *published* forecast, written only at synthesis | `save_forecast`, `resolve_forecast`, `mark_refreshed` |
+| `forecast_updates` | probability history for one forecast | `save_forecast`, `add_forecast_update` |
 
-Admin = `Authorization: Bearer <ADMIN_API_KEY>`, waived for loopback requests with no
-proxy headers when the key is unset (`api.deps.is_local_mode`).
+Run status: `backlog → active → complete`. Step status: `pending → running → complete|error`.
+`gated_runs.error` mirrors the latest failing step — a red chip, not a status.
 
-**Stream frames** (`data:` JSON with a `type`): `thought` / `query` / `source` /
-`exhausted` while the agent works, then `result` (the finished step) and `run` (the
-updated tree including newly materialized pending steps), or `error` (with
-`_failure_hint`'s one-sentence diagnosis: budget overrun → retry deeper, timeout, bad key,
-rate limit). Ping every 15s.
+Two lifecycles meet at exactly one point: a gated run produces a `forecasts` row at synthesis,
+and from then on the forecast lives independently (delete the run, the forecast survives).
 
 ---
 
-## Data models (`superforecaster/models.py`)
+## Endpoint index
 
-Constants: `MAX_SEARCH_DEPTH = 50` (ceiling on a retried step's `max_iterations`).
+All 20 routes, each traced in the section named.
 
-**Forecast pipeline**
-- `ForecastInput` — question, criteria, date, category, `max_iterations` (default 5).
-- `SubPrediction` — one sub-question; `id` stamped by `run_decompose`; `knowability`
-  (`researchable`/`judgment`).
-- `Decomposition` — 3–5 `sub_claims` + `chain_rule` (`conjunction`/`disjunction`/`custom`)
-  + `chain_note`.
-- `Lens` — a named population chosen blind; `weight` (relevance only) is the one
-  unverifiable number and carries a mandatory `weight_rationale`.
-- `SubClaimLenses` — 1–3 lenses for one sub-question.
-- `Evidence` — one counted or published block (`hits`/`n`); published requires a source.
-- `ResearchedLens(Lens)` — `evidence` (≥1 block) + `analogs`; the rate is
-  `checks.lens_rate` = Σhits/Σn, computed never asserted.
-- `SubClaimBaseRates` — one researched lens + `disagreement`.
-- `OutsideView` — all lenses merged; `aggregate_base_rate` computed by `checks`.
-- `Adjustment` — one inside-view move (`direction`, `magnitude` ≤ 0.5, `flip_test`,
-  `is_noise`); `lens_name`/`sub_claim_ids` stamped by code.
-- `SubClaimAdjustments` — one cell's 1–3 adjustments + steel man.
-- `Reflection` — whole-question steel man + exactly 5 `BiasCheck`s.
-- `InsideView` — merged adjustments + reflection fields.
-- `Forecast` — final output; `extreme_justification` required outside the calibration band.
-- `GradedSource`, `HistoricalAnalog`, `SourceRef` (leakage audit; `is_leak`),
-  `CheckViolation` (principle 1–16, `blocking`).
+| Method + path | Auth | Traced in |
+|---|---|---|
+| `GET /config` | — | §0 App boot |
+| `GET /runs` | — | §0 App boot |
+| `POST /questions/draft` | — | §1 Drafting |
+| `POST /questions/critique` | — | §1 Drafting |
+| `POST /runs` | — | §2 Create & start |
+| `PATCH /runs/{id}` | — | §2 Create & start |
+| `POST /runs/{id}/start` | admin | §2 Create & start |
+| `POST /runs/{id}/steps/{step_id}/stream` | admin | §3 Running one step |
+| `GET /runs/{id}` | — | §4 Reload |
+| `DELETE /runs/{id}` | admin | §5 Delete |
+| `POST /forecasts` | admin | §6 Ungated pipeline |
+| `GET /forecasts` | — | §7 Forecast reads |
+| `GET /forecasts/{id}` | — | §7 Forecast reads |
+| `POST /forecasts/{id}/updates` | admin | §8 Update, resolve, refresh |
+| `PATCH /forecasts/{id}/resolve` | admin | §8 Update, resolve, refresh |
+| `POST /forecasts/{id}/refresh` | admin | §8 Update, resolve, refresh |
+| `GET /calibration` | — | §9 Calibration |
+| `POST /admin/refresh/run` | admin | §10 Cron sweep |
+| `GET /healthz` | — | §11 Health & static |
+| `GET /` (+ all static) | — | §11 Health & static |
 
-**Gated runs** (new in spec5)
-- `GatedRunStatus = backlog | active | complete` — error is a field, not a status.
-- `StepStatus = pending | running | complete | error`.
-- `Stage = decompose | lenses | base_rates | inside_view | synthesis`.
-- Step payloads: decompose → `Decomposition`; lenses → `SubClaimLenses`;
-  `BaseRateStepPayload` (re-stamped lens + disagreement + sources);
-  `InsideStepPayload` (lens_name + stamped adjustments + steel_man + sources);
-  `SynthesisStepPayload` (reflection, outside, inside, forecast, violations, `anchor`,
-  `implied`, `derivation_slack`, `attempts` — the arithmetic stored as data so the UI
-  never re-derives thresholds that may have changed since the run).
-- API shapes: `RunStepOut`, `GatedRunSummary` (sidebar: stage_counts, no steps),
-  `GatedRunDetail(GatedRunSummary)` (full tree), `CreateGatedRunRequest` (all optional,
-  `max_iterations` 1–20), `UpdateGatedRunRequest` (backlog edits).
+Sections §6–§10 are reachable but the React app never calls them — they are the CLI's API twin
+and the cron surface. That is noted per section rather than hidden in a footnote.
 
-**Drafting / critique**
-- `DraftQuestionRequest` (`text`, min 20 chars) → `DraftedQuestion` → `DraftResponse`
-  (parsed + critique). `CritiqueQuestionRequest` → `CriteriaCritique`
-  (`is_resolvable`, `suggested_criteria`, `suggested_resolution_source` — forced
-  `is_resolvable=False` when no source is named).
+---
 
-**Refresh / resolution / post-mortem**
-- `EvidenceItem` (P11 likelihoods), `UpdateDecision`, `UpdateOutcome`,
-  `ResolutionCheckResult`, `PostMortem`, `RefreshSummary`, `RefreshActionResponse`.
+## 0. App boot — `GET /config`, `GET /runs`
 
-**DB records / scoring**
-- `ForecastRecord` (+ `ForecastUpdateRecord` history), `CalibrationBucket`,
-  `CalibrationReport`.
-- API bodies: `CreateForecastRequest` (resolution_source required), `AddUpdateRequest`,
-  `ResolveRequest`.
+```
+mount App.jsx
+  ├─ api.config()      GET /config       → { auth_required, search_enabled, model }
+  └─ useRuns.refresh() GET /runs         → [ GatedRunSummary + stage_counts ]
+```
 
-**Model garden / evals**
-- `ModelEntry` (published `training_cutoff` — never asked of the model),
-  `GoldenQuestion`, `QuestionScore`, `Scorecard`, `ComponentCase`, `ComponentScore`,
-  `ComponentReport`.
+| Layer | What happens |
+|---|---|
+| FE | `App.jsx:26` sets `config`; `useRuns.js:9` fills the sidebar |
+| API | `main.py:97 client_config` → `is_local_mode(request)` (`deps.py:15`) |
+| API | `runs.py:60 list_runs` → `db.list_gated_runs` |
+| DB | two SELECTs: all runs newest-first, plus a `GROUP BY run_id, stage, status` count roll-up |
+| Back | `auth_required` is the load-bearing field — the *server* decides whether the browser needs a token, so a laptop with no `ADMIN_API_KEY` never asks for one |
 
-Removed in the rebuild: `RunEvent`, `RunSummary`, `RunSnapshot`, `CreateRunRequest`,
-`ResumeRunRequest`, `QuestionRecord`, the vote models, `ForecastRefreshResult`.
+Writes: **none.**
+
+---
+
+## 1. Drafting a question — `POST /questions/draft`, `POST /questions/critique`
+
+```
+NewForecastView  "Draft with AI"
+   text (≥20 chars) ──► POST /questions/draft { text }
+                          run_draft(text)      ← agent call 1
+                          run_critique(...)    ← agent call 2
+                        ◄── { parsed: {question, criteria, date, source, category},
+                              critique: {is_resolvable, ambiguities, missing,
+                                         suggested_criteria, suggested_resolution_source} }
+   setFields(parsed); setCritique(critique); phase → "review"
+```
+
+| Layer | Detail |
+|---|---|
+| FE | `NewForecastView.jsx:20` — spinner, no streaming |
+| API | `questions.py:37` — public, **stateless**, two sequential agent calls |
+| DB | **nothing written.** The draft lives in React state until you press a save button |
+| Errors | parse `AgentTimeout` → **504** (you get your text back); critique degrades silently rather than raising |
+
+`POST /questions/critique` is the same critique half exposed alone — P3 resolvability review of
+a question + criteria, also stateless, also writing nothing. The React app does not call it;
+`api.js` has no wrapper. It exists for the CLI (`superforecaster critique`) and scripts.
+
+---
+
+## 2. Creating and starting a run — `POST /runs`, `PATCH /runs/{id}`, `POST /runs/{id}/start`
+
+Both buttons in `NewForecastView.save()` write; only "Run now" also starts.
+
+```
+"Add to backlog"                     "Run now"
+  POST /runs {fields}                  POST /runs {fields}
+        │                                    │
+        └─ db.create_gated_run               ├─ db.create_gated_run
+           INSERT gated_runs                 │  INSERT gated_runs (status='backlog')
+           status='backlog'                  │
+                                             └─ POST /runs/{id}/start   [admin]
+                                                machine.start_run
+                                                  ├─ four-field gate → 422 if missing
+                                                  ├─ db.start_gated_run  UPDATE status='active'
+                                                  ├─ db.insert_steps     INSERT 1 row: decompose/pending
+                                                  └─ machine.detail(id)  → GatedRunDetail
+```
+
+| Layer | Detail |
+|---|---|
+| Gate | `machine.py:46 REQUIRED_FIELDS` — question, criteria, source, date. Checked at **start**, not create: a half-formed backlog idea is legitimate; a forecast nobody can adjudicate is a wasted search budget |
+| CAS | `start_gated_run` is `UPDATE … WHERE status='backlog'`; `rowcount == 0` → `StateError` → 409 |
+| Back | the full run detail, `steps: [{stage:"decompose", status:"pending", payload:null}]` |
+| Key point | **nothing executes here.** 202 Accepted, one pending row, zero API spend |
+
+`BacklogView` uses the same two calls in the other order: `PATCH /runs/{id}` (save the edits)
+then `POST /start`. `PATCH` → `db.update_gated_run_fields`, which refuses once
+`status != 'backlog'` (409) — a run's question can't change under a decomposition that already
+read it.
+
+---
+
+## 3. Running one step — `POST /runs/{id}/steps/{step_id}/stream`
+
+This is the only endpoint that spends money, and the only one that streams. Per **ADR 46 the
+connection *is* the step**: no background task, no registry, no replay buffer.
+
+### 3a. Preflight — before a single SSE byte
+
+`runs.py:152-166`, all synchronous DB reads:
+
+| Check | Fails with |
+|---|---|
+| step exists and belongs to run | 404 |
+| run exists | 404 |
+| run is `active` | 409 |
+| step is `pending` or `error` (`error` = retryable) | 409 |
+| `machine.gate_offender` — every earlier stage complete | 409 |
+| `machine.busy()` — `_slot` lock free | 409 |
+
+These duplicate checks inside `execute_step`; the copies exist so the client gets a **status
+code**. Once the SSE response starts, the status is already committed to 200.
+
+### 3b. The live path
+
+```
+LensCard/StepControls onStart
+  └─ useStepStream.start(runId, stepId, {maxIterations})
+       AbortController; fetch POST …/stream  (not EventSource — it would auto-reconnect
+                                              and silently re-run a cancelled step)
+                    │
+FastAPI  stream_step ── preflight ──► generate()
+                                        task = create_task(work())
+                                        loop: await queue.get() → yield "data: {...}"
+                                                  ▲
+             machine.execute_step ──────────────┐ │
+               _slot.acquire()  (one at a time) │ │ emit() — sync, put_nowait,
+               db.claim_step                    │ │ never blocks the agent
+                 UPDATE run_steps               │ │
+                   status='running',            │ │
+                   attempts += 1, error=NULL    │ │
+                 UPDATE gated_runs error=NULL   │ │
+               logfire.span("step {stage}")     │ │
+               asyncio.timeout(STAGE_TIMEOUT)   │ │
+               _dispatch → stages.run_*_stage ──┘─┘
+                            observability.py:197 turns agent events into frames
+```
+
+| Frame | Emitted from | Front-end effect (`useStepStream.js:39`) |
+|---|---|---|
+| `thought` | `PartDeltaEvent.content_delta` | appends to `thoughts`, tail-clipped to 4000 chars |
+| `query` | `FunctionToolCallEvent` | replaces the one-line `"tool: query"` |
+| `source` | diff of `deps.sources_seen` after each tool result | pushes a source chip |
+| `exhausted` | `outside_view.exhausted_notice` | "search budget exhausted — wrapping up" |
+| `result` | `work()` after `finish_step` | (not consumed — `run` supersedes it) |
+| `run` | `machine.detail(run_id)` | `setRun(payload)` — whole tree swap |
+| `error` | any exception, via `_failure_hint` | red banner on the card |
+
+`emit` must be synchronous — it is called from inside the agent's event handler, where an
+`await` would stall token delivery. The `asyncio.Queue` is the adapter from that push-based
+sync callback to the pull-based async generator; `work()` is a separate task so the generator
+can keep yielding for the minutes the agent runs. Ping every 15s.
+
+### 3c. What lands in the database
+
+| Outcome | Writes |
+|---|---|
+| Success (non-synthesis) | `finish_step`: `run_steps.payload_json = <model_dump_json>`, `status='complete'` → then `machine.advance(run_id)` materializes the next stage's **pending** rows |
+| Success (synthesis) | `finish_step`, then `db.save_forecast` (new row in `forecasts`, first row in `forecast_updates`), then `complete_gated_run`: `status='complete'`, `forecast_id`, `error=NULL` |
+| Agent/stage failure | `fail_step`: `run_steps.status='error'`, `error=<msg>`; mirrored to `gated_runs.error` |
+| Client disconnects | generator `finally` → `task.cancel()` → `CancelledError` inside `execute_step` → `fail_step(step_id, "cancelled")` → **immediately re-claimable** |
+| Process restart mid-step | `init_db` → `mark_interrupted_steps` flips `running` → `error='interrupted by restart'` |
+
+`advance` (`machine.py:74`) is the fan-out, and it reads the payload just written:
+
+```
+decompose ─► one lenses step per researchable sub-claim
+             (none researchable → straight to synthesis)
+lenses    ─► one base_rates step per (sub-claim, lens)
+base_rates─► one inside_view step per same cell
+inside_view► one synthesis step
+```
+
+`INSERT OR IGNORE` against the UNIQUE key makes it idempotent — retrying the last cell of a
+stage must not duplicate the next stage's rows.
+
+The stage functions carry the methodology's code-stamped invariants as data transforms:
+`run_lenses_stage` never receives a rate (populations chosen blind, ADR 40); `run_base_rate_step`
+re-stamps the lens identity from the *chosen* lens so a cell cannot re-weight its population
+after measuring it; `run_inside_step` requires a measured `BaseRateStepPayload` by signature
+(P4 as a call signature); `run_synthesis_stage` computes the anchor and implied probability with
+`checks.anchor_from` / `checks.implied_probability` — **arithmetic first, never the model** —
+then loops against `checks.run_forecast_checks` with one retry.
+
+### 3d. Back to the user
+
+Two paths, and the second is why the UI is always correct:
+
+1. the `run` frame → `setRun(fullDetail)` mid-stream, so the new pending cards appear the
+   instant the step lands;
+2. `onDone` → `refreshDetail()` (`GET /runs/{id}`, §4) **plus** `onChanged()` → `GET /runs` for
+   the sidebar. Even if the stream died mid-frame, the next paint is rebuilt from SQLite alone.
+
+`RunView` renders purely from `run.steps` — `stepFor(stage, subClaim, lens)` finds the row,
+`step.payload` is the parsed stage output, and `derive.js` recomputes the displayed arithmetic
+(counted → adjusted → weighted → chain → implied) mirroring `checks.py`. There is no
+client-side accumulation of run state beyond the live tail of the one active card.
+
+### 3e. Retry / deeper budget
+
+`StepControls` shows "Retry" when `step.status === 'error'`, and additionally "Retry with 2×
+search budget" when `step.error` matches `/budget|max_iterations|UsageLimit/`. That posts the
+same URL with `?max_iterations=run.max_iterations * 2`, which becomes
+`ForecastInput.max_iterations` for that one call only — it is never persisted onto the run
+(ceiling `MAX_SEARCH_DEPTH = 50`).
+
+---
+
+## 4. Reload — `GET /runs/{id}`
+
+The whole-tree read, and the reason a refresh never loses anything.
+
+```
+RunView mount / refreshDetail()
+  └─ GET /runs/{id} → machine.detail(run_id)
+                        db.get_gated_run  + db.list_steps
+                        payload_json ──json.loads──► RunStepOut.payload
+                      ◄── GatedRunDetail { …run fields, steps: [...] }
+```
+
+Writes: **none.** Every stage payload was `model_dump_json`'d into its row at `finish_step`, so
+the entire reasoning trail — every lens, every evidence block, every adjustment — reconstructs
+from SQLite with no agent calls and no in-memory state.
+
+---
+
+## 5. Deleting — `DELETE /runs/{id}`
+
+`db.delete_gated_run` → one `DELETE FROM gated_runs`; `run_steps` go with it via
+`ON DELETE CASCADE`. A `forecasts` row produced by that run **survives** (`ON DELETE SET
+NULL`) — the published forecast outlives the scaffolding that made it.
+
+---
+
+## 6. Ungated pipeline — `POST /forecasts`
+
+The API twin of `superforecaster forecast`. Not called by the React app.
+
+```
+POST /forecasts {question, criteria, date, category, resolution_source, submission_gap_days}
+  └─ stages.run_all(ForecastInput)          ← blocking, minutes, all 5 stages back-to-back
+       decompose → lenses → base_rates → inside_view → synthesis
+       per-stage fan-out = asyncio.gather(return_exceptions=True)  ← a failed cell degrades
+     ► (forecast, violations)
+  └─ db.save_forecast   INSERT forecasts + INSERT forecast_updates (the initial probability)
+  └─ db.get_forecast    ◄── ForecastRecord
+```
+
+Same `stages` functions the gated flow uses — one implementation of the methodology, not two
+(ADR 45). No gates, no SSE, no `run_steps` rows: nothing to resume if it dies. Runs live, with
+no `as_of` or `model` clamp (those exist for backtesting). `violations` is computed and
+discarded by this endpoint.
+
+---
+
+## 7. Forecast reads — `GET /forecasts`, `GET /forecasts/{id}`
+
+Pure SELECTs against the published table. Not called by the React app.
+
+| Endpoint | Lineage |
+|---|---|
+| `GET /forecasts?status=active\|resolved\|ambiguous&limit&offset` | `db.list_forecasts` → `list[ForecastRecord]` |
+| `GET /forecasts/{id}` | `db.get_forecast` → `ForecastRecord`, or 404 |
+
+Writes: **none.**
+
+---
+
+## 8. Update, resolve, refresh — `POST /forecasts/{id}/updates`, `PATCH /{id}/resolve`, `POST /{id}/refresh`
+
+The post-publication lifecycle. Not called by the React app.
+
+```
+POST /forecasts/{id}/updates {probability, reasoning}     [admin]
+  └─ db.add_forecast_update   INSERT forecast_updates; UPDATE forecasts.probability
+     404 NotFoundError · 409 StateError (already resolved)
+
+PATCH /forecasts/{id}/resolve {outcome: 0|1|null}          [admin]
+  └─ db.resolve_forecast      UPDATE forecasts status='resolved'|'ambiguous',
+                                     outcome, resolved_at, brier (scoring.brier_score over
+                                     scoring.time_weighted_probability of forecast_updates)
+  └─ db.get_forecast        ◄── ForecastRecord
+
+POST /forecasts/{id}/refresh                               [admin]
+  └─ graphs.run_update_graph(id)      ← the ONLY graph left
+       CheckResolved   run_resolution_check agent
+                       db.mark_refreshed(id, flagged=appears_resolved)
+                       appears_resolved → End (flagged_resolved=True)   ← short-circuit
+       ApplyBayes      run_update agent → P11 likelihoods
+       VerifyLargeMove second opinion when the move is large
+       GuardUpdate     |Δp| < MIN_PROBABILITY_DELTA → drop as noise
+                       else db.add_forecast_update  INSERT forecast_updates
+     ◄── RefreshActionResponse {updated, reason}
+```
+
+The resolution check runs **before** the probability update and short-circuits on a resolved
+forecast, so a resolved question can never be re-forecast. That ordering lives in the graph, not
+in the callers — which is why §10's sweep is a plain loop.
+
+---
+
+## 9. Calibration — `GET /calibration`
+
+```
+GET /calibration
+  └─ db.calibration_report()
+       SELECT resolved forecasts
+       scoring.brier_score + scoring.calibration (pure functions)
+     ◄── CalibrationReport { brier, buckets: [CalibrationBucket] }
+```
+
+Writes: **none.** The scoring input is the *time-weighted* probability over `forecast_updates`,
+not the latest value — a forecast held at 0.9 for a month scores differently from one moved to
+0.9 yesterday.
+
+---
+
+## 10. Cron sweep — `POST /admin/refresh/run`
+
+The same work the scheduler does at `REFRESH_CRON_SCHEDULE` (default 06:00 UTC), triggered by
+hand. Not called by the React app.
+
+```
+POST /admin/refresh/run                                    [admin]
+  └─ cron.run_daily_refresh()
+       db.list_active_forecast_ids()
+       for each: run_update_graph(fid)          ← §8, writes per forecast
+                 exception → summary.errors, continue   ← one bad forecast never kills the sweep
+     ◄── RefreshSummary {total_checked, total_updated, total_flagged_for_review,
+                         total_skipped, errors}
+```
+
+---
+
+## 11. Health & static — `GET /healthz`, `GET /`
+
+| Endpoint | Lineage |
+|---|---|
+| `GET /healthz` | constant JSON. No DB. The Docker healthcheck |
+| `GET /` and all unmatched paths | `StaticFiles(FRONTEND_DIR, html=True)`, **mounted last** in `main.py` so it never shadows an API route. Serves the Vite build |
+
+---
+
+## Auth, in one line
+
+`require_admin` guards `DELETE /runs/{id}`, `POST /runs/{id}/start`, the step stream, every
+`/forecasts` write, and `/admin/*`. With `ADMIN_API_KEY` unset **and** the request from loopback
+**and** no proxy header, it is skipped entirely (`is_local_mode`). The browser sends
+`Authorization: Bearer <token>` from `localStorage.sf_admin_token` when it has one.
 
 ---
 
 ## Module reference
 
-### `superforecaster/machine.py` (333 lines)
-`GateError`, `BusyError`, `REQUIRED_FIELDS`, `start_run`, `advance`, `gate_offender`,
-`execute_step`, `detail`, `busy`. See "The gated run machine" above.
+Where the functions named above live.
 
-### `superforecaster/stages.py` (316 lines)
-`run_decompose_stage`, `run_lenses_stage`, `run_base_rate_step`, `run_inside_step`,
-`assemble_outside` (pure fold into `OutsideView`), `run_synthesis_stage`, `run_all`.
-`MAX_SYNTHESIS_ATTEMPTS = 2`.
+**Backend — `backend/superforecaster/`**
 
-### `superforecaster/db.py` (917 lines)
-- Connection: WAL + `busy_timeout=5000` + foreign keys; ISO-8601 datetime adapters.
-- `SCHEMA_VERSION = 2`; `MIGRATIONS`: v1 drops `forecast_updates.confidence`, v2 drops
-  `votes`, `questions`, `refresh_runs`, `runs`. Fresh databases are stamped at the
-  current version before `_migrate` runs.
-- Forecasts: `save_forecast`, `add_forecast_update`, `get_forecast`, `list_forecasts`,
-  `list_active_forecast_ids`, `compute_time_weighted_probability`, `resolve_forecast`,
-  `mark_refreshed`, `calibration_report`.
-- Gated runs (`STAGE_ORDER`): `create_gated_run`, `update_gated_run_fields` (backlog
-  only), `start_gated_run` (CAS), `complete_gated_run`, `get_gated_run`,
-  `list_gated_runs` (with stage counts), `delete_gated_run`, `insert_steps`
-  (INSERT OR IGNORE), `claim_step` (CAS `pending|error → running`, clears the run's red
-  chip), `finish_step`, `fail_step` (mirrors error onto the run), `get_step`,
-  `list_steps`, `mark_interrupted_steps`.
-- Errors: `NotFoundError`, `StateError`.
-
-### `superforecaster/checks.py` (1044 lines) — unchanged
-The 16 principles as pure functions. Key derivations: `lens_rate`, `adjusted_lens_rate`,
-`sub_claim_rate` (relevance-weighted, never by n), `combine_sub_claim_rates` (chain rule),
-`anchor_from`, `implied_probability`, `signed_adjustment`. Check battery:
-`check_decomposition`, `check_base_rate_derivation`, `check_dragonfly`,
-`check_aggregation`, `check_linkage`, `check_citations`, `check_signal_vs_noise`,
-`check_disconfirming`, `check_bias_coverage`, `check_derivation` (±slack rule),
-`check_calibration_hygiene`, `check_bayes_direction`, `check_update_magnitude`.
-Entry points: `run_forecast_checks`, `run_update_checks`, `blocking`.
-
-### `superforecaster/scoring.py` (101 lines) — unchanged
-`time_weighted_probability`, `brier_score`, `calibration`. Pure; db.py calls it.
-
-### `superforecaster/agents/` — eleven modules, unchanged prompts
-`decompose.run_decompose`, `lenses.run_choose_lenses`,
-`outside_view.run_research_lens` (+ `cell_deps`, `exhausted_notice`, `merge_base_rates`,
-`whole_question_outside`), `inside_view.run_adjust_lens` (+
-`whole_question_adjustments`), `reflect.run_reflect`, `synthesize.run_synthesize`,
-`critic.run_critique`, `draft.run_draft`, `resolution.run_resolution_check`,
-`update.run_update`, `postmortem.run_postmortem`. Every `run_agent` call passes explicit
-`UsageLimits` (AST-enforced).
-
-### `superforecaster/graphs/` — the update graph only
-`update.py`: `CheckResolved → ApplyBayes → VerifyLargeMove → GuardUpdate`;
-`run_update_graph(forecast_id)`, `update_mermaid()`. `state.py`: `UpdateState`.
-The forecast graph is gone; `graphs/__init__.py` says so.
-
-### `superforecaster/tools.py`, `deps.py`, `observability.py`, `model_garden.py` — unchanged
-Tavily + Wikipedia search with `as_of` backdating clamps and per-cell budget notices;
-`ForecastDeps` (`as_of`/`model` clamps, `sources_seen` audit trail, `emit` sink,
-per-cell `SearchBudget`); logfire setup and the `run_agent` wrapper with
-`AGENT_TIMEOUT_SECONDS` deadline; the model-cutoff registry for clean backtests.
-
-### `superforecaster/errors.py`
-`AgentTimeout` (one agent stalled) and `StageTimeout` (the step ceiling), both
-`TimeoutError` subclasses. `RunTimeout` and `RunAbandoned` are deleted — a gated run is
-supposed to sit idle indefinitely.
-
-### `superforecaster/cron.py`
-`run_daily_refresh` (update graph over every active forecast) + APScheduler wiring
-(`start_scheduler`/`stop_scheduler`, `REFRESH_CRON_SCHEDULE`, default 06:00 UTC).
-The monthly digest job is removed.
-
-### `superforecaster/evals/components.py`
-Per-agent eval harness (`run_component`, `SCORERS`). `_score_outside_row` /
-`_score_inside_row` now drive the lens flow (`run_choose_lenses` →
-`run_research_lens` / `run_adjust_lens` per cell) and merge with
-`merge_base_rates` — the two stale imports of the old graph helpers were fixed in the
-rebuild.
-
-### `api/` — see the endpoints table
-`runs.py` (230 lines) is the rewritten gated CRUD plus `stream_step`, which pre-checks
-ownership/status/gate/busy as HTTP 404/409 and then runs `machine.execute_step` inside
-the SSE generator via a queue, cancelling the worker task when the generator is torn
-down. `main.py` runs the startup preflight banner and mounts `frontend/dist` last at `/`.
-
-### `frontend/src/`
-- `api.js` — fetch wrappers; `streamStep` uses `fetch` + `ReadableStream` +
-  `AbortController` (deliberately not `EventSource`, which would auto-reconnect and
-  re-run a cancelled step; ADR 46). Admin token in localStorage.
-- `derive.js` — mirrors `checks.py`: `lensRate`, `adjustedLensRate`, `subClaimRate`,
-  `signedAdjustment`, `claimSupport`, `pct`, `domainOf`.
-- `hooks/useStepStream.js` — one stream at a time; unmount aborts, abort cancels
-  server-side. `hooks/useRuns.js` — the sidebar list.
-- `App.jsx` — selection model (`new` | run id); backlog runs get `BacklogView`,
-  everything else `RunView`; light/dark theme toggle; `/config`-driven chips.
-- Components enforce the spec5 layout contract: stages stack vertically; `LiveTail` is
-  used only in the decompose section; `LensCard` + `CellActivity` render headline-first
-  cards with processing inside the active card; `SynthesisSection` shows the arithmetic
-  table (counted → adjusted → weighted → chain → implied via `derive.js`), the final
-  probability, rationale, and surviving violations; `StepControls` is the gate button
-  (Run / Retry, with a deeper-budget retry on budget failures); `FieldEditor` +
-  `NewForecastView`/`BacklogView` implement the visible four-field gate and the AI-draft
-  flow.
-
----
-
-## Database (SQLite, `SCHEMA_VERSION = 2`)
-
-| Table | Purpose |
+| Module | Holds |
 |---|---|
-| `forecasts` | one forecast + resolution/scoring columns |
-| `forecast_updates` | probability history (time-weighted scoring input) |
-| `gated_runs` | one gated run: four question fields, `max_iterations`, `status`, nullable `error`, `forecast_id`, timestamps |
-| `run_steps` | one row per stage cell: `stage`, `sub_claim_id`, `lens_name`, `status`, `payload_json`, `error`, `attempts`, timestamps; `UNIQUE(run_id, stage, sub_claim_id, lens_name)`; `ON DELETE CASCADE` |
+| `machine.py` | gated-run state machine: `start_run`, `advance`, `gate_offender`, `execute_step`, `detail`, `busy`, `REQUIRED_FIELDS`, `GateError`, `BusyError` |
+| `stages.py` | `run_decompose_stage`, `run_lenses_stage`, `run_base_rate_step`, `run_inside_step`, `assemble_outside`, `run_synthesis_stage`, `run_all` |
+| `db.py` | SQLite (WAL, FKs, migrations). Forecast fns + gated-run fns + `NotFoundError`/`StateError` |
+| `models.py` | every Pydantic model |
+| `checks.py` | the 16 principles as pure functions; `lens_rate`, `anchor_from`, `implied_probability`, `run_forecast_checks`, `blocking` |
+| `scoring.py` | `time_weighted_probability`, `brier_score`, `calibration` — pure |
+| `deps.py` | `ForecastDeps`, `SearchBudget`, `sources_seen`, the `emit` sink |
+| `tools.py` | `search_web` (Tavily), `search_wikipedia`, `as_of` backdating clamps |
+| `observability.py` | logfire config, the `run_agent` wrapper, agent-event → stream-frame handler |
+| `errors.py` | `AgentTimeout`, `StageTimeout` |
+| `cron.py` | `run_daily_refresh`, APScheduler wiring |
+| `model_garden.py` | model registry with published training cutoffs (backtest clamp) |
+| `graphs/update.py` | the only graph: `CheckResolved → ApplyBayes → VerifyLargeMove → GuardUpdate`, `run_update_graph` |
+| `agents/` | eleven agents, one module each: `decompose`, `lenses`, `outside_view`, `inside_view`, `reflect`, `synthesize`, `critic`, `draft`, `resolution`, `update`, `postmortem` |
+| `evals/components.py` | per-agent eval harness (`run_component`, `SCORERS`) |
+| `__main__.py` | typer CLI: `forecast`, `refresh`, `resolve`, `critique`, `postmortem`, `models`, `diagram`, `test`, `config`, `serve` |
 
-Dropped by migration v2: `questions`, `votes`, `refresh_runs`, `runs`.
+**Backend — `backend/api/`**
 
----
-
-## Environment variables
-
-All optional except one LLM key. Read via `backend/config.py`; `backend/.env` loaded with
-`override=False` (real env wins; `superforecaster config` shows provenance).
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `ANTHROPIC_API_KEY` / `PYDANTIC_AI_GATEWAY_API_KEY` | — | the model (one required; gateway wins) |
-| `TAVILY_API_KEY` | — | web search; Wikipedia-only fallback without it |
-| `AGENT_MODEL` | — | override model for every agent |
-| `ADMIN_API_KEY` | — | required for admin routes off localhost; unset = local mode |
-| `DATABASE_PATH` | `./superforecaster.db` | SQLite location |
-| `FRONTEND_DIR` | `../frontend/dist` | static frontend served at `/` |
-| `LOGFIRE_TOKEN` | — | cloud traces |
-| `AGENT_TIMEOUT_SECONDS` | 180 | one agent run (0 disables) |
-| `STAGE_TIMEOUT_SECONDS` | 600 | one gated step (0 disables) |
-| `AGENT_MAX_TOKENS` | 16384 | output-token ceiling per model response — the provider default (4096) truncates the synthesize agent's Forecast mid-tool-call (`IncompleteToolCall`) |
-| `AGENT_REQUEST_LIMIT` / `AGENT_TOOL_CALLS_LIMIT` | 40 / 20 | process-wide fallback limits |
-| `CELL_SOFT_CALLS_PER_ITERATION` / `CELL_HARD_HEADROOM` | 1 / 3 | per-cell search budget |
-| `CRITIQUE_SOFT_CALLS` / `CRITIQUE_HARD_HEADROOM` | 2 / 1 | critic budget |
-| `MONITOR_TOOL_CALLS` | 4 | resolution / update / post-mortem agents |
-| `RESEARCH_REQUESTS_PER_ITERATION` / `RESEARCH_TOOL_CALLS_PER_ITERATION` | 3 / 3 | whole-question fallback path |
-| `REFRESH_CRON_SCHEDULE` | `0 6 * * *` | daily refresh |
-| `MIN_PROBABILITY_DELTA` | 0.03 | below this an update is noise |
-| `SEARCH_LOOKBACK_HOURS` | 48 | refresh search window |
-| `CHECK_*` (11 vars) | see `get_check_thresholds` | tunable check thresholds, incl. `CHECK_DERIVATION_SLACK=0.05` (the ±5-point rule) |
-| `MODEL_GARDEN_MARGIN_DAYS` | 90 | cutoff safety margin |
-
-Removed in the rebuild: `DIGEST_CRON_SCHEDULE`, `RUN_MAX_CONCURRENT`,
-`RUN_EVENT_BUFFER`, `RUN_RETENTION_MINUTES`, `RUN_TIMEOUT_SECONDS`,
-`RUN_WATCHER_GRACE_SECONDS`, `DBOS_DATABASE_URL`.
-
----
-
-## Tests (285, all passing)
-
-| File | Covers |
+| Module | Holds |
 |---|---|
-| `test_machine.py` | materialization fan-out, gate enforcement, retry, cancel→`cancelled`, stage timeout, global one-slot, synthesis→forecast→complete |
-| `test_db_gated_runs.py` | payload round-trips, claim CAS, red-chip mirror/clear, restart sweep, cascade delete |
-| `test_api_gated_runs.py` | CRUD statuses (201/409/422/404), stream frame order, cancel-on-disconnect, busy 409 |
-| `test_cli_autoadvance.py` | `run_all` ordering + degraded cells |
-| `test_db_migrations.py` | v1 + v2 migration paths, fresh-db stamping |
-| `gated_factories.py` | shared payload factories (not a test module) |
-| `test_checks.py`, `test_component_scorers.py`, `test_config.py`, `test_critic_budget.py` (AST-enforced UsageLimits), `test_cron_orchestrators.py`, `test_db_forecasts.py`, `test_api_forecasts.py`, `test_fixtures.py`, `test_graph_update.py`, `test_model_garden.py`, `test_tools_backdating.py` | preserved suites |
+| `main.py` | FastAPI app, startup preflight, `/healthz`, `/config`, static mount (last) |
+| `deps.py` | `require_admin`, `is_local_mode` |
+| `runs.py` | gated-run CRUD + `stream_step` |
+| `questions.py` | `/questions/draft`, `/questions/critique` |
+| `forecasts.py` | forecast reads + admin writes + single refresh |
+| `calibration.py` | `/calibration` |
+| `admin.py` | `/admin/refresh/run` |
 
-Deleted with the code they tested: `test_runs`, `test_durability`, `test_graph_stream`,
-`test_fanout`, `test_graph_forecast`, `test_db_runs`, `test_db_questions`,
-`test_api_questions`, `test_api_runs`, `test_run_deadlines`.
+**Frontend — `frontend/src/`**
 
----
-
-## Dependencies (`backend/pyproject.toml`)
-
-| Package | Why |
+| Module | Holds |
 |---|---|
-| `pydantic-ai` ≥ 0.4.0 | agent framework |
-| `pydantic` ≥ 2.10.0 | all models |
-| `fastapi` + `uvicorn[standard]` | API + server |
-| `sse-starlette` ≥ 3.3.4 | SSE framing for the step stream |
-| `anthropic` ≥ 0.40.0 | the model |
-| `httpx` | Tavily / Wikipedia tools |
-| `apscheduler` ≥ 3.10.0 | daily refresh |
-| `logfire[system-metrics]` ≥ 4.25.0 | observability |
-| `typer` ≥ 0.24.2 | the CLI |
-| `python-dotenv`, `python-multipart` | env loading, form parsing |
-| dev: `pytest`, `pytest-asyncio`, `freezegun` | tests |
-
-Removed: `dbos`. Frontend: `react` 18, `react-dom` 18; dev `vite` 6,
-`@vitejs/plugin-react` — four packages total (ADR 47).
+| `api.js` | fetch wrappers + `streamStep` (fetch + ReadableStream + AbortController, deliberately not `EventSource`) |
+| `derive.js` | mirrors `checks.py`: `lensRate`, `adjustedLensRate`, `subClaimRate`, `signedAdjustment`, `claimSupport` |
+| `hooks/useRuns.js` | the sidebar list |
+| `hooks/useStepStream.js` | one stream at a time; unmount aborts, abort cancels server-side |
+| `App.jsx` | shell + selection model (`new` \| run id); theme toggle; `/config`-driven chips |
+| `components/` | `Sidebar`, `NewForecastView`, `BacklogView`, `RunView`, `FieldEditor`, `StepControls`, `LensCard`, `CellActivity`, `LiveTail`, `SynthesisSection` |
 
 ---
 
@@ -528,7 +470,10 @@ Removed: `dbos`. Frontend: `react` 18, `react-dom` 18; dev `vite` 6,
   calibration report.
 - Local mode: two exported keys and `serve`, no token, no `.env`, no build step for the
   API (UI needs `npm run build` once).
-- CI on push/PR; opt-in pre-push test gate.
+- CI on push/PR; opt-in pre-push test gate. 292 backend tests pass with no network and no
+  API keys (see the `.env` caveat in Known Issues).
+- Nothing is hosted. `docker-compose.yml` runs the API with a named SQLite volume and the
+  frontend built into the image; `.github/workflows/ci.yml` is the only automation.
 
 ## Known issues
 
@@ -537,11 +482,12 @@ Removed: `dbos`. Frontend: `react` 18, `react-dom` 18; dev `vite` 6,
   spec5).
 - **A permanently failing cell blocks its run** — strict gating has no skip-a-cell escape
   hatch; retry (optionally deeper) is the only recovery today (deferred in spec5).
-- The end-to-end backtest (`test e2e`) is specified in `spec/planned/spec4.md` and not
+- The end-to-end backtest (`test e2e`) is specified in `spec/planned/spec6.md` and not
   built; `superforecaster test e2e` says so and exits 2.
-
-## Deployment assets
-
-Nothing is hosted. `docker-compose.yml` runs the API with a named SQLite volume and the
-frontend built into the image (`backend/Dockerfile`'s node stage); `.github/workflows/ci.yml`
-is the only automation.
+- `GoldenQuestion`, `QuestionScore`, and `Scorecard` are defined in `models.py` but unused —
+  the eval corpus they describe does not exist yet (spec6).
+- **The test suite is not isolated from `backend/.env`.** `config` loads that file, so a dev
+  machine with `ADMIN_API_KEY` set there flips `is_local_mode` to False and the 10 admin-route
+  tests in `test_api_gated_runs.py` fail with 401 (surfacing as `KeyError: 'steps'`). CI has no
+  `.env` so it stays green — the failure only ever hits a developer. Workaround:
+  `ADMIN_API_KEY="" uv run pytest`. The fix is a conftest fixture that pins the admin key.
