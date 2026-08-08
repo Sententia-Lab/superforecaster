@@ -23,6 +23,7 @@ You need [uv](https://docs.astral.sh/uv/), Node, and two keys:
 |---|---|---|
 | **LLM** | [console.anthropic.com](https://console.anthropic.com/) | the model |
 | **Tavily** | [tavily.com](https://tavily.com) | web search — free tier is enough |
+| **Wikipedia** | [wikipedia.com](https://pypi.org/project/Wikipedia-API/) | general knowledge |
 
 ```bash
 make install
