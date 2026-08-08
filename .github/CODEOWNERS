@@ -1,0 +1,10 @@
+# Every file in this repository is owned by @neeharchow.
+#
+# The "PR to push to main" ruleset requires a code-owner review, so a pull request into
+# main cannot merge without an approval from the owner listed here — not merely from
+# anyone who happens to have write access.
+#
+# GitHub does not allow approving your own pull request. The owner's own PRs therefore
+# still rely on the organization-admin bypass; add a second owner here to close that gap.
+
+* @neeharchow
