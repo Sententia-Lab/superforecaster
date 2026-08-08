@@ -57,8 +57,9 @@ Do not introduce architecture patterns or dependencies that conflict with `spec/
 
 ```
 spec/
-  planned/       # specs that are not built yet
+  cancelled/     # out-of-date or cancelled spec
   implemented/   # move the spec here after the code ships
+  planned/       # specs that are not built yet
   CURRENT_STATE.md
   ADR.md
 ```
