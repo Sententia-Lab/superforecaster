@@ -1,6 +1,8 @@
 # Superforecaster
 
-Forecasting agents that implement Tetlock's superforecasting methodology, in Pydantic AI.
+Make testable forecasts about the future.
+
+Built on PydanticAI and based on Philip Tetlock's Superforecasting methodology.
 
 You write a question in plain prose. The AI drafts it into a resolvable question, then a
 gated pipeline breaks it into sub-questions, counts a base rate for each reference
