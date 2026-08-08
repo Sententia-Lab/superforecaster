@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, getToken, setToken } from "./api.js";
+import { api } from "./api.js";
 import { useRuns } from "./hooks/useRuns.js";
+import KeyPanel from "./components/KeyPanel.jsx";
 import Sidebar from "./components/Sidebar.jsx";
 import NewForecastView from "./components/NewForecastView.jsx";
 import BacklogView from "./components/BacklogView.jsx";
@@ -13,6 +14,7 @@ export default function App() {
   // selection: null | { type: "new" } | { type: "run", id }
   const [selection, setSelection] = useState(null);
   const [config, setConfig] = useState(null);
+  const [showKeys, setShowKeys] = useState(false);
   const [theme, setTheme] = useState(
     () => localStorage.getItem(THEME_KEY) || "light",
   );
@@ -27,14 +29,6 @@ export default function App() {
   }, []);
 
   const selectRun = useCallback((id) => setSelection({ type: "run", id }), []);
-
-  const onAdminToken = () => {
-    const token = window.prompt(
-      "Admin token (leave empty to clear):",
-      getToken(),
-    );
-    if (token !== null) setToken(token.trim());
-  };
 
   const selectedRun =
     selection?.type === "run"
@@ -88,11 +82,11 @@ export default function App() {
         {config && !config.search_enabled && (
           <span className="chip yellow">no web search</span>
         )}
-        {config?.auth_required && (
-          <button className="btn tiny" onClick={onAdminToken}>
-            Admin token
-          </button>
-        )}
+        {/* Always shown. Gating this on `auth_required` hid it in exactly the local case
+            where somebody wants to paste an LLM key. */}
+        <button className="btn tiny" onClick={() => setShowKeys(true)}>
+          Keys
+        </button>
         <button
           className="btn tiny ghost"
           onClick={() => setTheme(theme === "light" ? "dark" : "light")}
@@ -100,6 +94,13 @@ export default function App() {
           {theme === "light" ? "Dark" : "Light"}
         </button>
       </header>
+      {showKeys && (
+        <KeyPanel
+          config={config}
+          onSaved={setConfig}
+          onClose={() => setShowKeys(false)}
+        />
+      )}
       <div className="layout">
         <Sidebar
           runs={runs}

@@ -75,7 +75,7 @@ def implied_probability(
 
     Each lens moves by its own modifiers; each sub-question blends its adjusted lenses by
     relevance; the sub-questions combine by `chain_rule`. The same
-    `combine_sub_claim_rates` builds the anchor, so the anchor and the forecast are
+    `combine_sub_question_rates` builds the anchor, so the anchor and the forecast are
     computed the same way and `check_derivation` is checking something real — it used to
     compare a flat sum against a number that same flat sum had suggested.
 
@@ -98,7 +98,7 @@ def implied_probability(
         ))
 
     rates = [row["rate"] for row in chain_inputs(d, o, i)]
-    combined = combine_sub_claim_rates(rates, d.chain_rule)
+    combined = combine_sub_question_rates(rates, d.chain_rule)
     if combined is None:
         return _clamp(o.aggregate_base_rate + whole_question)
     return _clamp(combined + whole_question)
@@ -116,37 +116,37 @@ def base_rate_spread(o: OutsideView) -> float:
     there would let the number shown and the number checked drift apart.
 
     Whole-view, so it is only meaningful when every class measures the same thing. Once
-    research fans out per sub-claim that stops being true — use `sub_claim_spreads`.
+    research fans out per sub-question that stops being true — use `sub_question_spreads`.
     """
     rates = [lens_rate(l) for l in o.lenses]
     return max(rates) - min(rates) if rates else 0.0
 
 
-def sub_claim_spreads(o: OutsideView) -> dict[str | None, float]:
-    """How far apart the lenses are *within each column*: max minus min, per sub-claim.
+def sub_question_spreads(o: OutsideView) -> dict[str | None, float]:
+    """How far apart the lenses are *within each column*: max minus min, per sub-question.
 
     Across columns the number means nothing. A 0.15 lens on "will they commit to an IPO"
     and a 0.80 lens on "will they pick an exchange" are not disagreeing — they are
     measuring different questions — but `base_rate_spread` reports 0.65 of disagreement
     and P7 fires on every run.
 
-    Classes naming no sub-claim group under None. After the outside-view merge that can
+    Classes naming no sub-question group under None. After the outside-view merge that can
     only be a hand-built fixture or an artifact from before the fan-out existed, which is
     also why every pre-3.3 fixture forms exactly one group here and behaves as it did.
     """
     by_column: dict[str | None, list[float]] = {}
     for l in o.lenses:
-        for key in l.sub_claim_ids or [None]:
+        for key in l.sub_question_ids or [None]:
             by_column.setdefault(key, []).append(lens_rate(l))
     return {k: max(v) - min(v) for k, v in by_column.items()}
 
 
-def worst_sub_claim_spread(o: OutsideView) -> float:
+def worst_sub_question_spread(o: OutsideView) -> float:
     """The widest within-column disagreement. 0.0 when there is nothing to compare."""
-    return max(sub_claim_spreads(o).values(), default=0.0)
+    return max(sub_question_spreads(o).values(), default=0.0)
 
 
-def combine_sub_claim_rates(rates: list[float], rule: ChainRule) -> float | None:
+def combine_sub_question_rates(rates: list[float], rule: ChainRule) -> float | None:
     """What the chain the decomposition describes implies, from its parts.
 
     Public for the same reason as `signed_adjustment` and `weighted_base_rate`:
@@ -168,13 +168,13 @@ def combine_sub_claim_rates(rates: list[float], rule: ChainRule) -> float | None
 def chain_inputs(
     d: Decomposition, o: OutsideView, i: InsideView | None = None
 ) -> list[dict[str, Any]]:
-    """Each sub-claim's rate and where it came from, in decomposition order.
+    """Each sub-question's rate and where it came from, in decomposition order.
 
-    Runs over **every** sub-claim, not just the researched ones. A conjunction over only
+    Runs over **every** sub-question, not just the researched ones. A conjunction over only
     the researched rates silently treats the rest as 1.0:
 
-        prod([0.55, 0.70, 0.60])        = 0.231   sc4 vanishes
-        prod([0.55, 0.70, 0.60, 0.80])  = 0.185   sc4 contributes its own estimate
+        prod([0.55, 0.70, 0.60])        = 0.231   sq4 vanishes
+        prod([0.55, 0.70, 0.60, 0.80])  = 0.185   sq4 contributes its own estimate
 
     So a column nothing researched falls back to `SubPrediction.probability` — the
     decompose agent's own working estimate, an existing typed field, marked `estimated`
@@ -185,8 +185,8 @@ def chain_inputs(
     disagree about which sub-questions exist or in what order.
     """
     rows: list[dict[str, Any]] = []
-    for s in d.sub_claims:
-        researched = sub_claim_rate(s.id, o, i) if s.id else None
+    for s in d.sub_questions:
+        researched = sub_question_rate(s.id, o, i) if s.id else None
         rows.append(
             {
                 "id": s.id,
@@ -281,7 +281,7 @@ def aggregate_source_confidence(
 def check_decomposition(
     d: Decomposition, t: CheckThresholds | None = None
 ) -> CheckViolation | None:
-    """P1 + P2. Every sub-claim needs a rationale, and not everything can be judgment.
+    """P1 + P2. Every sub-question needs a rationale, and not everything can be judgment.
 
     `knowability` defaults to "judgment", so an all-judgment decomposition catches
     both "the model declined to label" and "the model labeled everything unknowable."
@@ -292,23 +292,23 @@ def check_decomposition(
         return CheckViolation(
             principle=1,
             name="decomposition",
-            detail="chain_note is empty — the sub-claims were listed but never "
+            detail="chain_note is empty — the sub-questions were listed but never "
             "combined into the whole question",
         )
 
-    unexplained = [s.question for s in d.sub_claims if not s.rationale.strip()]
+    unexplained = [s.question for s in d.sub_questions if not s.rationale.strip()]
     if unexplained:
         return CheckViolation(
             principle=1,
             name="decomposition",
-            detail=f"sub-claims with no rationale: {unexplained}",
+            detail=f"sub-questions with no rationale: {unexplained}",
         )
 
-    if all(s.knowability == "judgment" for s in d.sub_claims):
+    if all(s.knowability == "judgment" for s in d.sub_questions):
         return CheckViolation(
             principle=2,
             name="knowability",
-            detail="every sub-claim is labeled 'judgment' — nothing was identified as "
+            detail="every sub-question is labeled 'judgment' — nothing was identified as "
             "researchable, so no effort can be directed at lookup-able base rates",
         )
 
@@ -378,12 +378,12 @@ def check_dragonfly(
     material disagreement between them gets explained.
 
     Measured **within a column**. Two lenses only disagree if they were looking at the
-    same thing, and once research fans out per sub-claim most pairs are not — see
-    `sub_claim_spreads`. Fires on the widest column, and names it, so the reader knows
+    same thing, and once research fans out per sub-question most pairs are not — see
+    `sub_question_spreads`. Fires on the widest column, and names it, so the reader knows
     which part of the question the sentence they are being asked for is about.
     """
     th = _thresholds(t)
-    spreads = sub_claim_spreads(o)
+    spreads = sub_question_spreads(o)
     if not spreads or o.disagreement.strip():
         return None
 
@@ -394,7 +394,7 @@ def check_dragonfly(
     rates = ", ".join(
         f"{l.name}={lens_rate(l):.2f}"
         for l in o.lenses
-        if worst_id in (l.sub_claim_ids or [None])
+        if worst_id in (l.sub_question_ids or [None])
     )
     where = f"for {worst_id}" if worst_id else "for the question as a whole"
     return CheckViolation(
@@ -435,13 +435,13 @@ def adjusted_lens_rate(lens: ResearchedLens, i: InsideView | None = None) -> flo
     return min(1.0, max(0.0, lens_rate(lens) + moved))
 
 
-def lenses_for(sub_claim_id: str, o: OutsideView) -> list[ResearchedLens]:
-    """The lenses that say they inform this sub-claim."""
-    return [l for l in o.lenses if sub_claim_id in l.sub_claim_ids]
+def lenses_for(sub_question_id: str, o: OutsideView) -> list[ResearchedLens]:
+    """The lenses that say they inform this sub-question."""
+    return [l for l in o.lenses if sub_question_id in l.sub_question_ids]
 
 
-def sub_claim_rate(
-    sub_claim_id: str, o: OutsideView, i: InsideView | None = None
+def sub_question_rate(
+    sub_question_id: str, o: OutsideView, i: InsideView | None = None
 ) -> float | None:
     """What one sub-question is worth: its adjusted lenses, blended by relevance.
 
@@ -459,11 +459,11 @@ def sub_claim_rate(
     Pass `i` to blend the *adjusted* rates — the inside view's answer for this
     sub-question. Without it you get the pre-adjustment anchor.
 
-    None when no lens claims this sub-claim: the honest answer for a `judgment`
-    sub-claim, and for a `researchable` one it means the research did not land.
+    None when no lens claims this sub-question: the honest answer for a `judgment`
+    sub-question, and for a `researchable` one it means the research did not land.
     """
     return _weighted_mean(
-        [(l.weight, adjusted_lens_rate(l, i)) for l in lenses_for(sub_claim_id, o)]
+        [(l.weight, adjusted_lens_rate(l, i)) for l in lenses_for(sub_question_id, o)]
     )
 
 
@@ -486,7 +486,7 @@ def anchor_from(o: OutsideView, d: Decomposition | None) -> tuple[float | None, 
     """
     if d is not None and d.chain_rule != "custom":
         rates = [row["rate"] for row in chain_inputs(d, o)]
-        combined = combine_sub_claim_rates(rates, d.chain_rule)
+        combined = combine_sub_question_rates(rates, d.chain_rule)
         if combined is not None:
             return combined, d.chain_rule
     return weighted_base_rate(o), "weighted mean"
@@ -558,26 +558,26 @@ def check_linkage(
     i: InsideView,
     t: CheckThresholds | None = None,
 ) -> CheckViolation | None:
-    """P1. A reference back to a sub-claim has to point at one that exists.
+    """P1. A reference back to a sub-question has to point at one that exists.
 
     Two ways this dangles. A class or adjustment can name an id the decomposition never
     had; or synthesis, which regenerates `Forecast.decompositions`, can quietly reword
-    or drop a sub-claim — leaving every link pointing at nothing. Both are cheap to
+    or drop a sub-question — leaving every link pointing at nothing. Both are cheap to
     catch and invisible otherwise.
     """
-    known = {s.id for s in d.sub_claims if s.id}
+    known = {s.id for s in d.sub_questions if s.id}
 
     referenced = {
         cid
         for holder in (*o.lenses, *i.adjustments)
-        for cid in holder.sub_claim_ids
+        for cid in holder.sub_question_ids
     }
     unknown = sorted(referenced - known)
     if unknown:
         return CheckViolation(
             principle=1,
             name="linkage",
-            detail=f"sub-claim id{'s' if len(unknown) != 1 else ''} "
+            detail=f"sub-question id{'s' if len(unknown) != 1 else ''} "
             f"{', '.join(unknown)} referenced but not in the decomposition "
             f"({', '.join(sorted(known)) or 'none'})",
         )
@@ -587,7 +587,7 @@ def check_linkage(
         return CheckViolation(
             principle=1,
             name="linkage",
-            detail=f"the forecast carries sub-claims {', '.join(sorted(carried)) or 'none'} "
+            detail=f"the forecast carries sub-questions {', '.join(sorted(carried)) or 'none'} "
             f"but the decomposition produced {', '.join(sorted(known))} — every link "
             f"into the dropped ones now points at nothing",
         )
@@ -809,7 +809,7 @@ def check_calibration_hygiene(
     # Within a column, not across. Post-fan-out the whole-view spread is wide by
     # construction — different columns measure different things — so the second arm below
     # would fire on nearly every run and this advisory would become noise.
-    spread = worst_sub_claim_spread(o)
+    spread = worst_sub_question_spread(o)
 
     if p < th.calibration_floor or p > th.calibration_ceiling:
         if justified:
@@ -972,7 +972,7 @@ def is_large_move(d: UpdateDecision, t: CheckThresholds | None = None) -> bool:
 
 FORECAST_CHECKS: tuple[tuple[str, int, str, Any], ...] = (
     ("decomposition", 1, "P1 · P2 decomposition", lambda c: check_decomposition(c.d, c.t)),
-    ("linkage", 1, "P1 sub-claim linkage", lambda c: check_linkage(c.f, c.d, c.o, c.i, c.t)),
+    ("linkage", 1, "P1 sub-question linkage", lambda c: check_linkage(c.f, c.d, c.o, c.i, c.t)),
     ("base_rates", 4, "P4 base rates derived", lambda c: check_base_rate_derivation(c.o)),
     ("dragonfly", 7, "P7 dragonfly", lambda c: check_dragonfly(c.o, c.t)),
     ("aggregation", 7, "P7 base-rate aggregation", lambda c: check_aggregation(c.o, c.d, c.t)),

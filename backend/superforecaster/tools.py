@@ -280,10 +280,20 @@ async def _search_web(ctx: RunContext[ForecastDeps], query: str) -> str:
     return header + _format_results(results)
 
 
+def _wikipedia_headers() -> dict[str, str]:
+    """A bearer token when one is configured, and no header otherwise.
+
+    The API key is optional. Wikimedia serves this endpoint anonymously; an access token
+    only raises the rate limit.
+    """
+    key = get_settings().wikipedia_api_key
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
 async def search_wikipedia(ctx: RunContext[ForecastDeps], topic: str) -> str:
     """Look up background context, reference classes, and historical base rates.
 
-    No API key required.
+    The API key is optional — set it to raise the rate limit, or leave it unset.
     """
     return await _search_wikipedia(ctx, topic) + _budget_notice(ctx)
 
@@ -292,10 +302,11 @@ async def _search_wikipedia(ctx: RunContext[ForecastDeps], topic: str) -> str:
     """The lookup itself. Split from the tool so every return path — including the ones
     that found nothing — costs exactly one call and carries the budget line."""
     as_of = ctx.deps.as_of
+    headers = _wikipedia_headers()
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             search_resp = await client.get(
-                WIKIPEDIA_URL, params=_wikipedia_search_params(topic)
+                WIKIPEDIA_URL, params=_wikipedia_search_params(topic), headers=headers
             )
             search_resp.raise_for_status()
             hits = search_resp.json().get("query", {}).get("search", [])
@@ -304,7 +315,9 @@ async def _search_wikipedia(ctx: RunContext[ForecastDeps], topic: str) -> str:
 
             top_title = hits[0]["title"]
             content_resp = await client.get(
-                WIKIPEDIA_URL, params=_wikipedia_params(top_title, as_of)
+                WIKIPEDIA_URL,
+                params=_wikipedia_params(top_title, as_of),
+                headers=headers,
             )
             content_resp.raise_for_status()
             pages = content_resp.json().get("query", {}).get("pages", {})

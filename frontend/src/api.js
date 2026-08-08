@@ -61,6 +61,9 @@ async function req(method, path, body) {
 
 export const api = {
   config: () => req("GET", "/config"),
+  // Write-only. The response is the same shape `config()` returns — where each key came
+  // from, never what it is — so the caller redraws from it with no follow-up GET.
+  setKeys: (body) => req("PUT", "/config/keys", body),
   listRuns: () => req("GET", "/runs"),
   getRun: (id) => req("GET", `/runs/${id}`),
   createRun: (body) => req("POST", "/runs", body),

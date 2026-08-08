@@ -21,7 +21,7 @@ from superforecaster.models import (
     Reflection,
     ResearchedLens,
     ResearchSummary,
-    SubClaimLenses,
+    SubQuestionLenses,
     SubPrediction,
     SynthesisStepPayload,
 )
@@ -31,7 +31,7 @@ def future(days: int = 60) -> datetime:
     return datetime.now(timezone.utc) + timedelta(days=days)
 
 
-def sub(id: str = "sc1", knowability: str = "researchable") -> SubPrediction:
+def sub(id: str = "sq1", knowability: str = "researchable") -> SubPrediction:
     return SubPrediction(
         id=id,
         question=f"Sub-question {id}?",
@@ -45,8 +45,8 @@ def decomposition(
     knowabilities: tuple[str, ...] = ("researchable", "judgment", "researchable"),
 ) -> Decomposition:
     return Decomposition(
-        sub_claims=[
-            sub(id=f"sc{i + 1}", knowability=k) for i, k in enumerate(knowabilities)
+        sub_questions=[
+            sub(id=f"sq{i + 1}", knowability=k) for i, k in enumerate(knowabilities)
         ],
         chain_rule="conjunction",
         chain_note="all must hold",
@@ -63,11 +63,11 @@ def lens(name: str = "lens-a") -> Lens:
     )
 
 
-def chosen_lenses(*names: str) -> SubClaimLenses:
-    return SubClaimLenses(lenses=[lens(n) for n in (names or ("lens-a",))])
+def chosen_lenses(*names: str) -> SubQuestionLenses:
+    return SubQuestionLenses(lenses=[lens(n) for n in (names or ("lens-a",))])
 
 
-def researched(name: str = "lens-a", sub_claim_id: str = "sc1") -> ResearchedLens:
+def researched(name: str = "lens-a", sub_question_id: str = "sq1") -> ResearchedLens:
     return ResearchedLens(
         name=name,
         population=f"cases in {name}",
@@ -85,30 +85,31 @@ def researched(name: str = "lens-a", sub_claim_id: str = "sc1") -> ResearchedLen
                 ),
             )
         ],
-        sub_claim_ids=[sub_claim_id],
+        sub_question_ids=[sub_question_id],
     )
 
 
 def base_rate_payload(
-    name: str = "lens-a", sub_claim_id: str = "sc1"
+    name: str = "lens-a", sub_question_id: str = "sq1"
 ) -> BaseRateStepPayload:
     return BaseRateStepPayload(
-        lens=researched(name, sub_claim_id), disagreement="none"
+        lens=researched(name, sub_question_id), disagreement="none"
     )
 
 
-def inside_payload(name: str = "lens-a", sub_claim_id: str = "sc1") -> InsideStepPayload:
+def inside_payload(name: str = "lens-a", sub_question_id: str = "sq1") -> InsideStepPayload:
     return InsideStepPayload(
         lens_name=name,
         adjustments=[
             Adjustment(
+                title="recent shift favours it",
                 evidence="a recent shift",
                 direction="up",
                 magnitude=0.05,
                 flip_test="the opposite would move it down",
                 is_noise=False,
                 lens_name=name,
-                sub_claim_ids=[sub_claim_id],
+                sub_question_ids=[sub_question_id],
             )
         ],
         steel_man="it might not hold",
@@ -130,7 +131,7 @@ def forecast(probability: float = 0.25) -> Forecast:
         resolution_date=future(),
         category="test",
         probability=probability,
-        decompositions=decomposition().sub_claims,
+        decompositions=decomposition().sub_questions,
         research=ResearchSummary(),
         reasoning="Because the chain implies it.",
     )

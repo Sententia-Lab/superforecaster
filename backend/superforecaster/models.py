@@ -132,7 +132,7 @@ class SubPrediction(BaseModel):
 
     id: str = Field(
         default="",
-        description="Stable key ('sc1'). Assigned by `run_decompose`, not the model — "
+        description="Stable key ('sq1'). Assigned by `run_decompose`, not the model — "
         "a model-supplied id can duplicate or skip, and reference classes and "
         "adjustments point back at this.",
     )
@@ -210,18 +210,18 @@ class Decomposition(BaseModel):
     the agent produces is the same decomposition that gets persisted on the Forecast.
     """
 
-    sub_claims: list[SubPrediction] = Field(min_length=3, max_length=5)
+    sub_questions: list[SubPrediction] = Field(min_length=3, max_length=5)
     chain_rule: ChainRule = Field(
         default="custom",
-        description="conjunction = every sub-claim must hold, so the rates multiply; "
+        description="conjunction = every sub-question must hold, so the rates multiply; "
         "disjunction = any one suffices, so 1 - prod(1 - p); custom = neither, and "
         "`chain_note` has to say what the relationship actually is.",
     )
-    """How the sub-claims combine, as arithmetic rather than prose.
+    """How the sub-questions combine, as arithmetic rather than prose.
 
     `chain_note` has always asked for this distinction — "multiply for a conjunction,
     take the maximum for alternatives, and say which it is" — and nothing could read the
-    answer. This makes it a field, so `checks.combine_sub_claim_rates` can apply it and
+    answer. This makes it a field, so `checks.combine_sub_question_rates` can apply it and
     the anchor becomes the chain the decomposition describes rather than an average of
     lenses pointed at different questions.
 
@@ -230,7 +230,7 @@ class Decomposition(BaseModel):
     """
 
     chain_note: str = Field(
-        description="How the sub-claims combine into the whole question"
+        description="How the sub-questions combine into the whole question"
     )
 
 
@@ -321,20 +321,20 @@ class ResearchedLens(Lens):
         description="The named cases behind the `counted` evidence. One per case counted "
         "— these are what make the count auditable rather than a claim.",
     )
-    sub_claim_ids: list[str] = Field(
+    sub_question_ids: list[str] = Field(
         default_factory=list,
         description="Which sub-question this lens informs. Stamped by code, not by you.",
     )
 
 
-class SubClaimLenses(BaseModel):
+class SubQuestionLenses(BaseModel):
     """The `choose_lenses` step's answer for one sub-question. No rates yet."""
 
     lenses: list[Lens] = Field(min_length=1, max_length=3)
 
 
-class SubClaimLensesEdit(SubClaimLenses):
-    """A lens set a person wrote. `SubClaimLenses` already caps the count at 1-3.
+class SubQuestionLensesEdit(SubQuestionLenses):
+    """A lens set a person wrote. `SubQuestionLenses` already caps the count at 1-3.
 
     The agent's own output is rescaled to sum to 1 by `stages.normalize_weights`, but a
     hand-written set is rejected instead. Silently rewriting numbers somebody typed would
@@ -342,7 +342,7 @@ class SubClaimLensesEdit(SubClaimLenses):
     """
 
     @model_validator(mode="after")
-    def _one_whole_judgment(self) -> "SubClaimLensesEdit":
+    def _one_whole_judgment(self) -> "SubQuestionLensesEdit":
         names = [lens.name for lens in self.lenses]
         if len(set(names)) != len(names):
             # A lens is identified by (sub-question, name) in `run_steps` and in
@@ -354,7 +354,7 @@ class SubClaimLensesEdit(SubClaimLenses):
         return self
 
 
-class SubClaimBaseRates(BaseModel):
+class SubQuestionBaseRates(BaseModel):
     """One researched lens. The `research_lens` step's answer.
 
     One lens per cell rather than a whole row, because the lens is now the unit the
@@ -391,6 +391,12 @@ class OutsideView(BaseModel):
 class Adjustment(BaseModel):
     """One inside-view move away from the base rate. P5 + P9."""
 
+    title: str = Field(
+        default="",
+        description="A short label for this move, six words or fewer. Names the mechanism, "
+        "not the direction: 'already cutting subgroup has analogs', not 'raises the "
+        "estimate'. `evidence` carries the argument; this is how a reader finds it again.",
+    )
     evidence: str
     direction: Direction
     magnitude: float = Field(
@@ -416,7 +422,7 @@ class Adjustment(BaseModel):
         default="",
         description="Which lens this moves. Stamped by code, not volunteered.",
     )
-    sub_claim_ids: list[str] = Field(
+    sub_question_ids: list[str] = Field(
         default_factory=list,
         description="Which sub-question this bears on. Stamped by code. Empty means the "
         "question as a whole — the reflect pass and the whole-question fallback.",
@@ -430,7 +436,7 @@ class BiasCheck(BaseModel):
     assessment: str
 
 
-class SubClaimAdjustments(BaseModel):
+class SubQuestionAdjustments(BaseModel):
     """One cell's answer — signed moves for exactly one lens. P5 + P9.
 
     Scoped to a single lens, not a sub-question, because a modifier is only meaningful
@@ -478,7 +484,7 @@ class InsideView(BaseModel):
 
     `adjustments` is every cell's, stamped with the lens it came from.
     `max_length` allows fifteen cells — five sub-questions times three lenses —
-    times three adjustments each, matching `SubClaimAdjustments`. The three
+    times three adjustments each, matching `SubQuestionAdjustments`. The three
     whole-question fields come from `Reflection`.
     """
 
@@ -828,7 +834,7 @@ class RunStepOut(BaseModel):
     id: str
     run_id: str
     stage: Stage
-    sub_claim_id: str = ""
+    sub_question_id: str = ""
     lens_name: str = ""
     status: StepStatus
     payload: Optional[dict[str, Any]] = None

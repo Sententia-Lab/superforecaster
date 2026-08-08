@@ -11,7 +11,7 @@ from superforecaster.models import (
     BaseRateStepPayload,
     Decomposition,
     InsideStepPayload,
-    SubClaimLenses,
+    SubQuestionLenses,
     SynthesisStepPayload,
 )
 
@@ -42,7 +42,7 @@ def _run(**kwargs) -> dict:
     "model_cls, instance",
     [
         (Decomposition, decomposition()),
-        (SubClaimLenses, chosen_lenses("a", "b")),
+        (SubQuestionLenses, chosen_lenses("a", "b")),
         (BaseRateStepPayload, base_rate_payload()),
         (InsideStepPayload, inside_payload()),
         (SynthesisStepPayload, synthesis_payload()),
@@ -133,8 +133,8 @@ def test_retry_reclaims_an_errored_step_and_clears_the_chip():
 
 def test_insert_steps_is_idempotent():
     run = _run()
-    db.insert_steps(run["id"], [("lenses", "sc1", "")])
-    db.insert_steps(run["id"], [("lenses", "sc1", "")])
+    db.insert_steps(run["id"], [("lenses", "sq1", "")])
+    db.insert_steps(run["id"], [("lenses", "sq1", "")])
     assert len(db.list_steps(run["id"])) == 1
 
 
@@ -192,3 +192,19 @@ def test_migration_v2_drops_community_tables(tmp_path, monkeypatch):
     assert "refresh_runs" not in tables
     assert "runs" not in tables
     assert {"gated_runs", "run_steps"} <= tables
+
+
+def test_an_adjustment_without_a_title_still_validates():
+    """ADR 58 gave `Adjustment` a title with `default=""`, so every payload written before
+    the field existed keeps parsing. The frontend falls back to `evidence` for those."""
+    from superforecaster.models import Adjustment
+
+    a = Adjustment(
+        evidence="a recent shift",
+        direction="up",
+        magnitude=0.05,
+        flip_test="the opposite would move it down",
+    )
+
+    assert a.title == ""
+    assert Adjustment.model_validate_json(a.model_dump_json()) == a

@@ -57,7 +57,7 @@ def sub(
 
 def decomposition(**kwargs) -> Decomposition:
     defaults = {
-        "sub_claims": [sub(), sub(knowability="judgment"), sub()],
+        "sub_questions": [sub(), sub(knowability="judgment"), sub()],
         "chain_note": "multiply the three",
     }
     return Decomposition(**{**defaults, **kwargs})
@@ -79,7 +79,7 @@ def ref(
     weight: float = 1.0,
     sources: list[GradedSource] | None = None,
     n: int = 1000,
-    sub_claim_ids: list[str] | None = None,
+    sub_question_ids: list[str] | None = None,
 ) -> ResearchedLens:
     """One measured population.
 
@@ -106,7 +106,7 @@ def ref(
                 source=(sources or [graded()])[0],
             )
         ],
-        sub_claim_ids=sub_claim_ids or [],
+        sub_question_ids=sub_question_ids or [],
     )
 
 
@@ -115,7 +115,7 @@ def counted_ref(
     hits: int = 7,
     n: int = 10,
     weight: float = 1.0,
-    sub_claim_ids: list[str] | None = None,
+    sub_question_ids: list[str] | None = None,
 ) -> ResearchedLens:
     """A population measured by enumerating cases, with the analogs to prove it."""
     return ResearchedLens(
@@ -133,7 +133,7 @@ def counted_ref(
             )
             for i in range(n)
         ],
-        sub_claim_ids=sub_claim_ids or [],
+        sub_question_ids=sub_question_ids or [],
     )
 
 
@@ -223,7 +223,7 @@ def test_decomposition_requires_chain_note():
 
 def test_decomposition_requires_rationale():
     claims = [sub(), sub(rationale=""), sub()]
-    v = checks.check_decomposition(decomposition(sub_claims=claims))
+    v = checks.check_decomposition(decomposition(sub_questions=claims))
     assert v is not None
     assert v.principle == 1
 
@@ -231,7 +231,7 @@ def test_decomposition_requires_rationale():
 def test_decomposition_rejects_all_judgment():
     """P2 — if nothing is researchable, no effort can be directed at base rates."""
     claims = [sub(knowability="judgment") for _ in range(3)]
-    v = checks.check_decomposition(decomposition(sub_claims=claims))
+    v = checks.check_decomposition(decomposition(sub_questions=claims))
     assert v is not None
     assert v.principle == 2
     assert v.name == "knowability"
@@ -243,7 +243,7 @@ def test_decomposition_all_judgment_catches_unlabeled_output():
         SubPrediction(question="q", probability=0.5, rationale="r", confidence="low")
         for _ in range(3)
     ]
-    v = checks.check_decomposition(decomposition(sub_claims=claims))
+    v = checks.check_decomposition(decomposition(sub_questions=claims))
     assert v is not None
     assert v.principle == 2
 
@@ -511,39 +511,39 @@ def test_calibration_bounds_are_configurable(monkeypatch):
     assert checks.check_calibration_hygiene(forecast(0.995), outside()) is None
 
 
-# ---------- P1: sub-claim linkage ----------
+# ---------- P1: sub-question linkage ----------
 
 
 def ided(*ids: str) -> Decomposition:
     return decomposition(
-        sub_claims=[sub().model_copy(update={"id": i}) for i in ids or ("sc1", "sc2", "sc3")]
+        sub_questions=[sub().model_copy(update={"id": i}) for i in ids or ("sq1", "sq2", "sq3")]
     )
 
 
-def test_linkage_accepts_references_to_real_sub_claims():
-    d = ided("sc1", "sc2", "sc3")
+def test_linkage_accepts_references_to_real_sub_questions():
+    d = ided("sq1", "sq2", "sq3")
     o = outside(lenses=[ref("a", 0.20), ref("b", 0.24)])
-    o.lenses[0].sub_claim_ids = ["sc1"]
-    f = forecast().model_copy(update={"decompositions": d.sub_claims})
+    o.lenses[0].sub_question_ids = ["sq1"]
+    f = forecast().model_copy(update={"decompositions": d.sub_questions})
     assert checks.check_linkage(f, d, o, inside()) is None
 
 
-def test_linkage_catches_an_invented_sub_claim_id():
-    d = ided("sc1", "sc2", "sc3")
+def test_linkage_catches_an_invented_sub_question_id():
+    d = ided("sq1", "sq2", "sq3")
     o = outside(lenses=[ref("a", 0.20), ref("b", 0.24)])
-    o.lenses[0].sub_claim_ids = ["sc9"]
-    f = forecast().model_copy(update={"decompositions": d.sub_claims})
+    o.lenses[0].sub_question_ids = ["sq9"]
+    f = forecast().model_copy(update={"decompositions": d.sub_questions})
     v = checks.check_linkage(f, d, o, inside())
     assert v is not None
-    assert "sc9" in v.detail
+    assert "sq9" in v.detail
 
 
-def test_linkage_catches_synthesis_dropping_a_sub_claim():
+def test_linkage_catches_synthesis_dropping_a_sub_question():
     """Synthesis regenerates `Forecast.decompositions`; every link dangles if it drifts."""
-    d = ided("sc1", "sc2", "sc3")
+    d = ided("sq1", "sq2", "sq3")
     # Deep copies: a slice would alias the decomposition's own objects, so renaming one
     # would rename it on both sides and the check would have nothing to find.
-    carried = [s.model_copy(deep=True) for s in d.sub_claims]
+    carried = [s.model_copy(deep=True) for s in d.sub_questions]
     carried[2] = carried[2].model_copy(update={"id": "renamed"})
     f = forecast().model_copy(update={"decompositions": carried})
     v = checks.check_linkage(f, d, outside(), inside())
@@ -552,8 +552,8 @@ def test_linkage_catches_synthesis_dropping_a_sub_claim():
 
 
 def test_linkage_allows_a_class_that_addresses_the_whole_question():
-    d = ided("sc1", "sc2", "sc3")
-    f = forecast().model_copy(update={"decompositions": d.sub_claims})
+    d = ided("sq1", "sq2", "sq3")
+    f = forecast().model_copy(update={"decompositions": d.sub_questions})
     assert checks.check_linkage(f, d, outside(), inside()) is None
 
 
@@ -607,16 +607,16 @@ def test_a_weightless_lens_cannot_be_constructed():
 # ---------- P7: the anchor is the chain the decomposition describes ----------
 
 
-def researched(sub_claim_id: str, rate: float) -> ResearchedLens:
+def researched(sub_question_id: str, rate: float) -> ResearchedLens:
     """A lens that names exactly one sub-question, as the merge stamps them."""
-    return ref(f"lens for {sub_claim_id}", rate, sub_claim_ids=[sub_claim_id])
+    return ref(f"lens for {sub_question_id}", rate, sub_question_ids=[sub_question_id])
 
 
 def a_grid(rule: str, rates: dict[str, float], estimates: dict[str, float]):
-    """A decomposition and an outside view sharing sub-claim ids sc1..scN."""
+    """A decomposition and an outside view sharing sub-question ids sq1..sqN."""
     ids = sorted(set(rates) | set(estimates))
     d = Decomposition(
-        sub_claims=[
+        sub_questions=[
             SubPrediction(
                 question=f"part {i}",
                 probability=estimates.get(i, 0.5),
@@ -640,7 +640,7 @@ def a_grid(rule: str, rates: dict[str, float], estimates: dict[str, float]):
 def test_a_conjunction_anchor_is_the_product_of_its_columns():
     """A mean of conjunction factors is always >= their product. That gap was a
     systematic upward bias on every conjunctive question."""
-    d, o = a_grid("conjunction", {"sc1": 0.55, "sc2": 0.70, "sc3": 0.60}, {})
+    d, o = a_grid("conjunction", {"sq1": 0.55, "sq2": 0.70, "sq3": 0.60}, {})
     o.aggregate_base_rate = 0.55 * 0.70 * 0.60
 
     assert checks.check_aggregation(o, d) is None
@@ -649,15 +649,15 @@ def test_a_conjunction_anchor_is_the_product_of_its_columns():
 
 
 def test_a_disjunction_anchor_is_one_minus_the_product_of_complements():
-    d, o = a_grid("disjunction", {"sc1": 0.20, "sc2": 0.30, "sc3": 0.10}, {})
+    d, o = a_grid("disjunction", {"sq1": 0.20, "sq2": 0.30, "sq3": 0.10}, {})
     o.aggregate_base_rate = 1 - (0.80 * 0.70 * 0.90)
 
     assert checks.check_aggregation(o, d) is None
 
 
 def test_a_column_nobody_researched_contributes_its_own_estimate():
-    """The empty-cell trap. Skipping sc4 silently treats it as certain."""
-    d, o = a_grid("conjunction", {"sc1": 0.55, "sc2": 0.70, "sc3": 0.60}, {"sc4": 0.80})
+    """The empty-cell trap. Skipping sq4 silently treats it as certain."""
+    d, o = a_grid("conjunction", {"sq1": 0.55, "sq2": 0.70, "sq3": 0.60}, {"sq4": 0.80})
 
     rows = checks.chain_inputs(d, o)
     assert [r["source"] for r in rows] == ["researched"] * 3 + ["estimated"]
@@ -666,13 +666,13 @@ def test_a_column_nobody_researched_contributes_its_own_estimate():
     implied, rule = checks.anchor_from(o, d)
     assert rule == "conjunction"
     assert implied == pytest.approx(0.55 * 0.70 * 0.60 * 0.80)
-    # Without sc4 the product would be 0.231 — a quarter higher than the truth.
+    # Without sq4 the product would be 0.231 — a quarter higher than the truth.
     assert implied < 0.55 * 0.70 * 0.60
 
 
 def test_custom_falls_back_to_the_weighted_mean():
     """No formula to apply, so the pre-3.3 arm is the honest answer."""
-    d, o = a_grid("custom", {"sc1": 0.20, "sc2": 0.24, "sc3": 0.22}, {})
+    d, o = a_grid("custom", {"sq1": 0.20, "sq2": 0.24, "sq3": 0.22}, {})
     o.aggregate_base_rate = 0.22
 
     implied, rule = checks.anchor_from(o, d)
@@ -689,7 +689,7 @@ def test_no_decomposition_keeps_the_pre_3_3_behaviour():
 
 
 def test_aggregation_catches_an_anchor_that_is_not_the_chain():
-    d, o = a_grid("conjunction", {"sc1": 0.55, "sc2": 0.70, "sc3": 0.60}, {})
+    d, o = a_grid("conjunction", {"sq1": 0.55, "sq2": 0.70, "sq3": 0.60}, {})
     o.aggregate_base_rate = 0.62  # the mean, not the product
 
     v = checks.check_aggregation(o, d)
@@ -707,7 +707,7 @@ def test_dragonfly_ignores_spread_between_different_columns():
     they are measuring different things. Whole-view spread called that 0.65.
     """
     o = outside(
-        lenses=[researched("sc1", 0.15), researched("sc4", 0.80)],
+        lenses=[researched("sq1", 0.15), researched("sq4", 0.80)],
         disagreement="",
     )
     assert checks.base_rate_spread(o) == pytest.approx(0.65)
@@ -716,29 +716,29 @@ def test_dragonfly_ignores_spread_between_different_columns():
 
 def test_dragonfly_still_fires_within_one_column():
     o = outside(
-        lenses=[researched("sc1", 0.12), researched("sc1", 0.55)],
+        lenses=[researched("sq1", 0.12), researched("sq1", 0.55)],
         disagreement="",
     )
     v = checks.check_dragonfly(o)
     assert v is not None
-    assert "for sc1" in v.detail
+    assert "for sq1" in v.detail
 
 
 def test_the_worst_column_is_the_one_reported():
     o = outside(
         lenses=[
-            researched("sc1", 0.20), researched("sc1", 0.24),
-            researched("sc2", 0.10), researched("sc2", 0.70),
+            researched("sq1", 0.20), researched("sq1", 0.24),
+            researched("sq2", 0.10), researched("sq2", 0.70),
         ],
         disagreement="",
     )
-    assert checks.sub_claim_spreads(o) == {
-        "sc1": pytest.approx(0.04),
-        "sc2": pytest.approx(0.60),
+    assert checks.sub_question_spreads(o) == {
+        "sq1": pytest.approx(0.04),
+        "sq2": pytest.approx(0.60),
     }
-    assert checks.worst_sub_claim_spread(o) == pytest.approx(0.60)
+    assert checks.worst_sub_question_spread(o) == pytest.approx(0.60)
     v = checks.check_dragonfly(o)
-    assert v is not None and "for sc2" in v.detail
+    assert v is not None and "for sq2" in v.detail
 
 
 # ---------- Citations ----------

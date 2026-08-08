@@ -1,6 +1,6 @@
 """Decompose agent — principles 1 and 2.
 
-Fermi-ize the question into sub-claims, and label each one researchable or
+Fermi-ize the question into sub-questions, and label each one researchable or
 judgment-required so effort goes where a base rate actually exists.
 """
 
@@ -18,7 +18,7 @@ INSTRUCTIONS = """You break forecasting questions into tractable pieces. You do 
 produce a final probability — a later step does that.
 
 FERMI-IZE (principle 1)
-Convert the question into 3-5 sub-claims that together determine the answer. Each
+Convert the question into 3-5 sub-questions that together determine the answer. Each
 must be specific enough that someone could argue about it separately.
 
   "Will Company A acquire Company B by Q4?" becomes
@@ -28,22 +28,22 @@ must be specific enough that someone could argue about it separately.
 
 SAY HOW THEY COMBINE
 Set `chain_rule`:
-  conjunction  every sub-claim must hold for the answer to be YES — the rates multiply
+  conjunction  every sub-question must hold for the answer to be YES — the rates multiply
   disjunction  any one of them suffices — the rates combine as 1 - prod(1 - p)
   custom       neither of those describes the relationship
 
-This is arithmetic, not commentary. The outside view combines the per-sub-claim base
+This is arithmetic, not commentary. The outside view combines the per-sub-question base
 rates using the rule you pick, and the result is the anchor for the whole forecast, so
 picking the wrong one moves the final number.
 
-`custom` is a last resort — for sub-claims that genuinely interact, where one makes
+`custom` is a last resort — for sub-questions that genuinely interact, where one makes
 another more likely or they overlap. Not for merely being unsure. If you pick it, say in
 `chain_note` what the relationship actually is.
 
 Explain the chain in `chain_note` in prose whichever rule you picked.
 
 DO NOT SPLIT OUT SOMETHING THAT HAS ALREADY HAPPENED
-A sub-claim whose outcome is already settled is not a forecast — it is a fact, and in a
+A sub-question whose outcome is already settled is not a forecast — it is a fact, and in a
 conjunction it contributes 1.0 while consuming a research slot that could have measured
 something live. If the company has already filed, "will they file?" is not a
 sub-question. Ask the thing that is still open, and fold what is settled into the
@@ -54,7 +54,7 @@ population a later step measures:
          the listing inside the same year?"
 
 SEPARATE KNOWABLE FROM UNKNOWABLE (principle 2)
-Label each sub-claim:
+Label each sub-question:
   researchable  a base rate or historical frequency could be looked up for this
   judgment      no lookup exists; this needs an estimate
 
@@ -63,7 +63,7 @@ nothing is researchable, the outside view has nothing to anchor on. Labelling
 something researchable that has no real reference class is worse: it sends the next
 step hunting for a rate that does not exist.
 
-Give each sub-claim a rough probability and a rationale. These are working estimates,
+Give each sub-question a rough probability and a rationale. These are working estimates,
 not the final answer — later steps will revise them against base rates and evidence.
 """
 
@@ -93,7 +93,7 @@ def get_decompose_agent() -> Agent[ForecastDeps, Decomposition]:
 
 
 async def run_decompose(input: ForecastInput, deps: ForecastDeps) -> Decomposition:
-    """Break the question into labelled sub-claims. No tools — this is pure analysis."""
+    """Break the question into labelled sub-questions. No tools — this is pure analysis."""
     prompt = f"""Decompose this forecasting question.
 
 {format_question(input)}{as_of_note(deps)}
@@ -117,17 +117,17 @@ Return a Decomposition."""
 
 
 def with_ids(d: Decomposition) -> Decomposition:
-    """Stamp `sc1`…`scN` onto the sub-claims.
+    """Stamp `sq1`…`sqN` onto the sub-questions.
 
     Assigned here rather than asked for in the prompt: later steps point back at these
     ids, so they have to be unique and complete, and a model asked for keys will
-    eventually hand back two `sc2`s or skip one.
+    eventually hand back two `sq2`s or skip one.
     """
     return d.model_copy(
         update={
-            "sub_claims": [
-                s.model_copy(update={"id": f"sc{i}"})
-                for i, s in enumerate(d.sub_claims, 1)
+            "sub_questions": [
+                s.model_copy(update={"id": f"sq{i}"})
+                for i, s in enumerate(d.sub_questions, 1)
             ]
         }
     )

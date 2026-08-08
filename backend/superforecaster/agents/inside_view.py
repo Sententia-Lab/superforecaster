@@ -32,7 +32,7 @@ from ..models import (
     ForecastInput,
     OutsideView,
     ResearchedLens,
-    SubClaimAdjustments,
+    SubQuestionAdjustments,
     SubPrediction,
 )
 from ..observability import run_agent
@@ -57,6 +57,11 @@ somewhat more likely, that is one adjustment up by 0.08 — not "I think 0.28".
 Size every move against the population in front of you and nothing else. A later step
 blends the adjusted populations and combines the sub-questions; you do not need to
 anticipate any of that, and trying to will distort your number.
+
+NAME EVERY ADJUSTMENT
+Give each adjustment a `title` of six words or fewer. Name the mechanism, not the
+direction — "already cutting subgroup has analogs", not "raises the estimate". A reader
+scans the titles to find the move they want; `evidence` is where the argument lives.
 
 ASK WHAT THIS POPULATION ALREADY ACCOUNTS FOR
 This is the question that separates a real adjustment from double-counting. Your
@@ -113,14 +118,14 @@ extra thin one neither raises nor lowers it.
 
 def build_inside_view_agent(
     model: str | None = None,
-) -> Agent[ForecastDeps, SubClaimAdjustments]:
+) -> Agent[ForecastDeps, SubQuestionAdjustments]:
     """One column's inside-view researcher."""
-    agent = Agent[ForecastDeps, SubClaimAdjustments](
+    agent = Agent[ForecastDeps, SubQuestionAdjustments](
         model=model or resolve_agent_model(),
         model_settings=get_model_settings(),
         name="inside_view_agent",
         deps_type=ForecastDeps,
-        output_type=SubClaimAdjustments,
+        output_type=SubQuestionAdjustments,
         system_prompt=INSTRUCTIONS,
         tools=[search_web, search_wikipedia, find_disconfirming_evidence],
         retries=1,
@@ -129,10 +134,10 @@ def build_inside_view_agent(
     return agent
 
 
-_agent: Agent[ForecastDeps, SubClaimAdjustments] | None = None
+_agent: Agent[ForecastDeps, SubQuestionAdjustments] | None = None
 
 
-def get_inside_view_agent() -> Agent[ForecastDeps, SubClaimAdjustments]:
+def get_inside_view_agent() -> Agent[ForecastDeps, SubQuestionAdjustments]:
     global _agent
     if _agent is None:
         _agent = build_inside_view_agent()
@@ -141,11 +146,11 @@ def get_inside_view_agent() -> Agent[ForecastDeps, SubClaimAdjustments]:
 
 async def run_adjust_lens(
     input: ForecastInput,
-    sub_claim: SubPrediction,
+    sub_question: SubPrediction,
     lens: ResearchedLens,
     already_controlled_for: str,
     deps: ForecastDeps,
-) -> SubClaimAdjustments:
+) -> SubQuestionAdjustments:
     """Adjust ONE population's measured rate. Searches; budget-limited."""
     rate = checks.lens_rate(lens)
     blocks = "\n".join(
@@ -162,7 +167,7 @@ async def run_adjust_lens(
 
 {format_question(input)}{as_of_note(deps)}
 
-THE PART OF THE QUESTION THIS BEARS ON — {sub_claim.id}: {sub_claim.question}
+THE PART OF THE QUESTION THIS BEARS ON — {sub_question.id}: {sub_question.question}
 
 YOUR POPULATION — {lens.name}
 Who is in it: {lens.population}
@@ -173,7 +178,7 @@ WHAT THAT RATE WAS COUNTED FROM:
 {f"\nCASES BEHIND IT:\n{cases}" if cases else ""}
 {f"\nWHAT THIS POPULATION ALREADY ACCOUNTS FOR:\n  {already_controlled_for}" if already_controlled_for.strip() else ""}
 
-Return a SubClaimAdjustments. Every adjustment is a signed delta from {rate:.3f} — the
+Return a SubQuestionAdjustments. Every adjustment is a signed delta from {rate:.3f} — the
 rate for THIS population, not for the question — each with a flip test. Say in
 `already_controlled_for` what you deliberately did not adjust for and why."""
 
@@ -185,7 +190,7 @@ rate for THIS population, not for the question — each with a flip test. Say in
             deps=deps,
             verbose=deps.verbose,
             usage_limits=get_cell_limits(input.max_iterations),
-            run_name=f"inside view · {sub_claim.id} · {lens.name}",
+            run_name=f"inside view · {sub_question.id} · {lens.name}",
         )
     return result.output
 
@@ -226,7 +231,7 @@ async def whole_question_adjustments(
     result = await run_adjust_lens(input, fallback, lens, "", deps)
     # Named after the lens so `adjusted_lens_rate` picks them up like any other.
     adjustments = [
-        a.model_copy(update={"lens_name": lens.name, "sub_claim_ids": lens.sub_claim_ids})
+        a.model_copy(update={"lens_name": lens.name, "sub_question_ids": lens.sub_question_ids})
         for a in result.adjustments
     ]
     return adjustments, {"whole question": result.steel_man}

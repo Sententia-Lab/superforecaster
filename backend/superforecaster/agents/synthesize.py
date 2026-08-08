@@ -177,7 +177,7 @@ INSIDE VIEW:
 {_calibration_block()}{_violation_block(violations)}
 
 Fill question, resolution_criteria, resolution_date, and category from the input
-exactly. Carry the sub-claims into `decompositions`."""
+exactly. Carry the sub-questions into `decompositions`."""
 
     agent = get_synthesize_agent()
     with with_model(agent, deps) as bound:

@@ -76,16 +76,16 @@ def _score(
 def score_decompose(out: Any, expect: dict) -> ComponentScore:
     """P1 + P2. Did it break the question up, and label what can be looked up?
 
-    expect: min_sub_claims (int), must_mention (list[str], case-insensitive
-    substrings that should appear somewhere in the sub-claims).
+    expect: min_sub_questions (int), must_mention (list[str], case-insensitive
+    substrings that should appear somewhere in the sub-questions).
     """
-    text = " ".join(s.question.lower() for s in out.sub_claims)
+    text = " ".join(s.question.lower() for s in out.sub_questions)
     return _score(
         expect.get("id", ""),
         {
-            "enough_sub_claims": len(out.sub_claims) >= expect.get("min_sub_claims", 3),
+            "enough_sub_questions": len(out.sub_questions) >= expect.get("min_sub_questions", 3),
             "has_researchable": any(
-                s.knowability == "researchable" for s in out.sub_claims
+                s.knowability == "researchable" for s in out.sub_questions
             ),
             "chain_explained": bool(out.chain_note.strip()),
             "mentions_expected_terms": all(
@@ -93,7 +93,7 @@ def score_decompose(out: Any, expect: dict) -> ComponentScore:
             ),
             "check_clean": checks.check_decomposition(out) is None,
         },
-        detail=f"{len(out.sub_claims)} sub-claims",
+        detail=f"{len(out.sub_questions)} sub-questions",
     )
 
 
@@ -290,11 +290,11 @@ async def _score_outside_row(input, decomposition, deps):
     """
     from ..agents.lenses import run_choose_lenses
     from ..agents.outside_view import cell_deps, merge_base_rates, run_research_lens
-    from ..models import SubClaimBaseRates
+    from ..models import SubQuestionBaseRates
 
-    cells = [s for s in decomposition.sub_claims if s.knowability == "researchable"]
+    cells = [s for s in decomposition.sub_questions if s.knowability == "researchable"]
     claims: list = []
-    results: list[SubClaimBaseRates] = []
+    results: list[SubQuestionBaseRates] = []
     for s in cells:
         chosen = await run_choose_lenses(input, decomposition, s, deps)
         for lens in chosen.lenses:
@@ -312,7 +312,7 @@ async def _score_outside_row(input, decomposition, deps):
             )
             claims.append(s)
             results.append(
-                SubClaimBaseRates(lens=researched, disagreement=result.disagreement)
+                SubQuestionBaseRates(lens=researched, disagreement=result.disagreement)
             )
             deps.sources_seen.extend(cdeps.sources_seen)
     return merge_base_rates(claims, results, decomposition)
@@ -325,20 +325,20 @@ async def _score_inside_row(input, decomposition, outside, deps):
     from ..agents.reflect import run_reflect
     from ..models import InsideView
 
-    by_id = {s.id: s for s in decomposition.sub_claims if s.id}
+    by_id = {s.id: s for s in decomposition.sub_questions if s.id}
     adjustments = []
     steel_mans = {}
     for lens in outside.lenses:
-        sub_claim = next((by_id[i] for i in lens.sub_claim_ids if i in by_id), None)
-        if sub_claim is None:
+        sub_question = next((by_id[i] for i in lens.sub_question_ids if i in by_id), None)
+        if sub_question is None:
             continue
-        cdeps = cell_deps(deps, sub_claim.id or "", input.max_iterations)
+        cdeps = cell_deps(deps, sub_question.id or "", input.max_iterations)
         result = await run_adjust_lens(
-            input, sub_claim, lens, outside.disagreement, cdeps
+            input, sub_question, lens, outside.disagreement, cdeps
         )
         adjustments.extend(
             a.model_copy(
-                update={"lens_name": lens.name, "sub_claim_ids": [sub_claim.id]}
+                update={"lens_name": lens.name, "sub_question_ids": [sub_question.id]}
             )
             for a in result.adjustments
         )

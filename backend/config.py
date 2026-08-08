@@ -21,8 +21,61 @@ _PRESET_ENV: frozenset[str] = frozenset(k for k, v in os.environ.items() if v !=
 load_dotenv(ENV_FILE, override=False)
 
 
+RUNTIME_KEYS: frozenset[str] = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "PYDANTIC_AI_GATEWAY_API_KEY",
+        "TAVILY_API_KEY",
+        "WIKIPEDIA_API_KEY",
+    }
+)
+"""The only names `set_runtime_key` will write. ADR 61.
+
+The allowlist is the whole safety of the key panel. Without it the endpoint writes any
+name into `os.environ`, and `DATABASE_PATH` and `FRONTEND_DIR` are both read from there —
+an admin-authenticated way to repoint the database is not a key panel.
+"""
+
+_RUNTIME_SET: set[str] = set()
+"""Names set through the panel this process, so `origin` can tell the truth about them."""
+
+
+def set_runtime_key(name: str, value: str) -> None:
+    """Set or clear one allowlisted key for the life of this process.
+
+    Nothing is written to disk. `get_settings()` re-reads `os.environ` on every call, so
+    the next request sees this with no cache to invalidate and no restart.
+    """
+    if name not in RUNTIME_KEYS:
+        raise ValueError(f"{name} is not a runtime-settable key")
+    if value:
+        os.environ[name] = value
+        _RUNTIME_SET.add(name)
+    else:
+        os.environ.pop(name, None)
+        _RUNTIME_SET.discard(name)
+
+
+def active_llm_key_name() -> str:
+    """Which variable actually credentials the model right now.
+
+    `resolve_agent_model` prefers the gateway, so a panel that always spoke about
+    `ANTHROPIC_API_KEY` would report "unset" on a working gateway install and would write
+    a key that the gateway then overrules. One row, naming whichever key is in play.
+    """
+    if os.getenv("PYDANTIC_AI_GATEWAY_API_KEY"):
+        return "PYDANTIC_AI_GATEWAY_API_KEY"
+    return "ANTHROPIC_API_KEY"
+
+
 def origin(name: str) -> str:
-    """Where `name`'s value came from: the environment, `.env`, or nowhere."""
+    """Where `name`'s value came from: this session, the environment, `.env`, or nowhere.
+
+    `session` exists because a runtime-set key otherwise reports `.env` — a lie about
+    provenance in the one place a reader goes to check provenance.
+    """
+    if name in _RUNTIME_SET:
+        return "session"
     if name in _PRESET_ENV:
         return "environment"
     if os.getenv(name):
@@ -83,6 +136,7 @@ class Settings:
     pydantic_ai_gateway_api_key: str | None
     anthropic_api_key: str | None
     tavily_api_key: str | None
+    wikipedia_api_key: str | None
     logfire_token: str | None
     agent_model: str | None
     database_path: str
@@ -145,6 +199,7 @@ def get_settings() -> Settings:
         pydantic_ai_gateway_api_key=os.getenv("PYDANTIC_AI_GATEWAY_API_KEY"),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
         tavily_api_key=os.getenv("TAVILY_API_KEY"),
+        wikipedia_api_key=os.getenv("WIKIPEDIA_API_KEY"),
         logfire_token=os.getenv("LOGFIRE_TOKEN"),
         agent_model=os.getenv("AGENT_MODEL"),
         database_path=os.getenv("DATABASE_PATH", "./superforecaster.db"),

@@ -136,7 +136,7 @@ async def test_stream_yields_progress_then_result_then_run(client, stub_decompos
     assert types[-2:] == ["result", "run"]
     result = frames[types.index("result")]["payload"]["step"]
     assert result["status"] == "complete"
-    assert result["payload"]["sub_claims"]
+    assert result["payload"]["sub_questions"]
     run_frame = frames[-1]["payload"]
     assert any(s["stage"] == "lenses" for s in run_frame["steps"])
 

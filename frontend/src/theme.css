@@ -338,6 +338,29 @@ textarea.field-input {
 .arith td { padding:5px 8px; border-bottom:1px solid var(--pv-grid); }
 .arith td.num { font-family:var(--pv-font-mono); text-align:right; }
 
+/* The table carries every lens and every modifier now, so it is wider than the column it
+   sits in. It scrolls inside itself rather than pushing the page sideways. */
+.arith-scroll { overflow-x:auto; margin-top:8px; }
+.arith-scroll .arith { min-width:560px; margin-top:0; }
+
+/* One sub-question, stated in full, spanning the table. A column wide enough for a
+   sentence would squeeze every number next to it. */
+.arith tr.group td {
+  padding:12px 8px 5px; border-bottom:1px solid var(--pv-border);
+  font-weight:var(--pv-fw-semibold);
+}
+.arith tr.group .label { color:var(--pv-text-3); margin-right:6px; }
+.arith tbody tr.group:first-child td { padding-top:4px; }
+
+.arith tr.mod td { border-bottom:none; padding-top:2px; padding-bottom:2px;
+  color:var(--pv-text-2); }
+.arith tr.mod td.name { padding-left:22px; }
+.arith tr.mod + tr:not(.mod) td { border-top:1px solid var(--pv-grid); }
+
+.arith tr.total td {
+  border-bottom:none; padding-top:6px; font-weight:var(--pv-fw-semibold);
+}
+
 /* forms */
 .field { margin-bottom:12px; }
 .field label { display:block; font-size:var(--pv-fs-micro); letter-spacing:var(--pv-ls-micro);
@@ -368,8 +391,91 @@ textarea.field-input {
 .violation { display:flex; gap:8px; font-size:var(--pv-fs-sm); padding:4px 0; }
 .violation .p { flex:none; font-weight:var(--pv-fw-semibold); color:var(--pv-yellow); }
 
-.prose { white-space:pre-wrap; }
+/* No `white-space: pre-wrap` — markdown owns the line breaks now (ADR 60), and keeping
+   both would double-space every paragraph. */
+.prose { font-size:var(--pv-fs-body); line-height:var(--pv-lh-body); }
+.prose > *:first-child { margin-top:0; }
+.prose > *:last-child { margin-bottom:0; }
 .prose p { margin:0 0 10px; }
+.prose.tight, .prose.tight p { font-size:inherit; line-height:inherit; margin:0; }
+.prose ul, .prose ol { margin:0 0 10px; padding-left:22px; }
+.prose li { margin:2px 0; }
+.prose li > p { margin:0; }
+.prose h1, .prose h2, .prose h3, .prose h4 {
+  margin:14px 0 6px; font-size:var(--pv-fs-title); font-weight:var(--pv-fw-semibold);
+  line-height:1.3;
+}
+.prose h3, .prose h4 { font-size:var(--pv-fs-body); }
+.prose a { color:var(--pv-focus); }
+.prose code {
+  font-family:var(--pv-font-mono); font-size:.92em; background:var(--pv-surface-3);
+  border-radius:var(--pv-radius-chip); padding:1px 5px;
+}
+.prose pre {
+  background:var(--pv-surface-3); border-radius:var(--pv-radius-input);
+  padding:10px 12px; overflow-x:auto; margin:0 0 10px;
+}
+.prose pre code { background:none; padding:0; }
+.prose blockquote {
+  margin:0 0 10px; padding-left:12px; border-left:3px solid var(--pv-border-2);
+  color:var(--pv-text-2);
+}
+.prose table { border-collapse:collapse; font-size:var(--pv-fs-sm); margin:0 0 10px; }
+.prose th, .prose td { border:1px solid var(--pv-grid); padding:4px 8px; text-align:left; }
+.prose hr { border:none; border-top:1px solid var(--pv-border); margin:14px 0; }
+
+/* ---------- accordion ---------- */
+
+.acc > summary {
+  display:flex; align-items:baseline; gap:10px; cursor:pointer;
+  list-style:none; padding-right:20px; position:relative;
+}
+.acc > summary::-webkit-details-marker { display:none; }
+.acc > summary::after {
+  content:""; position:absolute; right:2px; top:.45em;
+  width:6px; height:6px; flex:none;
+  border-right:1.5px solid var(--pv-text-3); border-bottom:1.5px solid var(--pv-text-3);
+  transform:rotate(45deg); transition:transform .15s ease;
+}
+.acc[open] > summary::after { transform:rotate(-135deg); }
+.acc > summary:focus-visible { outline:2px solid var(--pv-focus); outline-offset:3px; }
+.acc > summary .grow { flex:1; min-width:0; }
+.acc-body { animation: pv-in .18s ease both; }
+.acc[open] > .acc-body { padding-top:8px; }
+
+/* A stage header is a summary row, so the two share their look. */
+.stage > summary.stage-head { margin-bottom:10px; }
+.stage > summary.stage-head::after { top:.55em; }
+
+/* Cells inside a sub-question card sit under its summary rather than beside it. */
+.acc.sub-question > .acc-body { padding-top:10px; }
+
+/* ---------- the lens, restated inside a measured cell ---------- */
+
+.lens-origin {
+  background:var(--pv-surface-2); border-radius:var(--pv-radius-card);
+  border-left:3px solid var(--pv-brand); padding:9px 12px; margin:8px 0 10px;
+}
+.lens-origin .micro { color:var(--pv-text-3); margin-bottom:3px; }
+.lens-origin-name {
+  display:flex; align-items:baseline; gap:8px; flex-wrap:wrap;
+  font-weight:var(--pv-fw-semibold); font-size:var(--pv-fs-sm);
+}
+.lens-origin .prose { color:var(--pv-text-2); font-size:var(--pv-fs-sm); margin-top:3px; }
+
+/* ---------- modifiers ---------- */
+
+.mod { margin:10px 0; }
+.mod-title { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
+.mod-title .name { font-weight:var(--pv-fw-semibold); font-size:var(--pv-fs-sm); }
+.adj-mag.chip {
+  width:auto; text-transform:none; letter-spacing:0; font-variant-numeric:tabular-nums;
+  background:var(--pv-surface-3);
+}
+.adj-mag.chip.up { background:var(--pv-green-fill); }
+.adj-mag.chip.down { background:var(--pv-red-fill); }
+.mod-body { color:var(--pv-text-2); font-size:var(--pv-fs-sm); margin-left:2px; }
+.mod-body .prose { font-size:var(--pv-fs-sm); }
 
 @media (max-width: 760px) {
   .rail { display:none; }

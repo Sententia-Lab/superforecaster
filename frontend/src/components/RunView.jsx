@@ -4,15 +4,19 @@ import { editBlocker } from "../derive.js";
 import { useRunQueue } from "../hooks/useRunQueue.js";
 import { useStepStream } from "../hooks/useStepStream.js";
 import { sectionRunnable } from "../runQueue.js";
+import Accordion from "./Accordion.jsx";
+import BaseRateCard from "./BaseRateCard.jsx";
 import CellActivity from "./CellActivity.jsx";
 import ConfirmDialog from "./ConfirmDialog.jsx";
 import DecomposeEditor from "./DecomposeEditor.jsx";
-import LensCard from "./LensCard.jsx";
 import LensSetEditor from "./LensSetEditor.jsx";
 import LiveTail from "./LiveTail.jsx";
+import ModifierCard from "./ModifierCard.jsx";
+import Prose from "./Prose.jsx";
 import RunHeader from "./RunHeader.jsx";
 import StepControls from "./StepControls.jsx";
 import SynthesisSection from "./SynthesisSection.jsx";
+import { ordinal, subQuestionLabel } from "../labels.js";
 
 const STAGE_TITLES = {
   decompose: "Decompose",
@@ -22,17 +26,25 @@ const STAGE_TITLES = {
   synthesis: "Synthesis",
 };
 
-function StageSection({ n, title, children, note, action }) {
+/**
+ * One stage, collapsible.
+ *
+ * `open` is passed rather than held: sections stay open while a run is in flight and
+ * collapse once it is finished, so a completed run opens on its answer instead of on the
+ * top of a very long scroll.
+ */
+function StageSection({ n, title, children, note, action, open }) {
   return (
-    <section className="stage">
-      <div className="stage-head">
+    <details className="stage acc" open={open}>
+      <summary className="stage-head">
         <span className="n">{n}</span>
         <span className="title">{title}</span>
         {note ? <span className="hint">{note}</span> : null}
-        {action}
-      </div>
-      {children}
-    </section>
+        {/* A click on the button must not also toggle the section it lives in. */}
+        {action ? <span onClick={(e) => e.stopPropagation()}>{action}</span> : null}
+      </summary>
+      <div className="acc-body">{children}</div>
+    </details>
   );
 }
 
@@ -138,20 +150,22 @@ export default function RunView({ runId, onChanged, onDeleted }) {
 
   const steps = run.steps || [];
   const byStage = (stage) => steps.filter((s) => s.stage === stage);
-  const stepFor = (stage, subClaimId = "", lensName = "") =>
+  const stepFor = (stage, subQuestionId = "", lensName = "") =>
     steps.find(
       (s) =>
         s.stage === stage &&
-        s.sub_claim_id === subClaimId &&
+        s.sub_question_id === subQuestionId &&
         s.lens_name === lensName,
     );
 
   const decomposeStep = stepFor("decompose");
   const decomposition = decomposeStep?.payload || null;
-  const researchable = (decomposition?.sub_claims || []).filter(
+  const researchable = (decomposition?.sub_questions || []).filter(
     (s) => s.knowability === "researchable",
   );
   const synthesisStep = stepFor("synthesis");
+  // A finished run leads with its answer, and the stages that produced it start folded.
+  const done = synthesisStep?.status === "complete";
 
   // "A request is in flight", not "there is an error on screen". Deriving this from
   // `stream.active` left every button disabled after a failure, because the error card
@@ -165,8 +179,8 @@ export default function RunView({ runId, onChanged, onDeleted }) {
         maxIterations: deeper ? run.max_iterations * 2 : undefined,
       });
 
-  const subClaimById = Object.fromEntries(
-    (decomposition?.sub_claims || []).map((s) => [s.id, s]),
+  const subQuestionById = Object.fromEntries(
+    (decomposition?.sub_questions || []).map((s) => [s.id, s]),
   );
 
   /** Run one stage and stop, so you review between stages instead of at every cell. */
@@ -184,44 +198,102 @@ export default function RunView({ runId, onChanged, onDeleted }) {
   const cellSection = (n, stage, title, note) => {
     const cells = byStage(stage);
     if (!cells.length) return null;
-    const bySubClaim = {};
-    for (const c of cells) (bySubClaim[c.sub_claim_id] ??= []).push(c);
+    const bySubQuestion = {};
+    for (const c of cells) (bySubQuestion[c.sub_question_id] ??= []).push(c);
 
     return (
-      <StageSection n={n} title={title} note={note} action={sectionAction(stage)}>
-        {Object.entries(bySubClaim).map(([scId, scCells]) => (
-          <div key={scId} style={{ marginBottom: 12 }}>
-            <div className="card-sub" style={{ margin: "0 2px 6px" }}>
-              <b>{scId}</b> — {subClaimById[scId]?.question}
-            </div>
-            {scCells.map((cell) => {
-              const baseStep =
-                stage === "inside_view"
-                  ? stepFor("base_rates", cell.sub_claim_id, cell.lens_name)
-                  : cell;
-              const chosen = chosenLens(
-                steps,
-                cell.sub_claim_id,
-                cell.lens_name,
-              );
-              return (
-                <LensCard
-                  key={cell.id}
-                  step={cell}
-                  lens={baseStep?.payload?.lens || chosen}
-                  researched={baseStep?.payload}
-                  insidePayload={stage === "inside_view" ? cell.payload : null}
-                  active={activeFor(cell)}
-                  busy={busy}
-                  onStart={start(cell)}
-                />
-              );
-            })}
+      <StageSection
+        n={n}
+        title={title}
+        note={note}
+        action={sectionAction(stage)}
+        open={!done}
+      >
+        {Object.entries(bySubQuestion).map(([sqId, sqCells]) => (
+          <div key={sqId} className="card">
+            <Accordion
+              defaultOpen
+              className="sub-question"
+              summary={
+                <>
+                  <b style={{ flex: "none" }}>{subQuestionLabel(sqId)}</b>
+                  <span className="grow">{subQuestionById[sqId]?.question}</span>
+                </>
+              }
+            >
+              {sqCells.map((cell, i) => {
+                // A modifier cell needs the base rate it moves, which lives in the
+                // sibling step, not in its own payload.
+                const baseStep =
+                  stage === "inside_view"
+                    ? stepFor("base_rates", cell.sub_question_id, cell.lens_name)
+                    : cell;
+                const lens =
+                  baseStep?.payload?.lens ||
+                  chosenLens(steps, cell.sub_question_id, cell.lens_name);
+                const shared = {
+                  step: cell,
+                  lens,
+                  researched: baseStep?.payload,
+                  active: activeFor(cell),
+                  busy,
+                  onStart: start(cell),
+                };
+                return stage === "inside_view" ? (
+                  <ModifierCard key={cell.id} {...shared} insidePayload={cell.payload} />
+                ) : (
+                  <BaseRateCard key={cell.id} {...shared} index={i} />
+                );
+              })}
+            </Accordion>
           </div>
         ))}
       </StageSection>
     );
   };
+
+  const synthesisSection = synthesisStep && (
+    <StageSection
+      n={5}
+      title={STAGE_TITLES.synthesis}
+      action={sectionAction("synthesis")}
+      open
+    >
+      {activeFor(synthesisStep) ? (
+        <div className="card">
+          <div className="card-head">
+            <span className="headline">
+              <span className="spinner" /> Reflecting, synthesizing, critiquing…
+            </span>
+          </div>
+          <CellActivity active={activeFor(synthesisStep)} />
+        </div>
+      ) : done && synthesisStep.payload ? (
+        <SynthesisSection
+          payload={synthesisStep.payload}
+          decomposition={decomposition}
+        />
+      ) : (
+        <div className="card">
+          <div className="card-head">
+            <span className="headline">
+              Compute the anchor, then commit to a number
+            </span>
+          </div>
+          <div className="card-sub">
+            Arithmetic first (not agentic), then the synthesis agent adjusts within
+            the configured slack and the checks critique it.
+          </div>
+          <StepControls
+            step={synthesisStep}
+            label="Run synthesis"
+            busy={busy}
+            onStart={start(synthesisStep)}
+          />
+        </div>
+      )}
+    </StageSection>
+  );
 
   return (
     <div>
@@ -264,10 +336,15 @@ export default function RunView({ runId, onChanged, onDeleted }) {
         </div>
       )}
 
+      {/* The answer leads once there is one. The badges keep their numbers, so the
+          pipeline order stays readable even when section 5 is on top. */}
+      {done && synthesisSection}
+
       <StageSection
         n={1}
         title={STAGE_TITLES.decompose}
         action={sectionAction("decompose")}
+        open={!done}
       >
         {decomposeStep &&
           (activeFor(decomposeStep) ? (
@@ -294,7 +371,7 @@ export default function RunView({ runId, onChanged, onDeleted }) {
             <div className="card">
               <div className="card-head">
                 <span className="headline">
-                  {decomposition.sub_claims.length} sub-questions
+                  {decomposition.sub_questions.length} sub-questions
                 </span>
                 {decomposeStep.edited_at && (
                   <span className="chip" title="A person wrote this payload">
@@ -308,9 +385,9 @@ export default function RunView({ runId, onChanged, onDeleted }) {
                   onEdit={() => setEditing(decomposeStep.id)}
                 />
               </div>
-              {decomposition.sub_claims.map((s) => (
+              {decomposition.sub_questions.map((s) => (
                 <div key={s.id} className="evidence-row">
-                  <b style={{ flex: "none" }}>{s.id}</b>
+                  <b style={{ flex: "none" }}>{subQuestionLabel(s.id)}</b>
                   <span className="grow">{s.question}</span>
                   <span className="chip">
                     {s.knowability === "researchable" ? "researchable" : "judgment"}
@@ -345,9 +422,10 @@ export default function RunView({ runId, onChanged, onDeleted }) {
           title={STAGE_TITLES.lenses}
           note="All sub-questions need lenses before base rates unlock."
           action={sectionAction("lenses")}
+          open={!done}
         >
           {byStage("lenses").map((step) => {
-            const sc = subClaimById[step.sub_claim_id];
+            const sq = subQuestionById[step.sub_question_id];
             const active = activeFor(step);
             if (editing === step.id) {
               return (
@@ -368,7 +446,7 @@ export default function RunView({ runId, onChanged, onDeleted }) {
               <div key={step.id} className="card">
                 <div className="card-head">
                   <span className="headline">
-                    {step.sub_claim_id} — {sc?.question}
+                    {subQuestionLabel(step.sub_question_id)} — {sq?.question}
                   </span>
                   {step.edited_at && (
                     <span className="chip" title="A person wrote this payload">
@@ -384,17 +462,38 @@ export default function RunView({ runId, onChanged, onDeleted }) {
                     />
                   )}
                 </div>
-                {sc?.rationale && <div className="card-sub">{sc.rationale}</div>}
+                {sq?.rationale && <div className="card-sub">{sq.rationale}</div>}
                 {active ? (
                   <CellActivity active={active} />
                 ) : step.status === "complete" ? (
                   <div style={{ marginTop: 8 }}>
-                    {(step.payload?.lenses || []).map((l) => (
-                      <div key={l.name} className="evidence-row">
-                        <b style={{ flex: "none" }}>{l.name}</b>
-                        <span className="grow">{l.population}</span>
-                        <span className="chip">w {l.weight}</span>
-                      </div>
+                    {(step.payload?.lenses || []).map((l, i) => (
+                      <Accordion
+                        key={l.name}
+                        defaultOpen
+                        summary={
+                          <>
+                            <b style={{ flex: "none" }}>{ordinal("Lens", i)}</b>
+                            <span className="grow">{l.name}</span>
+                            <span className="chip">w {l.weight}</span>
+                          </>
+                        }
+                      >
+                        {/* The only place `why_it_fits` and `weight_rationale` appear.
+                            The measured cells restate the population and nothing else. */}
+                        <Prose className="prose tight">{l.population}</Prose>
+                        {l.why_it_fits && (
+                          <div className="card-sub">
+                            <Prose className="prose tight">{l.why_it_fits}</Prose>
+                          </div>
+                        )}
+                        {l.weight_rationale && (
+                          <div className="card-sub">
+                            <b>Weight {l.weight}</b>{" "}
+                            <Prose className="prose tight">{l.weight_rationale}</Prose>
+                          </div>
+                        )}
+                      </Accordion>
                     ))}
                   </div>
                 ) : (
@@ -424,55 +523,14 @@ export default function RunView({ runId, onChanged, onDeleted }) {
         "Modifiers move each lens's measured rate.",
       )}
 
-      {synthesisStep && (
-        <StageSection
-          n={5}
-          title={STAGE_TITLES.synthesis}
-          action={sectionAction("synthesis")}
-        >
-          {activeFor(synthesisStep) ? (
-            <div className="card">
-              <div className="card-head">
-                <span className="headline">
-                  <span className="spinner" /> Reflecting, synthesizing,
-                  critiquing…
-                </span>
-              </div>
-              <CellActivity active={activeFor(synthesisStep)} />
-            </div>
-          ) : synthesisStep.status === "complete" && synthesisStep.payload ? (
-            <SynthesisSection
-              payload={synthesisStep.payload}
-              decomposition={decomposition}
-            />
-          ) : (
-            <div className="card">
-              <div className="card-head">
-                <span className="headline">
-                  Compute the anchor, then commit to a number
-                </span>
-              </div>
-              <div className="card-sub">
-                Arithmetic first (not agentic), then the synthesis agent adjusts
-                within the configured slack and the checks critique it.
-              </div>
-              <StepControls
-                step={synthesisStep}
-                label="Run synthesis"
-                busy={busy}
-                onStart={start(synthesisStep)}
-              />
-            </div>
-          )}
-        </StageSection>
-      )}
+      {!done && synthesisSection}
     </div>
   );
 }
 
-function chosenLens(steps, subClaimId, lensName) {
+function chosenLens(steps, subQuestionId, lensName) {
   const lensesStep = steps.find(
-    (s) => s.stage === "lenses" && s.sub_claim_id === subClaimId,
+    (s) => s.stage === "lenses" && s.sub_question_id === subQuestionId,
   );
   return (lensesStep?.payload?.lenses || []).find((l) => l.name === lensName);
 }

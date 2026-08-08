@@ -101,7 +101,7 @@ async def run_reflect(
 ) -> Reflection:
     """P14 + P15 over the merged inside view. No tools; one request."""
     moves = "\n".join(
-        f"  - [{', '.join(a.sub_claim_ids) or 'whole question'}] "
+        f"  - [{', '.join(a.sub_question_ids) or 'whole question'}] "
         f"{'noise (0)' if a.is_noise else f'{a.direction} {a.magnitude:.2f}'}: {a.evidence}"
         for a in adjustments
     )

@@ -28,8 +28,8 @@ from .models import (
     Decomposition,
     ForecastInput,
     InsideStepPayload,
-    SubClaimLenses,
-    SubClaimLensesEdit,
+    SubQuestionLenses,
+    SubQuestionLensesEdit,
     SubPrediction,
     SynthesisStepPayload,
 )
@@ -74,7 +74,7 @@ def start_run(run_id: str) -> dict:
 
 
 Identity = tuple[str, str, str]
-"""One step row's identity: (stage, sub_claim_id, lens_name). The table's UNIQUE key."""
+"""One step row's identity: (stage, sub_question_id, lens_name). The table's UNIQUE key."""
 
 
 def _all_complete(steps: list[dict], keys: set[Identity]) -> bool:
@@ -83,7 +83,7 @@ def _all_complete(steps: list[dict], keys: set[Identity]) -> bool:
     Checks keys rather than a whole stage, which covers both gaps: a row that is still
     pending, and a row an edit has not created yet.
     """
-    by_key = {(s["stage"], s["sub_claim_id"], s["lens_name"]): s for s in steps}
+    by_key = {(s["stage"], s["sub_question_id"], s["lens_name"]): s for s in steps}
     return all(by_key.get(k, {}).get("status") == "complete" for k in keys)
 
 
@@ -105,7 +105,7 @@ def expected_steps(steps: list[dict]) -> set[Identity]:
 
     decomposition = _decomposition_of(steps)
     researchable = [
-        s for s in decomposition.sub_claims if s.knowability == "researchable"
+        s for s in decomposition.sub_questions if s.knowability == "researchable"
     ]
     if not researchable:
         # Nothing to research: synthesis runs on the whole-question fallbacks.
@@ -120,11 +120,11 @@ def expected_steps(steps: list[dict]) -> set[Identity]:
     for s in steps:
         # Only rows the decomposition still expects. A lens row left over from a previous
         # decomposition must not fan out cells of its own on its way to being deleted.
-        if (s["stage"], s["sub_claim_id"], s["lens_name"]) not in lenses:
+        if (s["stage"], s["sub_question_id"], s["lens_name"]) not in lenses:
             continue
-        chosen = SubClaimLenses.model_validate_json(s["payload_json"])
+        chosen = SubQuestionLenses.model_validate_json(s["payload_json"])
         cells.update(
-            ("base_rates", s["sub_claim_id"], lens.name) for lens in chosen.lenses
+            ("base_rates", s["sub_question_id"], lens.name) for lens in chosen.lenses
         )
     out |= cells
     if not _all_complete(steps, cells):
@@ -147,7 +147,7 @@ def reconcile(run_id: str) -> None:
     """
     steps = db.list_steps(run_id)
     want = expected_steps(steps)
-    have = {(s["stage"], s["sub_claim_id"], s["lens_name"]): s for s in steps}
+    have = {(s["stage"], s["sub_question_id"], s["lens_name"]): s for s in steps}
 
     stale = [s for key, s in have.items() if key not in want]
     # Unreachable: `edit_blocker` forbids an edit once anything downstream has run. If it
@@ -165,7 +165,7 @@ def reconcile(run_id: str) -> None:
 
 
 DERIVED: dict[str, Callable[[list[dict], dict], list[dict]]] = {
-    # A decomposition with no researchable sub-claims fans out straight to synthesis, so
+    # A decomposition with no researchable sub-questions fans out straight to synthesis, so
     # synthesis is derived directly from the decomposition too.
     "decompose": lambda steps, step: [
         s for s in steps if s["stage"] in ("lenses", "synthesis")
@@ -220,7 +220,7 @@ def edit_payload(run_id: str, step_id: str, body: dict) -> dict:
         # hand-written decomposition and a generated one are numbered identically.
         payload = with_ids(Decomposition.model_validate(body))
     else:
-        payload = SubClaimLensesEdit.model_validate(body)
+        payload = SubQuestionLensesEdit.model_validate(body)
 
     db.edit_step_payload(step_id, payload.model_dump_json())
     reconcile(run_id)
@@ -290,7 +290,7 @@ async def execute_step(
                 stage=step["stage"],
                 run_id=run["id"],
                 step_id=step_id,
-                sub_claim_id=step["sub_claim_id"],
+                sub_question_id=step["sub_question_id"],
                 lens_name=step["lens_name"],
                 attempt=claimed["attempts"],
             ) as span:
@@ -346,21 +346,21 @@ async def _dispatch(
         return decomposition.model_dump_json()
 
     decomposition = _decomposition_of(steps)
-    sub_claim = _sub_claim(decomposition, step["sub_claim_id"])
+    sub_question = _sub_question(decomposition, step["sub_question_id"])
 
     if stage == "lenses":
-        lenses = await stages.run_lenses_stage(input, decomposition, sub_claim, deps)
+        lenses = await stages.run_lenses_stage(input, decomposition, sub_question, deps)
         return lenses.model_dump_json()
 
     if stage == "base_rates":
-        lens = _chosen_lens(steps, step["sub_claim_id"], step["lens_name"])
-        payload = await stages.run_base_rate_step(input, sub_claim, lens, deps)
+        lens = _chosen_lens(steps, step["sub_question_id"], step["lens_name"])
+        payload = await stages.run_base_rate_step(input, sub_question, lens, deps)
         return payload.model_dump_json()
 
     if stage == "inside_view":
-        base = _cell_payload(steps, "base_rates", step["sub_claim_id"], step["lens_name"])
+        base = _cell_payload(steps, "base_rates", step["sub_question_id"], step["lens_name"])
         payload = await stages.run_inside_step(
-            input, sub_claim, BaseRateStepPayload.model_validate_json(base), deps
+            input, sub_question, BaseRateStepPayload.model_validate_json(base), deps
         )
         return payload.model_dump_json()
 
@@ -370,7 +370,7 @@ async def _dispatch(
         for s in steps:
             if s["status"] != "complete" or not s["payload_json"]:
                 continue
-            claim = _sub_claim(decomposition, s["sub_claim_id"])
+            claim = _sub_question(decomposition, s["sub_question_id"])
             if s["stage"] == "base_rates":
                 base_rate_cells.append(
                     (claim, BaseRateStepPayload.model_validate_json(s["payload_json"]))
@@ -394,48 +394,48 @@ def _decomposition_of(steps: list[dict]) -> Decomposition:
     raise GateError("decompose has not completed")
 
 
-def _sub_claim(decomposition: Decomposition, sub_claim_id: str) -> SubPrediction:
-    if not sub_claim_id:
+def _sub_question(decomposition: Decomposition, sub_question_id: str) -> SubPrediction:
+    if not sub_question_id:
         # Whole-question steps (decompose, synthesis) have no column of their own.
         return SubPrediction(
-            question=decomposition.sub_claims[0].question,
+            question=decomposition.sub_questions[0].question,
             probability=0.5,
             rationale="whole-question step",
         )
-    for s in decomposition.sub_claims:
-        if s.id == sub_claim_id:
+    for s in decomposition.sub_questions:
+        if s.id == sub_question_id:
             return s
-    raise GateError(f"sub-claim {sub_claim_id} is not in the decomposition")
+    raise GateError(f"sub-question {sub_question_id} is not in the decomposition")
 
 
-def _chosen_lens(steps: list[dict], sub_claim_id: str, lens_name: str):
+def _chosen_lens(steps: list[dict], sub_question_id: str, lens_name: str):
     for s in steps:
         if (
             s["stage"] == "lenses"
-            and s["sub_claim_id"] == sub_claim_id
+            and s["sub_question_id"] == sub_question_id
             and s["status"] == "complete"
             and s["payload_json"]
         ):
-            lenses = SubClaimLenses.model_validate_json(s["payload_json"])
+            lenses = SubQuestionLenses.model_validate_json(s["payload_json"])
             for lens in lenses.lenses:
                 if lens.name == lens_name:
                     return lens
-    raise GateError(f"lens {lens_name!r} was never chosen for {sub_claim_id}")
+    raise GateError(f"lens {lens_name!r} was never chosen for {sub_question_id}")
 
 
 def _cell_payload(
-    steps: list[dict], stage: str, sub_claim_id: str, lens_name: str
+    steps: list[dict], stage: str, sub_question_id: str, lens_name: str
 ) -> str:
     for s in steps:
         if (
             s["stage"] == stage
-            and s["sub_claim_id"] == sub_claim_id
+            and s["sub_question_id"] == sub_question_id
             and s["lens_name"] == lens_name
             and s["status"] == "complete"
             and s["payload_json"]
         ):
             return s["payload_json"]
-    raise GateError(f"no completed {stage} payload for ({sub_claim_id}, {lens_name})")
+    raise GateError(f"no completed {stage} payload for ({sub_question_id}, {lens_name})")
 
 
 def detail(run_id: str) -> dict:

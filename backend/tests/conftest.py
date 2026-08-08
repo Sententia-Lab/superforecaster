@@ -40,6 +40,18 @@ def _stub_agent_model(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
 
 
+@pytest.fixture(autouse=True)
+def _unset_admin_key(monkeypatch):
+    """Run every test in local mode unless it asks otherwise.
+
+    `backend/.env` is loaded at import, so a developer who set `ADMIN_API_KEY` — which is
+    every developer who has deployed this — had `require_admin` reject the test client on
+    every admin route. Fourteen tests failed on their machine and passed in CI, which is
+    the worst way round. A test that wants authentication sets the key itself.
+    """
+    monkeypatch.delenv("ADMIN_API_KEY", raising=False)
+
+
 @pytest.fixture
 def fixtures_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "superforecaster" / "fixtures"

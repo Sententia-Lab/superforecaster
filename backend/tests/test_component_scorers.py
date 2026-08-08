@@ -45,14 +45,14 @@ from tests.test_checks import (
 
 
 def test_decompose_scorer_passes_a_good_decomposition():
-    d = Decomposition(sub_claims=[sub(), sub(), sub()], chain_note="multiply")
-    s = ce.score_decompose(d, {"min_sub_claims": 3})
+    d = Decomposition(sub_questions=[sub(), sub(), sub()], chain_note="multiply")
+    s = ce.score_decompose(d, {"min_sub_questions": 3})
     assert s.passed
 
 
 def test_decompose_scorer_fails_when_nothing_is_researchable():
     d = Decomposition(
-        sub_claims=[sub(knowability="judgment") for _ in range(3)], chain_note="x"
+        sub_questions=[sub(knowability="judgment") for _ in range(3)], chain_note="x"
     )
     s = ce.score_decompose(d, {})
     assert not s.passed
@@ -60,7 +60,7 @@ def test_decompose_scorer_fails_when_nothing_is_researchable():
 
 
 def test_decompose_scorer_checks_expected_terms():
-    d = Decomposition(sub_claims=[sub(), sub(), sub()], chain_note="x")
+    d = Decomposition(sub_questions=[sub(), sub(), sub()], chain_note="x")
     assert ce.score_decompose(d, {"must_mention": ["deal"]}).assertions[
         "mentions_expected_terms"
     ]

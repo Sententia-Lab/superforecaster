@@ -172,6 +172,117 @@ def test_v3_adds_edited_at_to_a_database_that_already_had_run_steps(tmp_path, mo
     assert version(path) == db.SCHEMA_VERSION
 
 
+V3_PAYLOAD = {
+    "lens": {
+        "name": "post-tightening years",
+        "population": "every year since 1970",
+        "why_it_fits": "same inflection",
+        "weight": 1.0,
+        "weight_rationale": "only lens",
+        "evidence": [{"kind": "counted", "hits": 8, "n": 11, "note": "enumerated"}],
+        "sub_claim_ids": ["sc2"],
+    },
+    "disagreement": "search was unavailable",
+}
+"""One `base_rates` payload exactly as version 3 wrote it — old keys, old ids."""
+
+
+@pytest.fixture
+def v3_db(tmp_path, monkeypatch):
+    """A version-3 database holding one run whose payloads use the old vocabulary."""
+    import json
+
+    path = tmp_path / "v3.db"
+    monkeypatch.setenv("DATABASE_PATH", str(path))
+    conn = sqlite3.connect(path)
+    conn.executescript(PRE_ADR29)
+    conn.executescript(
+        """
+        CREATE TABLE gated_runs (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'backlog',
+            created_at TIMESTAMP NOT NULL
+        );
+        CREATE TABLE run_steps (
+            id TEXT PRIMARY KEY, run_id TEXT NOT NULL, stage TEXT NOT NULL,
+            sub_claim_id TEXT NOT NULL DEFAULT '', lens_name TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending', payload_json TEXT, error TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            started_at TIMESTAMP, finished_at TIMESTAMP, edited_at TIMESTAMP
+        );
+        """
+    )
+    conn.execute("INSERT INTO gated_runs VALUES ('r1','active','2026-01-01')")
+    conn.execute(
+        "INSERT INTO run_steps (id, run_id, stage, sub_claim_id, lens_name, status, "
+        "payload_json) VALUES ('s1','r1','base_rates','sc2','post-tightening years',"
+        "'complete', ?)",
+        (json.dumps(V3_PAYLOAD),),
+    )
+    conn.execute("PRAGMA user_version = 3")
+    conn.commit()
+    conn.close()
+    return path
+
+
+def test_v4_renames_the_column_and_the_ids(v3_db):
+    db.init_db()
+
+    assert "sub_claim_id" not in columns(v3_db, table="run_steps")
+    assert "sub_question_id" in columns(v3_db, table="run_steps")
+
+    conn = sqlite3.connect(v3_db)
+    row = conn.execute("SELECT sub_question_id FROM run_steps").fetchone()
+    conn.close()
+    assert row[0] == "sq2"
+
+
+def test_v4_rewrites_the_stored_payload(v3_db):
+    """The payload is what an ORM-free system actually stores, so it is what a rename has
+    to reach. A step whose column was renamed but whose blob was not stops parsing."""
+    import json
+
+    from superforecaster.models import BaseRateStepPayload
+
+    db.init_db()
+
+    conn = sqlite3.connect(v3_db)
+    raw = conn.execute("SELECT payload_json FROM run_steps").fetchone()[0]
+    conn.close()
+
+    assert "sub_claim" not in raw
+    assert json.loads(raw)["lens"]["sub_question_ids"] == ["sq2"]
+    BaseRateStepPayload.model_validate_json(raw)
+
+
+def test_v4_leaves_prose_that_merely_starts_with_sc_alone():
+    """The regression a textual `replace(payload_json, '"sc', '"sq')` would cause, and the
+    whole reason migration 4 has a Python step (ADR 57)."""
+    payload = {
+        "bias_checks": [{"bias": "scope_insensitivity", "assessment": "considered"}],
+        "research": {"causal_forces": ["scarcity of chips", "schedule slippage"]},
+        "note": "sc2 is mentioned in prose here",
+        "sub_claim_ids": ["sc2"],
+    }
+
+    out = db._rename_sub_claims(payload)
+
+    assert out["bias_checks"][0]["bias"] == "scope_insensitivity"
+    assert out["research"]["causal_forces"] == ["scarcity of chips", "schedule slippage"]
+    assert out["note"] == "sc2 is mentioned in prose here"
+    assert out["sub_question_ids"] == ["sq2"]
+
+
+def test_v4_is_a_no_op_on_a_fresh_database(tmp_path, monkeypatch):
+    """`RENAME COLUMN` against a database born with `sub_question_id` raises "no such
+    column", which `_MIGRATION_NO_OPS` is there to swallow."""
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "fresh4.db"))
+    db.init_db()
+
+    assert version(tmp_path / "fresh4.db") == db.SCHEMA_VERSION
+    assert "sub_question_id" in columns(tmp_path / "fresh4.db", table="run_steps")
+
+
 def test_every_version_up_to_current_has_a_step():
     """A bumped `SCHEMA_VERSION` with no matching entry migrates nothing and silently
     marks the database as done."""

@@ -126,7 +126,7 @@ def edit_step_payload(
     """Replace a completed payload by hand, then rebuild the pending rows below it.
 
     The body is a bare dict because its shape depends on the step's stage — a
-    `Decomposition` for decompose, a `SubClaimLensesEdit` for lenses — and the stage is
+    `Decomposition` for decompose, a `SubQuestionLensesEdit` for lenses — and the stage is
     only known once the row has been read. `machine.edit_payload` validates it.
 
     Returns the whole run so the screen redraws from this response with no follow-up GET.
@@ -197,10 +197,10 @@ async def stream_step(
     async def generate():
         queue: asyncio.Queue = asyncio.Queue()
 
-        def emit(type: str, payload: dict, sub_claim: str | None = None) -> None:
+        def emit(type: str, payload: dict, sub_question: str | None = None) -> None:
             # Must stay synchronous and non-blocking — it is called from inside the
             # agent's event handler, where an await would stall token delivery.
-            queue.put_nowait({"type": type, "sub_claim": sub_claim, "payload": payload})
+            queue.put_nowait({"type": type, "sub_question": sub_question, "payload": payload})
 
         async def work() -> None:
             try:

@@ -18,7 +18,7 @@ from .models import SourceRef
 class SearchBudget:
     """One cell's search budget, and the column tag every event that cell produces carries.
 
-    A *cell* is one column of the grid at one stage — `sc2`'s base-rate research, say.
+    A *cell* is one column of the grid at one stage — `sq2`'s base-rate research, say.
     Decompose fixes the columns; each research stage runs one agent per column
     concurrently, and each of those agents gets its own budget rather than sharing one
     across the whole row.
@@ -33,7 +33,7 @@ class SearchBudget:
     afterwards. One counter with one owner beats two that can drift.
     """
 
-    sub_claim: str | None = None
+    sub_question: str | None = None
     soft_depth: int = 0
     hard_depth: int = 0
     used: int = 0
@@ -80,7 +80,7 @@ class ForecastDeps:
     `ctx.deps` — threading it explicitly would mean editing all eight `run_<agent>`
     call sites to pass something none of them care about.
 
-    Called as `emit(type, payload, sub_claim)`. The third argument is the column the
+    Called as `emit(type, payload, sub_question)`. The third argument is the column the
     event belongs to, or None for work a stage did as a whole.
 
     MUST be synchronous and non-blocking: it is called from inside the agent's own
@@ -96,9 +96,9 @@ class ForecastDeps:
     """
 
     @property
-    def sub_claim(self) -> str | None:
+    def sub_question(self) -> str | None:
         """Which column this deps copy is researching, if any."""
-        return self.budget.sub_claim if self.budget else None
+        return self.budget.sub_question if self.budget else None
 
     @property
     def leaked_sources(self) -> list[SourceRef]:

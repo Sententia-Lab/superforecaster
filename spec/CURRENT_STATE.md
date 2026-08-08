@@ -19,12 +19,12 @@ Last regenerated: 2026-08-07.
 
 ## Storage map
 
-Everything persists in four SQLite tables (`backend/superforecaster/db.py`, `SCHEMA_VERSION = 3`).
+Everything persists in four SQLite tables (`backend/superforecaster/db.py`, `SCHEMA_VERSION = 4`).
 
 | Table | One row means | Written by |
 |---|---|---|
 | `gated_runs` | one forecast question + its lifecycle | `create/update/start/complete/delete_gated_run` |
-| `run_steps` | one stage cell (`UNIQUE(run_id, stage, sub_claim_id, lens_name)`) | `insert/claim/finish/fail/delete_steps`, `edit_step_payload` |
+| `run_steps` | one stage cell (`UNIQUE(run_id, stage, sub_question_id, lens_name)`) | `insert/claim/finish/fail/delete_steps`, `edit_step_payload` |
 | `forecasts` | a *published* forecast, written only at synthesis | `save_forecast`, `resolve_forecast`, `mark_refreshed` |
 | `forecast_updates` | probability history for one forecast | `save_forecast`, `add_forecast_update` |
 
@@ -40,11 +40,12 @@ and from then on the forecast lives independently (delete the run, the forecast 
 
 ## Endpoint index
 
-All 21 routes, each traced in the section named.
+All 22 routes, each traced in the section named.
 
 | Method + path | Auth | Traced in |
 |---|---|---|
 | `GET /config` | — | §0 App boot |
+| `PUT /config/keys` | admin | §0b Setting a key |
 | `GET /runs` | — | §0 App boot |
 | `POST /questions/draft` | — | §1 Drafting |
 | `POST /questions/critique` | — | §1 Drafting |
@@ -75,19 +76,71 @@ and the cron surface. That is noted per section rather than hidden in a footnote
 
 ```
 mount App.jsx
-  ├─ api.config()      GET /config       → { auth_required, search_enabled, model }
-  └─ useRuns.refresh() GET /runs         → [ GatedRunSummary + stage_counts ]
+  ├─ api.config()      GET /config  → { auth_required, search_enabled, model, keys }
+  └─ useRuns.refresh() GET /runs    → [ GatedRunSummary + stage_counts ]
+```
+
+```json
+{"auth_required": true,
+ "search_enabled": true,
+ "model": "gateway/anthropic:claude-sonnet-4-6",
+ "keys": {"llm": ".env", "llm_var": "PYDANTIC_AI_GATEWAY_API_KEY",
+          "tavily": ".env", "wikipedia": "unset"}}
 ```
 
 | Layer | What happens |
 |---|---|
-| FE | `App.jsx:26` sets `config`; `useRuns.js:9` fills the sidebar |
-| API | `main.py:97 client_config` → `is_local_mode(request)` (`deps.py:15`) |
+| FE | `App.jsx` sets `config`; `useRuns.js:9` fills the sidebar; `KeyPanel.jsx` reads `keys` |
+| API | `main.py _client_config` → `is_local_mode(request)` (`deps.py:15`), `config.origin` per key |
 | API | `runs.py:60 list_runs` → `db.list_gated_runs` |
 | DB | two SELECTs: all runs newest-first, plus a `GROUP BY run_id, stage, status` count roll-up |
 | Back | `auth_required` is the load-bearing field — the *server* decides whether the browser needs a token, so a laptop with no `ADMIN_API_KEY` never asks for one |
 
+`keys` values are `environment` / `.env` / `session` / `unset` — **where** each key came
+from, never what it is. `llm_var` names the variable credentialing the model, which is
+`PYDANTIC_AI_GATEWAY_API_KEY` when the gateway is configured and `ANTHROPIC_API_KEY`
+otherwise (`config.active_llm_key_name`).
+
 Writes: **none.**
+
+---
+
+## 0b. Setting a key — `PUT /config/keys`
+
+```
+KeyPanel.jsx save()  ->  api.setKeys(body)
+```
+
+```json
+{"tavily_api_key": "tvly-abc123"}
+```
+
+```
+  -> require_admin(request)                  [403 without the bearer token, skipped locally]
+  -> config.set_runtime_key("TAVILY_API_KEY", "tvly-abc123")
+       name must be in config.RUNTIME_KEYS   [422 otherwise]
+       os.environ[name] = value              [writes: process environment only]
+  -> _client_config(request)
+```
+
+```json
+{"auth_required": true, "search_enabled": true,
+ "model": "gateway/anthropic:claude-sonnet-4-6",
+ "keys": {"llm": ".env", "llm_var": "PYDANTIC_AI_GATEWAY_API_KEY",
+          "tavily": "session", "wikipedia": "unset"}}
+```
+
+| Layer | What happens |
+|---|---|
+| FE | `KeyPanel.jsx` sends only fields that were typed; `""` clears one; the admin token goes to `localStorage` via `api.setToken` and never into the body |
+| API | `main.py set_keys` maps `llm_api_key` onto `active_llm_key_name()`, so the row always writes the key the next run actually uses |
+| Back | `App.jsx setConfig(resp)` — the `no web search` chip clears with no reload |
+
+**Nothing is written to disk.** `get_settings()` re-reads `os.environ` on every call, so the
+next agent call picks the key up with no cache to invalidate and no restart; a restart drops
+it. `backend/.env` remains the only durable home (ADR 61).
+
+Writes: **the process environment.** No table.
 
 ---
 
@@ -174,7 +227,7 @@ code**. Once the SSE response starts, the status is already committed to 200.
 ### 3b. The live path
 
 ```
-LensCard/StepControls onStart
+BaseRateCard | ModifierCard | StepControls onStart
   └─ useStepStream.start(runId, stepId, {maxIterations})
        AbortController; fetch POST …/stream  (not EventSource — it would auto-reconnect
                                               and silently re-run a cancelled step)
@@ -227,12 +280,12 @@ can keep yielding for the minutes the agent runs. Ping every 15s.
 | Process restart mid-step | `init_db` → `mark_interrupted_steps` flips `running` → `error='interrupted by restart'` |
 
 `reconcile` (`machine.py`) is the fan-out. It calls `expected_steps`, which reads the payloads
-just written and returns the identities `(stage, sub_claim_id, lens_name)` they imply:
+just written and returns the identities `(stage, sub_question_id, lens_name)` they imply:
 
 ```
-decompose ─► one lenses step per researchable sub-claim
+decompose ─► one lenses step per researchable sub-question
              (none researchable → straight to synthesis)
-lenses    ─► one base_rates step per (sub-claim, lens)
+lenses    ─► one base_rates step per (sub-question, lens)
 base_rates─► one inside_view step per same cell
 inside_view► one synthesis step
 ```
@@ -261,10 +314,26 @@ Two paths, and the second is why the UI is always correct:
 2. `onDone` → `refreshDetail()` (`GET /runs/{id}`, §4) **plus** `onChanged()` → `GET /runs` for
    the sidebar. Even if the stream died mid-frame, the next paint is rebuilt from SQLite alone.
 
-`RunView` renders purely from `run.steps` — `stepFor(stage, subClaim, lens)` finds the row,
+`RunView` renders purely from `run.steps` — `stepFor(stage, subQuestion, lens)` finds the row,
 `step.payload` is the parsed stage output, and `derive.js` recomputes the displayed arithmetic
 (counted → adjusted → weighted → chain → implied) mirroring `checks.py`. There is no
 client-side accumulation of run state beyond the live tail of the one active card.
+
+**What the tree draws.** Every stage is a `<details>` (`StageSection`), open while the run is
+in flight and collapsed once synthesis completes — at which point section 5 renders *above*
+section 1, so a finished run opens on its answer. Section 2 gives each lens an accordion
+carrying `population`, `why_it_fits` and `weight_rationale`; those last two appear nowhere
+else. Sections 3 and 4 group their cells into one card per sub-question, holding
+`BaseRateCard`s and `ModifierCard`s respectively. Both restate the lens in a `LensOrigin`
+panel, so lens output stays visibly separate from the cell's own analysis; the base-rate card
+hides each `Evidence.note` behind *How this was counted* and the disagreement behind its own
+accordion, and the modifier card leads each move with its signed magnitude and
+`Adjustment.title` (falling back to the first sentence of `evidence` for payloads written
+before that field). Display labels — `Sub-question 1`, `Lens 1`, `Base rate 1`, `Modifier 1` —
+are computed from position in `labels.js` and never stored (ADR 59).
+
+**Prose.** Every agent-written string renders through `Prose.jsx` (`react-markdown` +
+`remark-gfm`), which is also what turns a bare URL into a link (ADR 60).
 
 ### 3e. Retry / deeper budget
 
@@ -306,8 +375,8 @@ PUT /runs/{run_id}/steps/{step_id}/payload   {edited payload}
   -> machine.edit_payload(run_id, step_id, body)
        -> db.get_step / db.get_gated_run                 404, or 409 if run is not active
        -> machine.edit_blocker(step, steps) -> None | str            [409 when set]
-       -> Decomposition | SubClaimLensesEdit .model_validate(body)   [422 on reject]
-       -> agents.decompose.with_ids(payload)             decompose only: re-stamp sc1…scN
+       -> Decomposition | SubQuestionLensesEdit .model_validate(body)   [422 on reject]
+       -> agents.decompose.with_ids(payload)             decompose only: re-stamp sq1…sqN
        -> db.edit_step_payload(step_id, payload_json)    [writes: run_steps.payload_json, edited_at]
        -> machine.reconcile(run_id)                      [writes: run_steps — deletes and inserts]
   -> machine.detail(run_id)
@@ -315,7 +384,7 @@ PUT /runs/{run_id}/steps/{step_id}/payload   {edited payload}
 ```
 
 `edit_blocker` reads `machine.DERIVED`: `decompose` derives the `lenses` rows and `synthesis`;
-`lenses` derives **every** `base_rates` row in the run, not only its own sub-claim's. A payload
+`lenses` derives **every** `base_rates` row in the run, not only its own sub-question's. A payload
 is editable while every derived row is still `pending`, so an edit can only ever strand empty
 rows — which is why `reconcile`'s delete half never destroys work. The lens rule is wider than
 the delete rule needs because populations are pre-registered (ADR 40): once any rate is back,
@@ -345,6 +414,11 @@ RunView mount / refreshDetail()
 Writes: **none.** Every stage payload was `model_dump_json`'d into its row at `finish_step`, so
 the entire reasoning trail — every lens, every evidence block, every adjustment — reconstructs
 from SQLite with no agent calls and no in-memory state.
+
+`SynthesisSection` renders the whole derivation as one table: a spanning header row per
+sub-question carrying the question text, its lens rows, one row per modifier beneath its lens
+(`derive.adjustmentsForLens`), and a `Blended` footer per sub-question. It scrolls inside its
+own container rather than widening the page.
 
 ---
 
@@ -473,8 +547,8 @@ POST /admin/refresh/run                                    [admin]
 
 ## Auth, in one line
 
-`require_admin` guards `DELETE /runs/{id}`, `POST /runs/{id}/start`, the step stream, every
-`/forecasts` write, and `/admin/*`. With `ADMIN_API_KEY` unset **and** the request from loopback
+`require_admin` guards `DELETE /runs/{id}`, `POST /runs/{id}/start`, the step stream,
+`PUT /config/keys`, every `/forecasts` write, and `/admin/*`. With `ADMIN_API_KEY` unset **and** the request from loopback
 **and** no proxy header, it is skipped entirely (`is_local_mode`). The browser sends
 `Authorization: Bearer <token>` from `localStorage.sf_admin_token` when it has one.
 
@@ -495,7 +569,7 @@ Where the functions named above live.
 | `checks.py` | the 16 principles as pure functions; `lens_rate`, `anchor_from`, `implied_probability`, `run_forecast_checks`, `blocking` |
 | `scoring.py` | `time_weighted_probability`, `brier_score`, `calibration` — pure |
 | `deps.py` | `ForecastDeps`, `SearchBudget`, `sources_seen`, the `emit` sink |
-| `tools.py` | `search_web` (Tavily), `search_wikipedia`, `as_of` backdating clamps |
+| `tools.py` | `search_web` (Tavily), `search_wikipedia` (optional bearer key), `as_of` backdating clamps |
 | `observability.py` | logfire config, the `run_agent` wrapper, agent-event → stream-frame handler |
 | `errors.py` | `AgentTimeout`, `StageTimeout` |
 | `cron.py` | `run_daily_refresh`, APScheduler wiring |
@@ -509,7 +583,7 @@ Where the functions named above live.
 
 | Module | Holds |
 |---|---|
-| `main.py` | FastAPI app, startup preflight, `/healthz`, `/config`, static mount (last) |
+| `main.py` | FastAPI app, startup preflight, `/healthz`, `/config`, `PUT /config/keys`, static mount (last) |
 | `deps.py` | `require_admin`, `is_local_mode` |
 | `runs.py` | gated-run CRUD + `stream_step` + `edit_step_payload` |
 | `questions.py` | `/questions/draft`, `/questions/critique` |
@@ -523,12 +597,13 @@ Where the functions named above live.
 |---|---|
 | `api.js` | fetch wrappers + `streamStep` (fetch + ReadableStream + AbortController, deliberately not `EventSource`) |
 | `runQueue.js` | `STAGE_ORDER`, `nextRunnable`, `sectionRunnable` — mirrors `db.STAGE_ORDER` and the gate. Pure |
-| `derive.js` | mirrors `checks.py`: `lensRate`, `adjustedLensRate`, `subClaimRate`, `signedAdjustment`, `claimSupport`; mirrors `machine`/`stages`: `editBlocker`, `normalizeWeights`, `weightSum` |
+| `derive.js` | mirrors `checks.py`: `lensRate`, `adjustedLensRate`, `subQuestionRate`, `signedAdjustment`, `claimSupport`; mirrors `machine`/`stages`: `editBlocker`, `normalizeWeights`, `weightSum` |
 | `hooks/useRuns.js` | the sidebar list |
 | `hooks/useStepStream.js` | one stream at a time; unmount aborts, abort cancels server-side. `start` resolves to the run the stream produced; `streaming` is separate from `active` |
 | `hooks/useRunQueue.js` | Run All / Run Section: `drain`, `stop`. A browser loop, no server queue (ADR 55) |
 | `App.jsx` | shell + selection model (`new` \| run id); theme toggle; `/config`-driven chips |
-| `components/` | `Sidebar`, `NewForecastView`, `BacklogView`, `RunView`, `RunHeader`, `FieldEditor`, `EditorField`, `StepControls`, `LensCard`, `CellActivity`, `LiveTail`, `SynthesisSection`, `DecomposeEditor`, `LensSetEditor`, `ConfirmDialog` |
+| `labels.js` | `subQuestionLabel`, `ordinal`, `firstSentence` — display labels computed from position, never stored (ADR 59) |
+| `components/` | `Sidebar`, `NewForecastView`, `BacklogView`, `RunView`, `RunHeader`, `FieldEditor`, `EditorField`, `StepControls`, `BaseRateCard`, `ModifierCard`, `LensOrigin`, `Accordion`, `Prose`, `KeyPanel`, `CellActivity`, `LiveTail`, `SynthesisSection`, `DecomposeEditor`, `LensSetEditor`, `ConfirmDialog` |
 
 ---
 
@@ -547,13 +622,20 @@ Where the functions named above live.
   lens weights must sum to 1.00, and an edited payload carries an "edited" chip.
 - Retry of any failed step (optionally with `?max_iterations=` up to 50); cancel by
   closing the tab; restart sweep marks orphans honestly.
+- **A readable run tree** — every stage collapses, a finished run leads with its answer,
+  each cell shows which text came from its lens, long enumerations and steel-man arguments
+  sit behind accordions, and the synthesis table lays out every lens and every modifier in
+  one place. Agent prose renders as markdown, bare URLs included (ADR 60).
+- **The Keys panel** — the admin token plus the LLM, Tavily and Wikipedia keys, settable
+  from the header. Server-held keys apply on the next request and are dropped on restart;
+  no route ever returns a key value (§0b, ADR 61).
 - The CLI pipeline (`forecast`) and component evals through the same `stages` functions.
 - Daily refresh cron + manual refresh through the update graph; resolution + scoring +
   calibration report.
 - Local mode: two exported keys and `serve`, no token, no `.env`, no build step for the
   API (UI needs `npm run build` once).
-- CI on push/PR; opt-in pre-push test gate. 318 backend tests pass with no network and no
-  API keys (see the `.env` caveat in Known Issues).
+- CI on push/PR; opt-in pre-push test gate. 338 backend tests pass with no network and no
+  API keys.
 - Nothing is hosted. `docker-compose.yml` runs the API with a named SQLite volume and the
   frontend built into the image; `.github/workflows/ci.yml` is the only automation.
 
@@ -565,14 +647,9 @@ Where the functions named above live.
   built; `superforecaster test e2e` says so and exits 2.
 - `GoldenQuestion`, `QuestionScore`, and `Scorecard` are defined in `models.py` but unused —
   the eval corpus they describe does not exist yet (spec6).
-- **The test suite is not isolated from `backend/.env`.** `config` loads that file, so a dev
-  machine with `ADMIN_API_KEY` set there flips `is_local_mode` to False and the 10 admin-route
-  tests in `test_api_gated_runs.py` fail with 401 (surfacing as `KeyError: 'steps'`). CI has no
-  `.env` so it stays green — the failure only ever hits a developer. Workaround:
-  `ADMIN_API_KEY="" uv run pytest`. The fix is a conftest fixture that pins the admin key.
 - **`Forecast.decompositions[].probability` is carried by the model, not computed.**
   `run_synthesis_stage` hands the synthesis agent the decomposition JSON — pre-research
-  working estimates included — and instructs it to carry the sub-claims through.
+  working estimates included — and instructs it to carry the sub-questions through.
   `check_linkage` verifies the ids survive; nothing compares the probabilities to
   `checks.chain_inputs`. So a saved forecast can show a pre-research guess against a
   sub-question that was actually measured. The fix mirrors `ResearchedLens`, which has no

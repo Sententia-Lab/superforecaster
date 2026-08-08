@@ -1729,3 +1729,156 @@ the stream's `active` state, which deliberately outlives a failure so the error 
 on screen. Every Run and Retry button therefore stayed disabled after any failure, with a
 page reload as the only recovery. `streaming` is now separate from `active`. Run All could
 not resume from a failure without it — and neither, it turns out, could a human.
+
+---
+
+## ADR 56 — A sub-question is a question, not a claim
+
+**Accepted.** Spec 10.
+
+The decomposition splits a question into smaller questions, each with a probability
+attached. The code called them sub-claims. A claim is an assertion; `Will the Fed have
+begun cutting rates by August 2026?` is not one.
+
+The interface has said "sub-question" since spec 5 — the decompose card, the lens gate
+message, the synthesis table header. Only the models, the wire format, the database column
+and the ids disagreed, so a reader moving from the screen to the source had to learn that
+two names meant one thing, and that neither was a synonym for the other in any other
+context.
+
+Ids are `sq1`…`sqN`, stamped by position on every save exactly as `sc1` was.
+
+**The old name is not preserved anywhere in the running system.** A compatibility alias
+would have kept `sub_claim_id` legible in a payload a year from now, which is precisely
+the confusion this removes. Existing rows are migrated instead — see ADR 57.
+
+**Shipped specs keep the old name.** `spec/implemented/*` records what was built under the
+name it was built with, for the same reason an ADR is superseded rather than edited. Only
+`CURRENT_STATE.md` and this file describe the present, so only they are rewritten.
+
+---
+
+## ADR 57 — A migration step may be Python
+
+**Accepted.** Spec 10. **Amends ADR 34.**
+
+ADR 34 made schema migrations a version counter and a dict of SQL statements, and that
+shape held for three migrations: drop a column, drop four tables, add a column.
+
+Renaming a key inside a stored JSON document breaks it. `run_steps.payload_json` holds
+`"sub_claims"`, `"sub_claim_ids"` and `"id":"sc1"`, and SQLite can only reach them with
+`replace()` over the raw text. **A textual rule cannot tell an id from prose.** Replacing
+`"sc` with `"sq` also rewrites `"bias":"scope_insensitivity"` and any
+`causal_forces: ["scarcity of chips"]` entry — silently, inside a payload nobody reads
+again until a model fails to parse it months later.
+
+So a migration step is now `str | Callable[[sqlite3.Connection], None]`. The version
+counter, the dict, the ordering, and the no-op guards are all unchanged; the executor
+calls a callable instead of passing it to `conn.execute`.
+
+**The rule this keeps:** a step must still be safe to apply to a database that reached the
+previous version by either route — upgraded in place, or freshly built by `init_db`. A
+callable carries the same obligation as a statement, and gets no exemption for being
+easier to write.
+
+**Why not a one-off script.** A script outside `MIGRATIONS` is a step every deployment has
+to be told about, and the version counter would claim work that had not happened. The
+counter is only trustworthy if every change to stored data goes through it.
+
+---
+
+## ADR 58 — A modifier states its own title
+
+**Accepted.** Spec 8.
+
+An `Adjustment` carried a signed magnitude and a paragraph of `evidence`. On screen that
+is a number beside prose: to find the modifier you meant, you re-read all three.
+
+`Adjustment` gains `title` — six words or fewer, naming the mechanism rather than the
+direction. `evidence` still carries the argument.
+
+**The rejected alternative was slicing the first sentence of `evidence` in the frontend.**
+It reads as truncated prose, it breaks on a paragraph that opens with a subordinate
+clause, and it puts the frontend in the business of writing labels — which ADR 27 forbids
+and ADR 38 makes unnecessary. The agent already holds the argument. Asking it to name the
+argument is one field and no extra call.
+
+`default=""` so every stored payload stays valid; the frontend falls back to the first
+sentence for runs that predate the field. No migration — a title is a label, and
+back-filling one would mean inventing it.
+
+---
+
+## ADR 59 — Display labels are a frontend concern
+
+**Accepted.** Spec 8.
+
+`sq1` is the stored id and part of `UNIQUE(run_id, stage, sub_question_id, lens_name)`.
+`Sub-question 1` is what a reader sees. They are not the same string, and the second is
+not stored.
+
+Lenses, base rates and modifiers have no id at all — a lens is identified by
+`(sub-question, name)` and a modifier by its position in a list. `Lens 1`, `Base rate 1`
+and `Modifier 1` are therefore computed at render time from position, and mean nothing
+outside the card they label.
+
+**Why not store them.** A stored label is a second source of truth that drifts the moment
+a list is edited: reorder two lenses and `Lens 1` is wrong in the database but right on
+screen. Position is already the answer; deriving the label from it cannot disagree with
+itself.
+
+---
+
+## ADR 60 — Agent prose is markdown
+
+**Accepted.** Spec 8.
+
+Every agent-written string renders through one `Prose` component backed by
+`react-markdown` with `remark-gfm`. This is the frontend's first dependency beyond React,
+and it replaces two things at once.
+
+**A hand-rolled renderer** covering bold, lists and headings is a long tail of
+partial-support bugs, each found by a forecast that happened to use the syntax that was
+missed.
+
+**A separate URL linkifier** is redundant: gfm's autolink rule turns a bare URL into an
+anchor, which is the whole of the "every URL should be a link" requirement. Writing a
+regex to do half of what the parser already does would mean two mechanisms disagreeing at
+the edges.
+
+`react-markdown` builds a React tree and never touches `dangerouslySetInnerHTML`, so no
+sanitiser sits behind it. That matters here specifically: the text is model output, which
+is the one input in this system that no schema constrains.
+
+**`.prose` loses `white-space: pre-wrap`.** It existed so newlines survived in raw text.
+Markdown handles line breaks now, and keeping both double-spaces every paragraph.
+
+---
+
+## ADR 61 — Runtime keys are set in the process, never on disk
+
+**Accepted.** Spec 9.
+
+The key panel writes `os.environ` and nothing else. A key set through it lives for the
+life of the process; `backend/.env` remains the only durable home.
+
+This works because `get_settings()` re-reads the environment on every call and caches
+nothing — a design that existed so tests could monkeypatch, and that turns out to make
+runtime key changes take effect on the next request with no invalidation and no restart.
+
+**The rejected alternative was rewriting `.env` from the endpoint.** It makes the
+application a writer of secrets, and it clobbers a file that carries hand-written comments
+explaining every setting. A file the app rewrites is a file nobody can safely annotate.
+
+**Names are allowlisted.** `RUNTIME_KEYS` is exactly three. Without it the endpoint writes
+any name into `os.environ`, and `DATABASE_PATH` and `FRONTEND_DIR` are both read from
+there — an admin-authenticated way to repoint the database is not a key panel.
+
+**The endpoint is write-only.** `GET /config` reports where each key came from —
+`environment`, `.env`, `session`, `unset` — and never what it is. `origin()` gained
+`session` for this: a runtime-set key previously reported `.env`, which is a lie about
+provenance in the one place a reader goes to check provenance.
+
+**The cost, stated plainly.** A key set here is server-wide, so every run spends it
+whoever started it. The panel is a single-instance convenience, not multi-tenant key
+management, and its own text says so.

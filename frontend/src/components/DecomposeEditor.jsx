@@ -13,19 +13,19 @@ const blank = () => ({
 /**
  * Correct a decomposition before anything is researched against it.
  *
- * `probability` appears only on judgment rows. `checks.chain_inputs` reads a sub-claim's
+ * `probability` appears only on judgment rows. `checks.chain_inputs` reads a sub-question's
  * own probability only when nothing researched it: a researchable sub-question takes its
  * rate from its lenses, so a number typed here would be discarded, while a judgment
  * sub-question has no lenses and this is its only contribution to the anchor. Leaving it
  * out entirely would make a conjunction treat that column as 1.0.
  *
- * The `scN` shown on each block is live, not stored. The server re-stamps ids by position
+ * The `sqN` shown on each block is live, not stored. The server re-stamps ids by position
  * on save, so removing the second sub-question renumbers everything below it — showing
  * that as you edit is more honest than showing the ids that are about to change.
  */
 export default function DecomposeEditor({ payload, onSave, onCancel, saving, error }) {
   const [claims, setClaims] = useState(() =>
-    (payload?.sub_claims || []).map((s) => ({ ...s })),
+    (payload?.sub_questions || []).map((s) => ({ ...s })),
   );
   const [chainRule, setChainRule] = useState(payload?.chain_rule || "conjunction");
   const [chainNote, setChainNote] = useState(payload?.chain_note || "");
@@ -41,7 +41,7 @@ export default function DecomposeEditor({ payload, onSave, onCancel, saving, err
       {claims.map((c, i) => (
         <div key={i} className="editor-block">
           <div className="editor-block-head">
-            <b className="editor-block-id">sc{i + 1}</b>
+            <b className="editor-block-id">sq{i + 1}</b>
             <select
               className="field-input narrow"
               value={c.knowability}
@@ -134,7 +134,7 @@ export default function DecomposeEditor({ payload, onSave, onCancel, saving, err
           disabled={saving || tooFew || incomplete}
           onClick={() =>
             onSave({
-              sub_claims: claims.map((c) => ({
+              sub_questions: claims.map((c) => ({
                 question: c.question,
                 rationale: c.rationale,
                 knowability: c.knowability,

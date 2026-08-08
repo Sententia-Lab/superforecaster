@@ -59,8 +59,8 @@ async def _run_stage():
     return await stages.run_synthesis_stage(
         _input(),
         decomposition(),
-        [(decomposition().sub_claims[0], base_rate_payload())],
-        [(decomposition().sub_claims[0], inside_payload())],
+        [(decomposition().sub_questions[0], base_rate_payload())],
+        [(decomposition().sub_questions[0], inside_payload())],
         stages.ForecastDeps(),
     )
 

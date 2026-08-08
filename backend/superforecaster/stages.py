@@ -50,8 +50,8 @@ from .models import (
     Lens,
     OutsideView,
     SourceRef,
-    SubClaimBaseRates,
-    SubClaimLenses,
+    SubQuestionBaseRates,
+    SubQuestionLenses,
     SubPrediction,
     SynthesisStepPayload,
 )
@@ -88,7 +88,7 @@ def normalize_weights(lenses: list[Lens]) -> list[Lens]:
     Rescaled rather than rejected: the type the agent returns is the type stored, so a
     strict validator on it would make the agent retry against arithmetic it has no reason
     to hit, spending search budget on a rounding rule. A hand-written set is rejected
-    instead — see `SubClaimLensesEdit`.
+    instead — see `SubQuestionLensesEdit`.
 
     Each share floors at 0.01, because `Lens.weight` is `gt=0.0`: a weight of exactly
     zero is not a legal lens, so a rounding rule must never produce one.
@@ -118,17 +118,17 @@ def normalize_weights(lenses: list[Lens]) -> list[Lens]:
 async def run_lenses_stage(
     input: ForecastInput,
     decomposition: Decomposition,
-    sub_claim: SubPrediction,
+    sub_question: SubPrediction,
     deps: ForecastDeps,
-) -> SubClaimLenses:
+) -> SubQuestionLenses:
     """Name populations for one sub-question. No tools, no rates — pre-registration."""
-    chosen = await run_choose_lenses(input, decomposition, sub_claim, deps)
+    chosen = await run_choose_lenses(input, decomposition, sub_question, deps)
     return chosen.model_copy(update={"lenses": normalize_weights(chosen.lenses)})
 
 
 async def run_base_rate_step(
     input: ForecastInput,
-    sub_claim: SubPrediction,
+    sub_question: SubPrediction,
     lens: Lens,
     deps: ForecastDeps,
 ) -> BaseRateStepPayload:
@@ -137,9 +137,9 @@ async def run_base_rate_step(
     The identity and weight come from the *chosen* lens, never from what came back — a
     research cell must not re-weight its own population after seeing what it measured.
     """
-    cdeps = cell_deps(deps, sub_claim.id or "", input.max_iterations)
+    cdeps = cell_deps(deps, sub_question.id or "", input.max_iterations)
     try:
-        result = await run_research_lens(input, sub_claim, lens, cdeps)
+        result = await run_research_lens(input, sub_question, lens, cdeps)
     except Exception as exc:
         if type(exc).__name__ == "UsageLimitExceeded":
             exhausted_notice(cdeps)
@@ -151,7 +151,7 @@ async def run_base_rate_step(
             "why_it_fits": lens.why_it_fits,
             "weight": lens.weight,
             "weight_rationale": lens.weight_rationale,
-            "sub_claim_ids": [sub_claim.id] if sub_claim.id else [],
+            "sub_question_ids": [sub_question.id] if sub_question.id else [],
         }
     )
     return BaseRateStepPayload(
@@ -163,19 +163,19 @@ async def run_base_rate_step(
 
 async def run_inside_step(
     input: ForecastInput,
-    sub_claim: SubPrediction,
+    sub_question: SubPrediction,
     payload: BaseRateStepPayload,
     deps: ForecastDeps,
 ) -> InsideStepPayload:
     """Move exactly one population's measured rate by its own modifiers.
 
-    `lens_name` and `sub_claim_ids` are stamped by code: a cell moved exactly one
+    `lens_name` and `sub_question_ids` are stamped by code: a cell moved exactly one
     population, and a link it volunteered could point anywhere.
     """
-    cdeps = cell_deps(deps, sub_claim.id or "", input.max_iterations)
+    cdeps = cell_deps(deps, sub_question.id or "", input.max_iterations)
     try:
         result = await run_adjust_lens(
-            input, sub_claim, payload.lens, payload.disagreement, cdeps
+            input, sub_question, payload.lens, payload.disagreement, cdeps
         )
     except Exception as exc:
         if type(exc).__name__ == "UsageLimitExceeded":
@@ -185,7 +185,7 @@ async def run_inside_step(
         a.model_copy(
             update={
                 "lens_name": payload.lens.name,
-                "sub_claim_ids": [sub_claim.id] if sub_claim.id else [],
+                "sub_question_ids": [sub_question.id] if sub_question.id else [],
             }
         )
         for a in result.adjustments
@@ -204,9 +204,9 @@ def assemble_outside(
 ) -> OutsideView:
     """Fold every measured population into one OutsideView. Pure."""
     return merge_base_rates(
-        [sub_claim for sub_claim, _ in cells],
+        [sub_question for sub_question, _ in cells],
         [
-            SubClaimBaseRates(lens=p.lens, disagreement=p.disagreement)
+            SubQuestionBaseRates(lens=p.lens, disagreement=p.disagreement)
             for _, p in cells
         ],
         decomposition,
@@ -332,7 +332,7 @@ async def run_all(
 
     decomposition = await run_decompose_stage(input, deps)
     researchable = [
-        s for s in decomposition.sub_claims if s.knowability == "researchable"
+        s for s in decomposition.sub_questions if s.knowability == "researchable"
     ]
 
     lens_groups = await asyncio.gather(
@@ -340,10 +340,10 @@ async def run_all(
         return_exceptions=True,
     )
     cells: list[tuple[SubPrediction, Lens]] = []
-    for sub_claim, group in zip(researchable, lens_groups):
+    for sub_question, group in zip(researchable, lens_groups):
         if isinstance(group, BaseException):
             continue
-        cells.extend((sub_claim, lens) for lens in group.lenses)
+        cells.extend((sub_question, lens) for lens in group.lenses)
 
     researched_results = await asyncio.gather(
         *(run_base_rate_step(input, s, lens, deps) for s, lens in cells),

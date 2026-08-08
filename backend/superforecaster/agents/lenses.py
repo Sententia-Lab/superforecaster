@@ -20,7 +20,7 @@ from config import get_model_settings, get_synthesis_limits, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
-from ..models import Decomposition, ForecastInput, SubClaimLenses, SubPrediction
+from ..models import Decomposition, ForecastInput, SubQuestionLenses, SubPrediction
 from ..observability import run_agent
 from . import as_of_note, format_question, with_model
 
@@ -70,23 +70,23 @@ population first is meant to keep out of the answer.
 """
 
 
-def build_lenses_agent(model: str | None = None) -> Agent[ForecastDeps, SubClaimLenses]:
+def build_lenses_agent(model: str | None = None) -> Agent[ForecastDeps, SubQuestionLenses]:
     """Names populations for one sub-question. No tools, by design — see the module docstring."""
-    return Agent[ForecastDeps, SubClaimLenses](
+    return Agent[ForecastDeps, SubQuestionLenses](
         model=model or resolve_agent_model(),
         model_settings=get_model_settings(),
         name="lenses_agent",
         deps_type=ForecastDeps,
-        output_type=SubClaimLenses,
+        output_type=SubQuestionLenses,
         system_prompt=INSTRUCTIONS,
         retries=1,
     )
 
 
-_agent: Agent[ForecastDeps, SubClaimLenses] | None = None
+_agent: Agent[ForecastDeps, SubQuestionLenses] | None = None
 
 
-def get_lenses_agent() -> Agent[ForecastDeps, SubClaimLenses]:
+def get_lenses_agent() -> Agent[ForecastDeps, SubQuestionLenses]:
     global _agent
     if _agent is None:
         _agent = build_lenses_agent()
@@ -96,27 +96,27 @@ def get_lenses_agent() -> Agent[ForecastDeps, SubClaimLenses]:
 async def run_choose_lenses(
     input: ForecastInput,
     decomposition: Decomposition,
-    sub_claim: SubPrediction,
+    sub_question: SubPrediction,
     deps: ForecastDeps,
-) -> SubClaimLenses:
+) -> SubQuestionLenses:
     """Name 1-3 reference populations for one sub-question. No rates."""
     others = "\n".join(
         f"  - {s.id}: {s.question}"
-        for s in decomposition.sub_claims
-        if s.id != sub_claim.id
+        for s in decomposition.sub_questions
+        if s.id != sub_question.id
     )
 
     prompt = f"""Choose reference populations for ONE part of this question.
 
 {format_question(input)}{as_of_note(deps)}
 
-YOUR PART — {sub_claim.id}: {sub_claim.question}
-Why the decomposition split it out: {sub_claim.rationale}
+YOUR PART — {sub_question.id}: {sub_question.question}
+Why the decomposition split it out: {sub_question.rationale}
 
 THE OTHER PARTS, being handled separately — do not choose lenses for these:
 {others or "  (none)"}
 
-Return a SubClaimLenses with 1-3 lenses for your part. Define each population precisely
+Return a SubQuestionLenses with 1-3 lenses for your part. Define each population precisely
 enough that someone else could count the same cases, and weigh them by fit alone."""
 
     agent = get_lenses_agent()
@@ -127,6 +127,6 @@ enough that someone else could count the same cases, and weigh them by fit alone
             deps=deps,
             verbose=deps.verbose,
             usage_limits=get_synthesis_limits(),
-            run_name=f"lenses · {sub_claim.id}",
+            run_name=f"lenses · {sub_question.id}",
         )
     return result.output

@@ -25,21 +25,21 @@ async def test_run_all_drives_every_stage_and_returns_the_forecast(monkeypatch):
         seen.append("decompose")
         return decomposition()
 
-    async def fake_lenses(input, decomp, sub_claim, deps):
-        seen.append(f"lenses:{sub_claim.id}")
+    async def fake_lenses(input, decomp, sub_question, deps):
+        seen.append(f"lenses:{sub_question.id}")
         return chosen_lenses("lens-a")
 
-    async def fake_base_rate(input, sub_claim, lens, deps):
-        seen.append(f"base:{sub_claim.id}:{lens.name}")
-        return base_rate_payload(lens.name, sub_claim.id)
+    async def fake_base_rate(input, sub_question, lens, deps):
+        seen.append(f"base:{sub_question.id}:{lens.name}")
+        return base_rate_payload(lens.name, sub_question.id)
 
-    async def fake_inside(input, sub_claim, payload, deps):
-        seen.append(f"inside:{sub_claim.id}:{payload.lens.name}")
-        return inside_payload(payload.lens.name, sub_claim.id)
+    async def fake_inside(input, sub_question, payload, deps):
+        seen.append(f"inside:{sub_question.id}:{payload.lens.name}")
+        return inside_payload(payload.lens.name, sub_question.id)
 
     async def fake_synthesis(input, decomp, base_cells, inside_cells, deps):
         seen.append("synthesis")
-        assert len(base_cells) == 2  # sc1 and sc3 × one lens each
+        assert len(base_cells) == 2  # sq1 and sq3 × one lens each
         assert len(inside_cells) == 2
         return synthesis_payload()
 
@@ -77,20 +77,20 @@ async def test_run_all_survives_a_failing_cell(monkeypatch):
     async def fake_decompose(input, deps):
         return decomposition()
 
-    async def fake_lenses(input, decomp, sub_claim, deps):
+    async def fake_lenses(input, decomp, sub_question, deps):
         return chosen_lenses("lens-a")
 
-    async def flaky_base_rate(input, sub_claim, lens, deps):
-        if sub_claim.id == "sc1":
+    async def flaky_base_rate(input, sub_question, lens, deps):
+        if sub_question.id == "sq1":
             raise RuntimeError("cell died")
-        return base_rate_payload(lens.name, sub_claim.id)
+        return base_rate_payload(lens.name, sub_question.id)
 
-    async def fake_inside(input, sub_claim, payload, deps):
-        return inside_payload(payload.lens.name, sub_claim.id)
+    async def fake_inside(input, sub_question, payload, deps):
+        return inside_payload(payload.lens.name, sub_question.id)
 
     async def fake_synthesis(input, decomp, base_cells, inside_cells, deps):
-        # sc1's cell died; the row degrades to what the other populations found.
-        assert [c.id for c, _ in base_cells] == ["sc3"]
+        # sq1's cell died; the row degrades to what the other populations found.
+        assert [c.id for c, _ in base_cells] == ["sq3"]
         return synthesis_payload()
 
     monkeypatch.setattr(stages, "run_decompose_stage", fake_decompose)

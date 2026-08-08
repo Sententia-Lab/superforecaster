@@ -32,15 +32,15 @@ def _run(**kwargs) -> dict:
     return db.create_gated_run(**{**defaults, **kwargs})
 
 
-def _step(run_id: str, stage: str, sub_claim_id: str = "", lens_name: str = "") -> dict:
+def _step(run_id: str, stage: str, sub_question_id: str = "", lens_name: str = "") -> dict:
     for s in db.list_steps(run_id):
         if (
             s["stage"] == stage
-            and s["sub_claim_id"] == sub_claim_id
+            and s["sub_question_id"] == sub_question_id
             and s["lens_name"] == lens_name
         ):
             return s
-    raise AssertionError(f"no {stage} step for ({sub_claim_id!r}, {lens_name!r})")
+    raise AssertionError(f"no {stage} step for ({sub_question_id!r}, {lens_name!r})")
 
 
 @pytest.fixture
@@ -50,14 +50,14 @@ def stub_stages(monkeypatch):
     async def fake_decompose(input, deps):
         return decomposition()
 
-    async def fake_lenses(input, decomp, sub_claim, deps):
+    async def fake_lenses(input, decomp, sub_question, deps):
         return chosen_lenses("lens-a", "lens-b")
 
-    async def fake_base_rate(input, sub_claim, lens, deps):
-        return base_rate_payload(lens.name, sub_claim.id)
+    async def fake_base_rate(input, sub_question, lens, deps):
+        return base_rate_payload(lens.name, sub_question.id)
 
-    async def fake_inside(input, sub_claim, payload, deps):
-        return inside_payload(payload.lens.name, sub_claim.id)
+    async def fake_inside(input, sub_question, payload, deps):
+        return inside_payload(payload.lens.name, sub_question.id)
 
     async def fake_synthesis(input, decomp, base_cells, inside_cells, deps):
         return synthesis_payload()
@@ -98,8 +98,8 @@ async def test_decompose_materializes_one_lenses_step_per_researchable(stub_stag
     await machine.execute_step(_step(run["id"], "decompose")["id"])
 
     lenses_steps = [s for s in db.list_steps(run["id"]) if s["stage"] == "lenses"]
-    # decomposition() has sc1 and sc3 researchable, sc2 judgment.
-    assert {s["sub_claim_id"] for s in lenses_steps} == {"sc1", "sc3"}
+    # decomposition() has sq1 and sq3 researchable, sq2 judgment.
+    assert {s["sub_question_id"] for s in lenses_steps} == {"sq1", "sq3"}
 
 
 @pytest.mark.asyncio
@@ -107,16 +107,16 @@ async def test_last_lenses_step_materializes_base_rate_cells(stub_stages):
     run = _run()
     machine.start_run(run["id"])
     await machine.execute_step(_step(run["id"], "decompose")["id"])
-    await machine.execute_step(_step(run["id"], "lenses", "sc1")["id"])
+    await machine.execute_step(_step(run["id"], "lenses", "sq1")["id"])
     assert not any(s["stage"] == "base_rates" for s in db.list_steps(run["id"]))
 
-    await machine.execute_step(_step(run["id"], "lenses", "sc3")["id"])
+    await machine.execute_step(_step(run["id"], "lenses", "sq3")["id"])
     cells = [s for s in db.list_steps(run["id"]) if s["stage"] == "base_rates"]
-    assert {(s["sub_claim_id"], s["lens_name"]) for s in cells} == {
-        ("sc1", "lens-a"),
-        ("sc1", "lens-b"),
-        ("sc3", "lens-a"),
-        ("sc3", "lens-b"),
+    assert {(s["sub_question_id"], s["lens_name"]) for s in cells} == {
+        ("sq1", "lens-a"),
+        ("sq1", "lens-b"),
+        ("sq3", "lens-a"),
+        ("sq3", "lens-b"),
     }
 
 
@@ -141,12 +141,12 @@ async def test_full_run_lands_complete_with_a_saved_forecast(stub_stages):
     run = _run()
     machine.start_run(run["id"])
     await machine.execute_step(_step(run["id"], "decompose")["id"])
-    for sc in ("sc1", "sc3"):
+    for sc in ("sq1", "sq3"):
         await machine.execute_step(_step(run["id"], "lenses", sc)["id"])
-    for sc in ("sc1", "sc3"):
+    for sc in ("sq1", "sq3"):
         for lens in ("lens-a", "lens-b"):
             await machine.execute_step(_step(run["id"], "base_rates", sc, lens)["id"])
-    for sc in ("sc1", "sc3"):
+    for sc in ("sq1", "sq3"):
         for lens in ("lens-a", "lens-b"):
             await machine.execute_step(_step(run["id"], "inside_view", sc, lens)["id"])
     await machine.execute_step(_step(run["id"], "synthesis")["id"])
@@ -165,14 +165,14 @@ async def test_cannot_run_a_cell_while_prior_stage_is_incomplete(stub_stages):
     run = _run()
     machine.start_run(run["id"])
     await machine.execute_step(_step(run["id"], "decompose")["id"])
-    await machine.execute_step(_step(run["id"], "lenses", "sc1")["id"])
-    await machine.execute_step(_step(run["id"], "lenses", "sc3")["id"])
+    await machine.execute_step(_step(run["id"], "lenses", "sq1")["id"])
+    await machine.execute_step(_step(run["id"], "lenses", "sq3")["id"])
     # Force an inside_view row into existence while base_rates is still pending —
     # the defense-in-depth path a stale client could hit.
-    db.insert_steps(run["id"], [("inside_view", "sc1", "lens-a")])
+    db.insert_steps(run["id"], [("inside_view", "sq1", "lens-a")])
 
     with pytest.raises(machine.GateError, match="gate not satisfied"):
-        await machine.execute_step(_step(run["id"], "inside_view", "sc1", "lens-a")["id"])
+        await machine.execute_step(_step(run["id"], "inside_view", "sq1", "lens-a")["id"])
 
 
 @pytest.mark.asyncio

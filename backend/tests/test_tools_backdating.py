@@ -285,7 +285,7 @@ async def test_a_disconfirming_sweep_costs_one_call_not_three(monkeypatch, tavil
         return "results"
 
     monkeypatch.setattr(tools, "_search_web", fake_search)
-    deps = ForecastDeps(budget=SearchBudget(sub_claim="sc1", soft_depth=5, hard_depth=8))
+    deps = ForecastDeps(budget=SearchBudget(sub_question="sq1", soft_depth=5, hard_depth=8))
     await tools.find_disconfirming_evidence(make_ctx(deps), "X happens")
 
     assert deps.budget.used == 1
@@ -296,7 +296,7 @@ async def test_a_disconfirming_sweep_costs_one_call_not_three(monkeypatch, tavil
 
 def budgeted(soft: int = 3, hard: int = 5, used: int = 0) -> ForecastDeps:
     return ForecastDeps(
-        budget=SearchBudget(sub_claim="sc1", soft_depth=soft, hard_depth=hard, used=used)
+        budget=SearchBudget(sub_question="sq1", soft_depth=soft, hard_depth=hard, used=used)
     )
 
 

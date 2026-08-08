@@ -13,15 +13,22 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import config  # noqa: F401 — loads backend/.env
-from config import get_settings, resolve_agent_model
-from fastapi import FastAPI, Request
+from config import (
+    active_llm_key_name,
+    get_settings,
+    origin,
+    resolve_agent_model,
+    set_runtime_key,
+)
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from superforecaster import cron, db
 
 from .admin import router as admin_router
-from .deps import is_local_mode
+from .deps import is_local_mode, require_admin
 from .calibration import router as calibration_router
 from .forecasts import router as forecasts_router
 from .questions import router as questions_router
@@ -104,8 +111,13 @@ def client_config(request: Request) -> dict[str, object]:
     how the client asks.
 
     Public and deliberately thin: three booleans and a model name, nothing an
-    unauthenticated caller could not learn by trying a request.
+    unauthenticated caller could not learn by trying a request. `keys` says where each
+    key came from and never what it is — see ADR 61.
     """
+    return _client_config(request)
+
+
+def _client_config(request: Request) -> dict[str, object]:
     s = get_settings()
     try:
         model = resolve_agent_model()
@@ -115,7 +127,51 @@ def client_config(request: Request) -> dict[str, object]:
         "auth_required": not is_local_mode(request),
         "search_enabled": bool(s.tavily_api_key),
         "model": model,
+        "keys": {
+            "llm": origin(active_llm_key_name()),
+            # Which variable the LLM row is talking about. A gateway install and a direct
+            # Anthropic install are credentialed by different names, and a panel that
+            # named only one would lie on the other.
+            "llm_var": active_llm_key_name(),
+            "tavily": origin("TAVILY_API_KEY"),
+            "wikipedia": origin("WIKIPEDIA_API_KEY"),
+        },
     }
+
+
+class KeyUpdate(BaseModel):
+    """One field per settable key. `None` leaves it alone, `""` clears it."""
+
+    llm_api_key: str | None = None
+    tavily_api_key: str | None = None
+    wikipedia_api_key: str | None = None
+
+
+@app.put("/config/keys", tags=["health"])
+def set_keys(
+    body: KeyUpdate, request: Request, _: None = Depends(require_admin)
+) -> dict[str, object]:
+    """Set API keys for the life of this process. ADR 61.
+
+    Write-only: the response is the same `keys` origin map `GET /config` returns, so the
+    panel redraws from it without a follow-up read, and no route ever hands a key back.
+    """
+    for field, name in (
+        # The LLM row writes whichever variable is credentialing the model, so setting a
+        # key through the panel always changes the key the next run actually uses.
+        ("llm_api_key", active_llm_key_name()),
+        ("tavily_api_key", "TAVILY_API_KEY"),
+        ("wikipedia_api_key", "WIKIPEDIA_API_KEY"),
+    ):
+        value = getattr(body, field)
+        if value is None:
+            continue
+        try:
+            set_runtime_key(name, value.strip())
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+
+    return _client_config(request)
 
 
 app.include_router(forecasts_router)

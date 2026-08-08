@@ -8,7 +8,7 @@
 
 /** Which rows exist only because of this stage's payload. Mirrors `machine.DERIVED`. */
 const DERIVED = {
-  // A decomposition with no researchable sub-claims fans out straight to synthesis.
+  // A decomposition with no researchable sub-questions fans out straight to synthesis.
   decompose: (steps) =>
     steps.filter((s) => s.stage === "lenses" || s.stage === "synthesis"),
   // Every base rate, not only this sub-question's: once any rate is back, the run has
@@ -63,7 +63,7 @@ export function weightSum(lenses) {
 /** The populations a sub-question was viewed through. */
 export function lensesFor(id, outside) {
   if (!outside || !id) return [];
-  return outside.lenses.filter((l) => (l.sub_claim_ids || []).includes(id));
+  return outside.lenses.filter((l) => (l.sub_question_ids || []).includes(id));
 }
 
 /** A lens's base rate: pooled hits over pooled n. Derived, never asserted. */
@@ -105,9 +105,9 @@ export function adjustedLensRate(lens, inside) {
  * A sub-question's rate: its adjusted lenses blended by relevance.
  *
  * `n` is deliberately absent — sample size says how well a population was measured,
- * not how much it resembles this case. Mirrors `checks.sub_claim_rate`.
+ * not how much it resembles this case. Mirrors `checks.sub_question_rate`.
  */
-export function subClaimRate(id, outside, inside) {
+export function subQuestionRate(id, outside, inside) {
   const lenses = lensesFor(id, outside);
   const total = lenses.reduce((n, l) => n + l.weight, 0);
   if (!lenses.length || total <= 1e-9) return null;

@@ -13,7 +13,7 @@ import pytest
 
 from api.main import app
 from superforecaster import db, machine
-from superforecaster.models import Decomposition, Lens, SubClaimLensesEdit
+from superforecaster.models import Decomposition, Lens, SubQuestionLensesEdit
 from superforecaster.stages import normalize_weights
 
 from .gated_factories import (
@@ -36,20 +36,20 @@ def _run(**kwargs) -> dict:
     return db.create_gated_run(**{**defaults, **kwargs})
 
 
-def _step(run_id: str, stage: str, sub_claim_id: str = "", lens_name: str = "") -> dict:
+def _step(run_id: str, stage: str, sub_question_id: str = "", lens_name: str = "") -> dict:
     for s in db.list_steps(run_id):
         if (
             s["stage"] == stage
-            and s["sub_claim_id"] == sub_claim_id
+            and s["sub_question_id"] == sub_question_id
             and s["lens_name"] == lens_name
         ):
             return s
-    raise AssertionError(f"no {stage} step for ({sub_claim_id!r}, {lens_name!r})")
+    raise AssertionError(f"no {stage} step for ({sub_question_id!r}, {lens_name!r})")
 
 
 def _keys(run_id: str, stage: str) -> set[tuple[str, str]]:
     return {
-        (s["sub_claim_id"], s["lens_name"])
+        (s["sub_question_id"], s["lens_name"])
         for s in db.list_steps(run_id)
         if s["stage"] == stage
     }
@@ -67,14 +67,14 @@ def _decomposed(knowabilities=("researchable", "researchable", "judgment")) -> s
     return run["id"]
 
 
-def _lensed(*, sc1=("lens-a", "lens-b"), sc2=("lens-c",)) -> str:
+def _lensed(*, sq1=("lens-a", "lens-b"), sq2=("lens-c",)) -> str:
     """A run with every lens step complete, so the base-rate cells exist."""
     run_id = _decomposed()
     db.finish_step(
-        _step(run_id, "lenses", "sc1")["id"], chosen_lenses(*sc1).model_dump_json()
+        _step(run_id, "lenses", "sq1")["id"], chosen_lenses(*sq1).model_dump_json()
     )
     db.finish_step(
-        _step(run_id, "lenses", "sc2")["id"], chosen_lenses(*sc2).model_dump_json()
+        _step(run_id, "lenses", "sq2")["id"], chosen_lenses(*sq2).model_dump_json()
     )
     machine.reconcile(run_id)
     return run_id
@@ -85,7 +85,7 @@ def _lensed(*, sc1=("lens-a", "lens-b"), sc2=("lens-c",)) -> str:
 
 def test_reconcile_adds_the_next_stage_and_is_idempotent():
     run_id = _decomposed()
-    assert _keys(run_id, "lenses") == {("sc1", ""), ("sc2", "")}
+    assert _keys(run_id, "lenses") == {("sq1", ""), ("sq2", "")}
 
     before = [s["id"] for s in db.list_steps(run_id)]
     machine.reconcile(run_id)
@@ -94,29 +94,29 @@ def test_reconcile_adds_the_next_stage_and_is_idempotent():
 
 def test_reconcile_deletes_a_row_the_payload_no_longer_implies():
     run_id = _decomposed()
-    assert _keys(run_id, "lenses") == {("sc1", ""), ("sc2", "")}
+    assert _keys(run_id, "lenses") == {("sq1", ""), ("sq2", "")}
 
-    # sc2 becomes judgment, so it should no longer carry a lens row.
+    # sq2 becomes judgment, so it should no longer carry a lens row.
     edited = Decomposition(
-        sub_claims=[sub("sc1"), sub("sc2", "judgment"), sub("sc3")],
+        sub_questions=[sub("sq1"), sub("sq2", "judgment"), sub("sq3")],
         chain_rule="conjunction",
         chain_note="all must hold",
     )
     db.edit_step_payload(_step(run_id, "decompose")["id"], edited.model_dump_json())
     machine.reconcile(run_id)
 
-    assert _keys(run_id, "lenses") == {("sc1", ""), ("sc3", "")}
+    assert _keys(run_id, "lenses") == {("sq1", ""), ("sq3", "")}
 
 
 def test_reconcile_refuses_to_delete_a_row_that_holds_work():
     run_id = _lensed()
     # Bypass the lock the way only a bug could: research a cell, then strand it.
     db.finish_step(
-        _step(run_id, "base_rates", "sc1", "lens-b")["id"],
-        base_rate_payload("lens-b", "sc1").model_dump_json(),
+        _step(run_id, "base_rates", "sq1", "lens-b")["id"],
+        base_rate_payload("lens-b", "sq1").model_dump_json(),
     )
     db.edit_step_payload(
-        _step(run_id, "lenses", "sc1")["id"],
+        _step(run_id, "lenses", "sq1")["id"],
         chosen_lenses("lens-a").model_dump_json(),
     )
 
@@ -124,7 +124,7 @@ def test_reconcile_refuses_to_delete_a_row_that_holds_work():
         machine.reconcile(run_id)
 
     # Nothing deleted and nothing inserted — the raise came before both writes.
-    assert ("sc1", "lens-b") in _keys(run_id, "base_rates")
+    assert ("sq1", "lens-b") in _keys(run_id, "base_rates")
 
 
 # ---------- editing the decomposition ----------
@@ -133,31 +133,31 @@ def test_reconcile_refuses_to_delete_a_row_that_holds_work():
 def test_removing_a_sub_question_drops_its_pending_lens_row():
     run_id = _decomposed()
     edited = Decomposition(
-        sub_claims=[sub("sc1"), sub("sc2"), sub("sc3")],
+        sub_questions=[sub("sq1"), sub("sq2"), sub("sq3")],
         chain_rule="conjunction",
         chain_note="all must hold",
     )
     machine.edit_payload(run_id, _step(run_id, "decompose")["id"], edited.model_dump())
-    assert _keys(run_id, "lenses") == {("sc1", ""), ("sc2", ""), ("sc3", "")}
+    assert _keys(run_id, "lenses") == {("sq1", ""), ("sq2", ""), ("sq3", "")}
 
     shorter = Decomposition(
-        sub_claims=[sub("sc1"), sub("sc2"), sub("sc9")],
+        sub_questions=[sub("sq1"), sub("sq2"), sub("sq9")],
         chain_rule="conjunction",
         chain_note="all must hold",
     )
     machine.edit_payload(run_id, _step(run_id, "decompose")["id"], shorter.model_dump())
-    # Ids are re-stamped by position, so the third slot is sc3 whatever it was called.
-    assert _keys(run_id, "lenses") == {("sc1", ""), ("sc2", ""), ("sc3", "")}
+    # Ids are re-stamped by position, so the third slot is sq3 whatever it was called.
+    assert _keys(run_id, "lenses") == {("sq1", ""), ("sq2", ""), ("sq3", "")}
 
 
 def test_editing_the_decomposition_is_blocked_once_a_lens_step_has_run():
     run_id = _decomposed()
     db.finish_step(
-        _step(run_id, "lenses", "sc1")["id"], chosen_lenses("lens-a").model_dump_json()
+        _step(run_id, "lenses", "sq1")["id"], chosen_lenses("lens-a").model_dump_json()
     )
 
     edited = Decomposition(
-        sub_claims=[sub("sc1"), sub("sc2"), sub("sc3")],
+        sub_questions=[sub("sq1"), sub("sq2"), sub("sq3")],
         chain_rule="conjunction",
         chain_note="all must hold",
     )
@@ -173,15 +173,15 @@ def test_editing_the_decomposition_is_blocked_once_a_lens_step_has_run():
 def test_editing_a_lens_set_rekeys_only_its_own_cells():
     run_id = _lensed()
     assert _keys(run_id, "base_rates") == {
-        ("sc1", "lens-a"),
-        ("sc1", "lens-b"),
-        ("sc2", "lens-c"),
+        ("sq1", "lens-a"),
+        ("sq1", "lens-b"),
+        ("sq2", "lens-c"),
     }
 
     machine.edit_payload(
         run_id,
-        _step(run_id, "lenses", "sc1")["id"],
-        SubClaimLensesEdit(
+        _step(run_id, "lenses", "sq1")["id"],
+        SubQuestionLensesEdit(
             lenses=[
                 lens("lens-a").model_copy(update={"weight": 0.6}),
                 lens("recent").model_copy(update={"weight": 0.4}),
@@ -190,20 +190,20 @@ def test_editing_a_lens_set_rekeys_only_its_own_cells():
     )
 
     assert _keys(run_id, "base_rates") == {
-        ("sc1", "lens-a"),
-        ("sc1", "recent"),
-        ("sc2", "lens-c"),
+        ("sq1", "lens-a"),
+        ("sq1", "recent"),
+        ("sq2", "lens-c"),
     }
 
 
 def test_every_lens_set_is_editable_while_no_rate_has_come_back():
     run_id = _lensed()
-    one_lens = SubClaimLensesEdit(lenses=[lens("solo")]).model_dump()
+    one_lens = SubQuestionLensesEdit(lenses=[lens("solo")]).model_dump()
 
-    machine.edit_payload(run_id, _step(run_id, "lenses", "sc1")["id"], one_lens)
-    machine.edit_payload(run_id, _step(run_id, "lenses", "sc2")["id"], one_lens)
+    machine.edit_payload(run_id, _step(run_id, "lenses", "sq1")["id"], one_lens)
+    machine.edit_payload(run_id, _step(run_id, "lenses", "sq2")["id"], one_lens)
 
-    assert _keys(run_id, "base_rates") == {("sc1", "solo"), ("sc2", "solo")}
+    assert _keys(run_id, "base_rates") == {("sq1", "solo"), ("sq2", "solo")}
 
 
 def test_one_measured_base_rate_locks_every_lens_set():
@@ -215,24 +215,24 @@ def test_one_measured_base_rate_locks_every_lens_set():
     """
     run_id = _lensed()
     db.finish_step(
-        _step(run_id, "base_rates", "sc1", "lens-a")["id"],
-        base_rate_payload("lens-a", "sc1").model_dump_json(),
+        _step(run_id, "base_rates", "sq1", "lens-a")["id"],
+        base_rate_payload("lens-a", "sq1").model_dump_json(),
     )
 
-    one_lens = SubClaimLensesEdit(lenses=[lens("solo")]).model_dump()
-    for sub_claim_id in ("sc1", "sc2"):
+    one_lens = SubQuestionLensesEdit(lenses=[lens("solo")]).model_dump()
+    for sub_question_id in ("sq1", "sq2"):
         with pytest.raises(machine.GateError, match="base_rates step .* is complete"):
             machine.edit_payload(
-                run_id, _step(run_id, "lenses", sub_claim_id)["id"], one_lens
+                run_id, _step(run_id, "lenses", sub_question_id)["id"], one_lens
             )
 
 
 def test_an_edited_weight_reaches_the_step_that_consumes_it():
-    run_id = _lensed(sc1=("lens-a", "lens-b"))
+    run_id = _lensed(sq1=("lens-a", "lens-b"))
     machine.edit_payload(
         run_id,
-        _step(run_id, "lenses", "sc1")["id"],
-        SubClaimLensesEdit(
+        _step(run_id, "lenses", "sq1")["id"],
+        SubQuestionLensesEdit(
             lenses=[
                 lens("lens-a").model_copy(update={"weight": 0.75}),
                 lens("lens-b").model_copy(update={"weight": 0.25}),
@@ -240,7 +240,7 @@ def test_an_edited_weight_reaches_the_step_that_consumes_it():
         ).model_dump(),
     )
 
-    chosen = machine._chosen_lens(db.list_steps(run_id), "sc1", "lens-a")
+    chosen = machine._chosen_lens(db.list_steps(run_id), "sq1", "lens-a")
     assert chosen.weight == 0.75
 
 
@@ -250,7 +250,7 @@ def test_edit_records_the_human_without_touching_status_or_attempts():
     assert before["edited_at"] is None
 
     edited = Decomposition(
-        sub_claims=[sub("sc1"), sub("sc2"), sub("sc3")],
+        sub_questions=[sub("sq1"), sub("sq2"), sub("sq3")],
         chain_rule="conjunction",
         chain_note="all must hold",
     )
@@ -267,14 +267,14 @@ def test_a_pending_step_has_no_payload_to_edit():
     with pytest.raises(machine.GateError, match="there is no payload to edit"):
         machine.edit_payload(
             run_id,
-            _step(run_id, "lenses", "sc1")["id"],
-            SubClaimLensesEdit(lenses=[lens("solo")]).model_dump(),
+            _step(run_id, "lenses", "sq1")["id"],
+            SubQuestionLensesEdit(lenses=[lens("solo")]).model_dump(),
         )
 
 
 def test_only_decompose_and_lenses_are_editable():
     run_id = _lensed()
-    step = _step(run_id, "base_rates", "sc1", "lens-a")
+    step = _step(run_id, "base_rates", "sq1", "lens-a")
     with pytest.raises(machine.GateError, match="not editable"):
         machine.edit_payload(run_id, step["id"], {})
 
@@ -284,7 +284,7 @@ def test_only_decompose_and_lenses_are_editable():
 
 def test_hand_written_lens_weights_must_sum_to_one():
     with pytest.raises(ValueError, match="must sum to 1.00, got 1.05"):
-        SubClaimLensesEdit(
+        SubQuestionLensesEdit(
             lenses=[
                 lens("a").model_copy(update={"weight": 0.55}),
                 lens("b").model_copy(update={"weight": 0.50}),
@@ -294,7 +294,7 @@ def test_hand_written_lens_weights_must_sum_to_one():
 
 def test_lens_names_must_be_unique_within_a_sub_question():
     with pytest.raises(ValueError, match="names must be unique"):
-        SubClaimLensesEdit(
+        SubQuestionLensesEdit(
             lenses=[
                 lens("same").model_copy(update={"weight": 0.5}),
                 lens("same").model_copy(update={"weight": 0.5}),
@@ -306,7 +306,7 @@ def test_lens_names_must_be_unique_within_a_sub_question():
 def test_a_decomposition_stays_between_three_and_five(count):
     with pytest.raises(ValueError):
         Decomposition(
-            sub_claims=[sub(f"sc{i}") for i in range(count)],
+            sub_questions=[sub(f"sq{i}") for i in range(count)],
             chain_rule="conjunction",
             chain_note="all must hold",
         )
@@ -374,7 +374,7 @@ def _payload_url(run_id: str, step_id: str) -> str:
 async def test_put_payload_returns_the_whole_run(client):
     run_id = _decomposed()
     edited = Decomposition(
-        sub_claims=[sub("sc1"), sub("sc2"), sub("sc3")],
+        sub_questions=[sub("sq1"), sub("sq2"), sub("sq3")],
         chain_rule="conjunction",
         chain_note="all must hold",
     )
@@ -384,10 +384,10 @@ async def test_put_payload_returns_the_whole_run(client):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert {s["sub_claim_id"] for s in body["steps"] if s["stage"] == "lenses"} == {
-        "sc1",
-        "sc2",
-        "sc3",
+    assert {s["sub_question_id"] for s in body["steps"] if s["stage"] == "lenses"} == {
+        "sq1",
+        "sq2",
+        "sq3",
     }
     decompose_step = next(s for s in body["steps"] if s["stage"] == "decompose")
     assert decompose_step["edited_at"] is not None
@@ -407,10 +407,10 @@ async def test_put_payload_404s_for_a_step_on_another_run(client):
 async def test_put_payload_409s_once_something_downstream_ran(client):
     run_id = _decomposed()
     db.finish_step(
-        _step(run_id, "lenses", "sc1")["id"], chosen_lenses("lens-a").model_dump_json()
+        _step(run_id, "lenses", "sq1")["id"], chosen_lenses("lens-a").model_dump_json()
     )
     edited = Decomposition(
-        sub_claims=[sub("sc1"), sub("sc2"), sub("sc3")],
+        sub_questions=[sub("sq1"), sub("sq2"), sub("sq3")],
         chain_rule="conjunction",
         chain_note="all must hold",
     )
@@ -426,7 +426,7 @@ async def test_put_payload_409s_once_something_downstream_ran(client):
 async def test_put_payload_422s_on_weights_that_do_not_sum_to_one(client):
     run_id = _lensed()
     resp = await client.put(
-        _payload_url(run_id, _step(run_id, "lenses", "sc1")["id"]),
+        _payload_url(run_id, _step(run_id, "lenses", "sq1")["id"]),
         json={
             "lenses": [
                 lens("a").model_copy(update={"weight": 0.55}).model_dump(mode="json"),
@@ -436,3 +436,17 @@ async def test_put_payload_422s_on_weights_that_do_not_sum_to_one(client):
     )
     assert resp.status_code == 422
     assert "sum to 1.00" in str(resp.json()["detail"])
+
+
+def test_with_ids_stamps_sq1_upwards():
+    """ADR 56. The ids are assigned by position, never asked of the model — a model asked
+    for keys eventually hands back two of one and skips another."""
+    from superforecaster.agents.decompose import with_ids
+
+    d = Decomposition(
+        sub_questions=[sub("whatever"), sub("also-wrong"), sub("")],
+        chain_rule="conjunction",
+        chain_note="all must hold",
+    )
+
+    assert [s.id for s in with_ids(d).sub_questions] == ["sq1", "sq2", "sq3"]

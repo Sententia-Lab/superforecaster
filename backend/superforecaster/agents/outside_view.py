@@ -30,7 +30,7 @@ from ..models import (
     Lens,
     OutsideView,
     ResearchedLens,
-    SubClaimBaseRates,
+    SubQuestionBaseRates,
     SubPrediction,
 )
 from ..observability import run_agent
@@ -98,14 +98,14 @@ than inventing a rate.
 
 def build_base_rate_cell_agent(
     model: str | None = None,
-) -> Agent[ForecastDeps, SubClaimBaseRates]:
+) -> Agent[ForecastDeps, SubQuestionBaseRates]:
     """One column's base-rate researcher."""
-    agent = Agent[ForecastDeps, SubClaimBaseRates](
+    agent = Agent[ForecastDeps, SubQuestionBaseRates](
         model=model or resolve_agent_model(),
         model_settings=get_model_settings(),
         name="base_rate_cell_agent",
         deps_type=ForecastDeps,
-        output_type=SubClaimBaseRates,
+        output_type=SubQuestionBaseRates,
         system_prompt=INSTRUCTIONS,
         tools=[search_web, search_wikipedia],
         retries=1,
@@ -114,17 +114,17 @@ def build_base_rate_cell_agent(
     return agent
 
 
-_cell_agent: Agent[ForecastDeps, SubClaimBaseRates] | None = None
+_cell_agent: Agent[ForecastDeps, SubQuestionBaseRates] | None = None
 
 
-def get_base_rate_cell_agent() -> Agent[ForecastDeps, SubClaimBaseRates]:
+def get_base_rate_cell_agent() -> Agent[ForecastDeps, SubQuestionBaseRates]:
     global _cell_agent
     if _cell_agent is None:
         _cell_agent = build_base_rate_cell_agent()
     return _cell_agent
 
 
-def cell_deps(deps: ForecastDeps, sub_claim_id: str, max_iterations: int) -> ForecastDeps:
+def cell_deps(deps: ForecastDeps, sub_question_id: str, max_iterations: int) -> ForecastDeps:
     """A deps copy bound to one column, with its own budget and its own source list.
 
     The private `sources_seen` is not a style choice: `observability` detects new sources
@@ -135,23 +135,23 @@ def cell_deps(deps: ForecastDeps, sub_claim_id: str, max_iterations: int) -> For
     soft, hard = get_cell_budget(max_iterations)
     return replace(
         deps,
-        budget=SearchBudget(sub_claim=sub_claim_id, soft_depth=soft, hard_depth=hard),
+        budget=SearchBudget(sub_question=sub_question_id, soft_depth=soft, hard_depth=hard),
         sources_seen=[],
     )
 
 
 async def run_research_lens(
     input: ForecastInput,
-    sub_claim: SubPrediction,
+    sub_question: SubPrediction,
     lens: Lens,
     deps: ForecastDeps,
-) -> SubClaimBaseRates:
+) -> SubQuestionBaseRates:
     """Measure exactly one population. Searches; budget-limited."""
     prompt = f"""Measure ONE population.
 
 {format_question(input)}{as_of_note(deps)}
 
-THE PART OF THE QUESTION THIS BEARS ON — {sub_claim.id}: {sub_claim.question}
+THE PART OF THE QUESTION THIS BEARS ON — {sub_question.id}: {sub_question.question}
 
 YOUR POPULATION — {lens.name}
 Who is in it: {lens.population}
@@ -161,7 +161,7 @@ Count within this population and nothing else. Do not redefine it, do not substi
 population you find easier to search, and do not weigh it against any other — that has
 already been decided.
 
-Return a SubClaimBaseRates whose `lens` repeats the population exactly as given and adds
+Return a SubQuestionBaseRates whose `lens` repeats the population exactly as given and adds
 your evidence blocks and analogs."""
 
     agent = get_base_rate_cell_agent()
@@ -172,7 +172,7 @@ your evidence blocks and analogs."""
             deps=deps,
             verbose=deps.verbose,
             usage_limits=get_cell_limits(input.max_iterations),
-            run_name=f"base rates · {sub_claim.id} · {lens.name}",
+            run_name=f"base rates · {sub_question.id} · {lens.name}",
         )
     return result.output
 
@@ -195,13 +195,13 @@ def exhausted_notice(deps: ForecastDeps) -> None:
         deps.emit(
             "exhausted",
             {
-                "id": b.sub_claim,
+                "id": b.sub_question,
                 "used": b.used,
                 "soft_depth": b.soft_depth,
                 "hard_depth": b.hard_depth,
                 "recovered": False,
             },
-            b.sub_claim,
+            b.sub_question,
         )
 
 
@@ -234,7 +234,7 @@ async def _whole_question_cell(
     )
     result = await run_research_lens(input, fallback_claim, whole, deps)
     view = OutsideView(
-        lenses=[result.lens.model_copy(update={"sub_claim_ids": []})],
+        lenses=[result.lens.model_copy(update={"sub_question_ids": []})],
         aggregate_base_rate=0.0,
         disagreement=result.disagreement,
     )
@@ -244,8 +244,8 @@ async def _whole_question_cell(
 
 
 def merge_base_rates(
-    sub_claims: list[SubPrediction],
-    results: list[SubClaimBaseRates],
+    sub_questions: list[SubPrediction],
+    results: list[SubQuestionBaseRates],
     decomposition: Decomposition,
 ) -> OutsideView:
     """Fold every researched lens into one OutsideView, stamped with its sub-question.
@@ -265,12 +265,12 @@ def merge_base_rates(
     merged: list[ResearchedLens] = []
     notes: list[str] = []
 
-    for sub_claim, result in zip(sub_claims, results):
-        if not isinstance(result, SubClaimBaseRates):
+    for sub_question, result in zip(sub_questions, results):
+        if not isinstance(result, SubQuestionBaseRates):
             continue
-        merged.append(result.lens.model_copy(update={"sub_claim_ids": [sub_claim.id]}))
+        merged.append(result.lens.model_copy(update={"sub_question_ids": [sub_question.id]}))
         if result.disagreement.strip():
-            notes.append(f"{sub_claim.id}: {result.disagreement.strip()}")
+            notes.append(f"{sub_question.id}: {result.disagreement.strip()}")
 
     view = OutsideView(
         lenses=merged,

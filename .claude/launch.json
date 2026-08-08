@@ -7,6 +7,21 @@
       "runtimeArgs": ["run", "uvicorn", "api.main:app", "--port", "8099"],
       "cwd": "backend",
       "port": 8099
+    },
+    {
+      "name": "superforecaster-runs",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "DATABASE_PATH=./superforecaster/superforecaster.db",
+        "uv",
+        "run",
+        "uvicorn",
+        "api.main:app",
+        "--port",
+        "8098"
+      ],
+      "cwd": "backend",
+      "port": 8098
     }
   ]
 }

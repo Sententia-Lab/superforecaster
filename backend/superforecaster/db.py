@@ -13,9 +13,10 @@ question, and it is testable without a database.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -99,7 +100,7 @@ def connect() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 """Bump this and add a step to `MIGRATIONS` whenever an existing table has to change.
 
 `CREATE TABLE IF NOT EXISTS` covers a fresh database and nothing else. It does not add a
@@ -110,7 +111,81 @@ completed all five stages and died on the last write. A schema drift that only s
 after a full run is the most expensive kind there is.
 """
 
-MIGRATIONS: dict[int, tuple[str, ...]] = {
+_SUB_QUESTION_KEYS = {
+    "sub_claims": "sub_questions",
+    "sub_claim_ids": "sub_question_ids",
+    "sub_claim_id": "sub_question_id",
+}
+
+_OLD_ID = re.compile(r"^sc(\d+)$")
+
+
+def _renumber(value: object) -> object:
+    """`sc4` becomes `sq4`. Anything else is returned untouched."""
+    if isinstance(value, str):
+        m = _OLD_ID.match(value)
+        if m:
+            return f"sq{m.group(1)}"
+    return value
+
+
+def _rename_sub_claims(node: object) -> object:
+    """Rewrite ADR 56's old vocabulary inside one parsed JSON document.
+
+    Structural on purpose. The equivalent SQL is `replace(payload_json, '"sc', '"sq')`,
+    which also rewrites `"bias":"scope_insensitivity"` and any `causal_forces:
+    ["scarcity of chips"]` entry — silently, inside a blob nobody reads again until a
+    model fails to parse it. An id is only renumbered where an id can legally sit: as the
+    `id` of a sub-question, or as a member of a `sub_question_ids` list.
+    """
+    if isinstance(node, list):
+        return [_rename_sub_claims(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+
+    out: dict[str, object] = {}
+    for key, value in node.items():
+        key = _SUB_QUESTION_KEYS.get(key, key)
+        if key == "sub_question_ids" and isinstance(value, list):
+            out[key] = [_renumber(v) for v in value]
+        elif key in ("sub_questions", "decompositions") and isinstance(value, list):
+            out[key] = [
+                {**_rename_sub_claims(s), "id": _renumber(s.get("id"))}
+                if isinstance(s, dict)
+                else _rename_sub_claims(s)
+                for s in value
+            ]
+        else:
+            out[key] = _rename_sub_claims(value)
+    return out
+
+
+def _rewrite_sub_claim_payloads(conn: sqlite3.Connection) -> None:
+    """Migration 4's Python step — see ADR 57 for why this is not SQL."""
+    targets = (
+        ("run_steps", "payload_json"),
+        ("forecasts", "decompositions_json"),
+    )
+    for table, column in targets:
+        rows = conn.execute(
+            f"SELECT id, {column} FROM {table} WHERE {column} IS NOT NULL"  # noqa: S608
+        ).fetchall()
+        for row in rows:
+            try:
+                parsed = json.loads(row[column])
+            except (TypeError, ValueError):
+                continue
+            rewritten = json.dumps(_rename_sub_claims(parsed))
+            if rewritten != row[column]:
+                conn.execute(
+                    f"UPDATE {table} SET {column} = ? WHERE id = ?",  # noqa: S608
+                    (rewritten, row["id"]),
+                )
+
+
+MigrationStep = str | Callable[[sqlite3.Connection], None]
+
+MIGRATIONS: dict[int, tuple[MigrationStep, ...]] = {
     # ADR 29 deleted forecast-level confidence. Dropping the column rather than recreating
     # the database keeps every forecast already scored against it.
     1: ("ALTER TABLE forecast_updates DROP COLUMN confidence;",),
@@ -126,8 +201,22 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
     # A payload a person wrote is different evidence from one the agent produced, so the
     # difference stays visible rather than being inferred from a timestamp gap.
     3: ("ALTER TABLE run_steps ADD COLUMN edited_at TIMESTAMP;",),
+    # ADR 56 renamed sub-claim to sub-question. `RENAME COLUMN` rewrites the UNIQUE
+    # constraint along with the column, so the key needs no separate step. The stored
+    # payloads do — structurally, per ADR 57.
+    4: (
+        "ALTER TABLE run_steps RENAME COLUMN sub_claim_id TO sub_question_id;",
+        "UPDATE run_steps SET sub_question_id = 'sq' || substr(sub_question_id, 3) "
+        "WHERE sub_question_id GLOB 'sc[0-9]*';",
+        _rewrite_sub_claim_payloads,
+    ),
 }
-"""version -> statements that take the schema from `version - 1` to `version`.
+"""version -> steps that take the schema from `version - 1` to `version`.
+
+A step is SQL, or a callable taking the open connection when the change cannot be
+expressed in SQL safely (ADR 57). A callable carries exactly the same obligation as a
+statement: it must be safe against a database that reached the previous version by either
+route.
 
 Each step must be safe to apply to a database that reached the previous version by *either*
 route: an old database being upgraded, or a fresh one just built by `init_db`'s
@@ -164,9 +253,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         return
 
     for version in range(current + 1, SCHEMA_VERSION + 1):
-        for statement in MIGRATIONS.get(version, ()):
+        for step in MIGRATIONS.get(version, ()):
             try:
-                conn.execute(statement)
+                step(conn) if callable(step) else conn.execute(step)
             except sqlite3.OperationalError as e:
                 # The fresh-schema case, in both directions. Anything else is a real
                 # failure and has to surface.
@@ -239,7 +328,7 @@ def init_db() -> None:
                 id TEXT PRIMARY KEY,
                 run_id TEXT NOT NULL REFERENCES gated_runs(id) ON DELETE CASCADE,
                 stage TEXT NOT NULL,
-                sub_claim_id TEXT NOT NULL DEFAULT '',
+                sub_question_id TEXT NOT NULL DEFAULT '',
                 lens_name TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'pending',
                 payload_json TEXT,
@@ -248,7 +337,7 @@ def init_db() -> None:
                 started_at TIMESTAMP,
                 finished_at TIMESTAMP,
                 edited_at TIMESTAMP,
-                UNIQUE(run_id, stage, sub_claim_id, lens_name)
+                UNIQUE(run_id, stage, sub_question_id, lens_name)
             );
 
             CREATE INDEX IF NOT EXISTS ix_run_steps_run ON run_steps(run_id, stage);
@@ -727,17 +816,17 @@ def delete_gated_run(run_id: str) -> None:
 def insert_steps(
     run_id: str, steps: list[tuple[str, str, str]]
 ) -> list[dict]:
-    """Materialize pending steps. Each entry is (stage, sub_claim_id, lens_name).
+    """Materialize pending steps. Each entry is (stage, sub_question_id, lens_name).
 
     `INSERT OR IGNORE` against the UNIQUE key makes re-materialization idempotent —
     advancing a stage twice (a retried final cell, say) must not duplicate rows.
     """
     with connect() as conn:
-        for stage, sub_claim_id, lens_name in steps:
+        for stage, sub_question_id, lens_name in steps:
             conn.execute(
-                """INSERT OR IGNORE INTO run_steps (id, run_id, stage, sub_claim_id, lens_name)
+                """INSERT OR IGNORE INTO run_steps (id, run_id, stage, sub_question_id, lens_name)
                    VALUES (?, ?, ?, ?, ?)""",
-                (str(uuid.uuid4()), run_id, stage, sub_claim_id, lens_name),
+                (str(uuid.uuid4()), run_id, stage, sub_question_id, lens_name),
             )
         rows = conn.execute(
             "SELECT * FROM run_steps WHERE run_id = ?", (run_id,)
@@ -852,7 +941,7 @@ def list_steps(run_id: str) -> list[dict]:
         ).fetchall()
     order = {stage: i for i, stage in enumerate(STAGE_ORDER)}
     steps = [_row_to_step(r) for r in rows]
-    steps.sort(key=lambda s: (order.get(s["stage"], 99), s["sub_claim_id"], s["lens_name"]))
+    steps.sort(key=lambda s: (order.get(s["stage"], 99), s["sub_question_id"], s["lens_name"]))
     return steps
 
 
@@ -903,7 +992,7 @@ def _row_to_step(row: sqlite3.Row) -> dict:
         "id": row["id"],
         "run_id": row["run_id"],
         "stage": row["stage"],
-        "sub_claim_id": row["sub_claim_id"],
+        "sub_question_id": row["sub_question_id"],
         "lens_name": row["lens_name"],
         "status": row["status"],
         "payload_json": row["payload_json"],
