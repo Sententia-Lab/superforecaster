@@ -67,7 +67,15 @@ export default function App() {
           }}
         />
       ) : (
-        <RunView key={selectedRun.id} runId={selectedRun.id} onChanged={refresh} />
+        <RunView
+          key={selectedRun.id}
+          runId={selectedRun.id}
+          onChanged={refresh}
+          onDeleted={() => {
+            refresh();
+            setSelection(null);
+          }}
+        />
       );
   }
 

@@ -8,16 +8,26 @@ import { streamStep } from "../api.js";
  * different step) aborts the fetch, which disconnects, which cancels the step
  * server-side (ADR 46). State exposes what the active card renders: the step id,
  * the accumulated thought tail, the query line, and the source chips.
+ *
+ * `active` and `streaming` are separate on purpose. `active` survives a failure so the
+ * error card stays on screen; `streaming` is true only while a request is in flight.
+ * Buttons must key off `streaming` — keying them off `active` left every Run and Retry
+ * button disabled after any failure, with a page reload as the only way out.
+ *
+ * `start` resolves to the run the stream produced, or null if the step failed — which is
+ * what lets `useRunQueue` chain one step into the next without a refetch.
  */
 export function useStepStream({ onRun, onDone }) {
   const controllerRef = useRef(null);
   const [active, setActive] = useState(null);
+  const [streaming, setStreaming] = useState(false);
   // active = { stepId, thoughts: string, query: string, sources: [], error: string }
 
   const abort = useCallback(() => {
     controllerRef.current?.abort();
     controllerRef.current = null;
     setActive(null);
+    setStreaming(false);
   }, []);
 
   useEffect(() => () => controllerRef.current?.abort(), []);
@@ -28,9 +38,12 @@ export function useStepStream({ onRun, onDone }) {
       const controller = new AbortController();
       controllerRef.current = controller;
       setActive({ stepId, thoughts: "", query: "", sources: [], error: "" });
+      setStreaming(true);
 
       const patch = (fn) =>
         setActive((a) => (a && a.stepId === stepId ? fn(a) : a));
+
+      let latestRun = null;
 
       try {
         await streamStep(runId, stepId, {
@@ -54,6 +67,7 @@ export function useStepStream({ onRun, onDone }) {
             } else if (frame.type === "error") {
               patch((a) => ({ ...a, error: frame.payload.message }));
             } else if (frame.type === "run") {
+              latestRun = frame.payload;
               onRun?.(frame.payload);
             }
           },
@@ -63,15 +77,19 @@ export function useStepStream({ onRun, onDone }) {
           patch((a) => ({ ...a, error: e.message }));
         }
       } finally {
+        // Only the still-current controller may clear state — a superseded stream
+        // finishing late must not switch off the one that replaced it.
         if (controllerRef.current === controller) {
           controllerRef.current = null;
           setActive((a) => (a && a.stepId === stepId && a.error ? a : null));
+          setStreaming(false);
           onDone?.();
         }
       }
+      return latestRun;
     },
     [onRun, onDone],
   );
 
-  return { active, start, abort };
+  return { active, streaming, start, abort };
 }

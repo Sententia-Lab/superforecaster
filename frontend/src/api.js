@@ -44,7 +44,15 @@ async function req(method, path, body) {
   if (resp.status === 204) return null;
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
-    const err = new Error(detailToText(data.detail || resp.statusText));
+    // The static frontend is mounted at "/", so it catches every path the API routers
+    // decline — and answers anything that is not a GET with 405. On an API path that
+    // means the route is missing, which in practice means the server predates it.
+    const message =
+      resp.status === 405
+        ? `${method} ${path} is not a route on this server — it is probably running ` +
+          `an older build. Restart the backend.`
+        : detailToText(data.detail || resp.statusText);
+    const err = new Error(message);
     err.status = resp.status;
     throw err;
   }
@@ -60,6 +68,11 @@ export const api = {
   deleteRun: (id) => req("DELETE", `/runs/${id}`),
   startRun: (id) => req("POST", `/runs/${id}/start`),
   draftQuestion: (text) => req("POST", "/questions/draft", { text }),
+  // Returns the whole updated run, so the caller redraws from this response with no
+  // follow-up GET. 409 when something downstream has already run; 422 on a payload the
+  // models reject (weights that miss 1.00, duplicate lens names, 2 or 6 sub-questions).
+  editStepPayload: (runId, stepId, payload) =>
+    req("PUT", `/runs/${runId}/steps/${stepId}/payload`, payload),
 };
 
 /**
@@ -89,19 +102,36 @@ export async function streamStep(runId, stepId, { onEvent, signal, maxIterations
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-    const parts = buffer.split("\n\n");
+    const parts = buffer.split(EVENT_BOUNDARY);
     buffer = parts.pop();
-    for (const part of parts) {
-      for (const line of part.split("\n")) {
-        if (!line.startsWith("data: ")) continue;
-        const raw = line.slice("data: ".length).trim();
-        if (!raw) continue;
-        try {
-          onEvent(JSON.parse(raw));
-        } catch {
-          // A ping or malformed frame — skip it rather than killing the stream.
-        }
-      }
+    for (const part of parts) emitFrame(part, onEvent);
+  }
+  // A server that closes without a trailing blank line leaves a whole event in the
+  // buffer. The `run` frame is always last, so dropping it is exactly the frame the
+  // caller needs.
+  buffer += decoder.decode();
+  if (buffer.trim()) emitFrame(buffer, onEvent);
+}
+
+/**
+ * SSE separates events with a blank line, and `sse_starlette` writes CRLF.
+ *
+ * This split used to be on `"\n\n"`, which never matches `"\r\n\r\n"` — so every frame
+ * was silently discarded and the UI only ever updated from the refetch `onDone` does.
+ * The cost was invisible until `useRunQueue` needed the `run` frame's payload to chain
+ * one step into the next, and every queue stopped after exactly one step.
+ */
+const EVENT_BOUNDARY = /\r?\n\r?\n/;
+
+function emitFrame(chunk, onEvent) {
+  for (const line of chunk.split(/\r?\n/)) {
+    if (!line.startsWith("data: ")) continue;
+    const raw = line.slice("data: ".length).trim();
+    if (!raw) continue;
+    try {
+      onEvent(JSON.parse(raw));
+    } catch {
+      // A ping or malformed frame — skip it rather than killing the stream.
     }
   }
 }

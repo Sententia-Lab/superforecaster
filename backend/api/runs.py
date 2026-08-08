@@ -16,6 +16,7 @@ import json
 from contextlib import suppress
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import ValidationError
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from sse_starlette.sse import EventSourceResponse
 
@@ -113,6 +114,34 @@ def start_run(run_id: str, _: None = Depends(require_admin)) -> GatedRunDetail:
         )
     except db.StateError as exc:
         raise _409(str(exc))
+
+
+@router.put("/{run_id}/steps/{step_id}/payload")
+def edit_step_payload(
+    run_id: str,
+    step_id: str,
+    body: dict,
+    _: None = Depends(require_admin),
+) -> GatedRunDetail:
+    """Replace a completed payload by hand, then rebuild the pending rows below it.
+
+    The body is a bare dict because its shape depends on the step's stage — a
+    `Decomposition` for decompose, a `SubClaimLensesEdit` for lenses — and the stage is
+    only known once the row has been read. `machine.edit_payload` validates it.
+
+    Returns the whole run so the screen redraws from this response with no follow-up GET.
+    """
+    try:
+        return GatedRunDetail(**machine.edit_payload(run_id, step_id, body))
+    except db.NotFoundError as exc:
+        raise _404(str(exc))
+    except machine.GateError as exc:
+        raise _409(str(exc))
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=[{"loc": e["loc"], "msg": e["msg"]} for e in exc.errors()],
+        )
 
 
 def _failure_hint(exc: BaseException) -> str:

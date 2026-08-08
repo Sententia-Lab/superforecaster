@@ -99,7 +99,7 @@ def connect() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 """Bump this and add a step to `MIGRATIONS` whenever an existing table has to change.
 
 `CREATE TABLE IF NOT EXISTS` covers a fresh database and nothing else. It does not add a
@@ -123,13 +123,27 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         "DROP TABLE IF EXISTS refresh_runs;",
         "DROP TABLE IF EXISTS runs;",
     ),
+    # A payload a person wrote is different evidence from one the agent produced, so the
+    # difference stays visible rather than being inferred from a timestamp gap.
+    3: ("ALTER TABLE run_steps ADD COLUMN edited_at TIMESTAMP;",),
 }
 """version -> statements that take the schema from `version - 1` to `version`.
 
 Each step must be safe to apply to a database that reached the previous version by *either*
 route: an old database being upgraded, or a fresh one just built by `init_db`'s
 `CREATE TABLE` block. `_migrate` skips a step whose work the fresh schema already did, so
-"drop a column that no longer exists" is a no-op rather than an error.
+"drop a column that no longer exists" and "add a column the create block already made" are
+both no-ops rather than errors — see `_MIGRATION_NO_OPS`.
+"""
+
+_MIGRATION_NO_OPS = ("no such column", "duplicate column name")
+"""Errors that mean "the fresh schema already did this step's work", so the step is skipped.
+
+Both directions, because a table can arrive at a step by two routes. A version-2 database
+upgrading in place has `run_steps` without `edited_at`, so migration 3's ALTER runs for real.
+A database stamped at version 0 with only the pre-gated tables gets `run_steps` built by the
+current `CREATE TABLE` block — column included — and then the same ALTER would raise. Neither
+is a failure; both leave the schema in the same correct shape.
 """
 
 
@@ -154,9 +168,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
             try:
                 conn.execute(statement)
             except sqlite3.OperationalError as e:
-                # The fresh-schema case: the column this step drops was never created.
-                # Anything else is a real failure and has to surface.
-                if "no such column" not in str(e).lower():
+                # The fresh-schema case, in both directions. Anything else is a real
+                # failure and has to surface.
+                if not any(n in str(e).lower() for n in _MIGRATION_NO_OPS):
                     raise
         conn.execute(f"PRAGMA user_version = {version}")
 
@@ -233,6 +247,7 @@ def init_db() -> None:
                 attempts INTEGER NOT NULL DEFAULT 0,
                 started_at TIMESTAMP,
                 finished_at TIMESTAMP,
+                edited_at TIMESTAMP,
                 UNIQUE(run_id, stage, sub_claim_id, lens_name)
             );
 
@@ -730,6 +745,39 @@ def insert_steps(
     return [_row_to_step(r) for r in rows]
 
 
+def delete_steps(step_ids: list[str]) -> int:
+    """Remove step rows by id. Returns how many went. Empty list is a no-op.
+
+    Only `machine.reconcile` calls this, and only for rows still `pending` — it checks
+    that itself, because a delete here cannot be undone.
+    """
+    if not step_ids:
+        return 0
+    placeholders = ",".join("?" for _ in step_ids)
+    with connect() as conn:
+        cur = conn.execute(
+            f"DELETE FROM run_steps WHERE id IN ({placeholders})", tuple(step_ids)
+        )
+    return cur.rowcount
+
+
+def edit_step_payload(step_id: str, payload_json: str) -> dict:
+    """Replace a completed step's payload with one a person wrote.
+
+    `status` and `attempts` deliberately do not move: the step is still complete, and an
+    edit is not an attempt. `edited_at` is what tells the two kinds of payload apart.
+    """
+    with connect() as conn:
+        conn.execute(
+            "UPDATE run_steps SET payload_json = ?, edited_at = ? WHERE id = ?",
+            (payload_json, _utcnow(), step_id),
+        )
+        row = conn.execute(
+            "SELECT * FROM run_steps WHERE id = ?", (step_id,)
+        ).fetchone()
+    return _row_to_step(row)
+
+
 def claim_step(step_id: str) -> dict | None:
     """CAS `pending`/`error` → `running`. Returns the claimed step, or None if lost.
 
@@ -865,6 +913,7 @@ def _row_to_step(row: sqlite3.Row) -> dict:
         "finished_at": (
             _ensure_aware(row["finished_at"]) if row["finished_at"] else None
         ),
+        "edited_at": _ensure_aware(row["edited_at"]) if row["edited_at"] else None,
     }
 
 

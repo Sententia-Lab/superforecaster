@@ -129,6 +129,49 @@ def test_a_fresh_database_reaches_the_current_version(tmp_path, monkeypatch):
     assert "confidence" not in columns(tmp_path / "fresh.db")
 
 
+def test_v3_adds_edited_at_to_an_upgraded_database(old_db):
+    """The upgrade route: `run_steps` is built by the create block during this same
+    `init_db`, so migration 3's ALTER finds the column already there and must not raise."""
+    db.init_db()
+
+    assert "edited_at" in columns(old_db, table="run_steps")
+    assert version(old_db) == db.SCHEMA_VERSION
+
+
+def test_v3_adds_edited_at_to_a_database_that_already_had_run_steps(tmp_path, monkeypatch):
+    """The other route: a version-2 database whose `run_steps` predates the column, so
+    the ALTER runs for real. This is what a deployed database actually looks like."""
+    path = tmp_path / "v2.db"
+    monkeypatch.setenv("DATABASE_PATH", str(path))
+    conn = sqlite3.connect(path)
+    conn.executescript(PRE_ADR29)
+    conn.executescript(
+        """
+        CREATE TABLE gated_runs (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'backlog',
+            created_at TIMESTAMP NOT NULL
+        );
+        CREATE TABLE run_steps (
+            id TEXT PRIMARY KEY, run_id TEXT NOT NULL, stage TEXT NOT NULL,
+            sub_claim_id TEXT NOT NULL DEFAULT '', lens_name TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending', payload_json TEXT, error TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            started_at TIMESTAMP, finished_at TIMESTAMP
+        );
+        """
+    )
+    conn.execute("PRAGMA user_version = 2")
+    conn.commit()
+    conn.close()
+
+    assert "edited_at" not in columns(path, table="run_steps")
+    db.init_db()
+
+    assert "edited_at" in columns(path, table="run_steps")
+    assert version(path) == db.SCHEMA_VERSION
+
+
 def test_every_version_up_to_current_has_a_step():
     """A bumped `SCHEMA_VERSION` with no matching entry migrates nothing and silently
     marks the database as done."""

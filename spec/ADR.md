@@ -48,10 +48,29 @@ Sources: `spec/implemented/SPEC_04_26_2026.md` (v3), `spec/implemented/spec3.md`
 | [27](#adr-27--the-ui-projects-typed-state-it-never-asks-for-narration) | The UI projects typed state; it never asks for narration | Accepted |
 | [28](#adr-28--a-failed-run-resumes-from-its-last-completed-node) | A failed run resumes from its last completed node | **Superseded by 45** |
 | [29](#adr-29--an-extreme-probability-is-justified-not-forbidden) | An extreme probability is justified, not forbidden | Accepted |
+| [30](#adr-30--research-fans-out-per-sub-question-inside-the-node) | Research fans out per sub-question, inside the node | Accepted |
+| [31](#adr-31--p14-and-p15-move-to-a-reflect-pass) | P14 and P15 move to a reflect pass | Accepted |
+| [32](#adr-32--the-search-budget-is-a-gradient-and-it-is-per-cell) | The search budget is a gradient, and it is per cell | Accepted |
+| [33](#adr-33--the-anchor-is-the-chain-the-decomposition-describes) | The anchor is the chain the decomposition describes | Accepted |
+| [34](#adr-34--schema-migrations-are-a-version-counter-and-a-dict) | Schema migrations are a version counter and a dict | Accepted |
+| [35](#adr-35--an-unset-admin-key-means-not-deployed-not-misconfigured) | An unset admin key means "not deployed", not "misconfigured" | Accepted |
+| [36](#adr-36--the-fan-out-is-a-graph-edge-not-an-asynciogather) | The fan-out is a graph edge, not an `asyncio.gather` | Accepted |
+| [37](#adr-37--durability-is-dbos-not-a-checkpoint-file) | Durability is DBOS, not a checkpoint file | **Superseded by 45** |
+| [38](#adr-38--the-backend-streams-typed-objects-the-frontend-decides-what-to-draw) | The backend streams typed objects; the frontend decides what to draw | Accepted |
+| [39](#adr-39--a-base-rate-is-counted-not-stated) | A base rate is counted, not stated | Accepted |
+| [40](#adr-40--modifiers-move-a-lens-and-lenses-are-chosen-before-they-are-measured) | Modifiers move a lens, and lenses are chosen before they are measured | Accepted, extended by 54 |
+| [41](#adr-41--scoring-is-arithmetic-not-persistence-and-no-orm) | Scoring is arithmetic, not persistence; and no ORM | Accepted |
+| [42](#adr-42--the-cli-is-typer-the-corpus-is-json) | The CLI is typer; the corpus is JSON | Accepted |
+| [43](#adr-43--every-agent-call-has-a-ceiling-and-every-run-has-a-deadline) | Every agent call has a ceiling, and every run has a deadline | Accepted |
+| [44](#adr-44--a-forecast-with-no-adjudicator-is-not-worth-running) | A forecast with no adjudicator is not worth running | Accepted |
 | [45](#adr-45--a-run-is-a-persisted-machine-of-gated-stages) | A run is a persisted machine of gated stages | Accepted |
-| [46](#adr-46--the-connection-is-the-agents-lifetime) | The connection is the agent's lifetime | Accepted |
+| [46](#adr-46--the-connection-is-the-agents-lifetime) | The connection is the agent's lifetime | Accepted, extended by 55 |
 | [47](#adr-47--react--vite-for-the-frontend) | React + Vite for the frontend | Accepted |
 | [48](#adr-48--community-features-removed) | Community features removed | Accepted |
+| 49–52 | *Reserved by `spec/planned/spec6.md` (the eval harness), not yet written* | Proposed |
+| [53](#adr-53--a-payload-is-editable-while-everything-derived-from-it-is-untouched) | A payload is editable while everything derived from it is untouched | Accepted |
+| [54](#adr-54--lens-weights-are-shares-of-one) | Lens weights are shares of one | Accepted |
+| [55](#adr-55--run-all-is-a-browser-loop-not-a-server-job) | Run All is a browser loop, not a server job | Accepted |
 
 ---
 
@@ -1568,3 +1587,137 @@ helpers. The backlog moved from browser localStorage to the server: it is simply
 Kept: `POST /questions/draft` and `POST /questions/critique` (the drafting agents are the
 "AI-suggested forecast" flow), the forecasts/calibration read API, and the daily refresh
 cron over the update graph. The code stays in git history if a crowd ever shows up.
+
+---
+
+## ADR 53 — A payload is editable while everything derived from it is untouched
+
+**Accepted.** Spec 7.
+
+Review gates were advance-only: a decomposition with a wrong sub-question, or a lens set
+with a population that does not fit, could only be re-rolled by retrying the step. There
+was no way to correct one by hand.
+
+The rule is one line. **A payload is editable exactly while everything derived from it is
+still untouched.** A decomposition is editable while no lens step has run; a
+sub-question's lens set is editable while no base rate *for that sub-question* has run.
+The lock is per sub-question, so sub-question 1 locking does not lock sub-question 2.
+
+The rule was chosen for what it makes impossible. Because an edit is only ever allowed
+when nothing downstream has produced anything, cleaning up after one can only delete empty
+pending rows. There is no cascade that destroys hours of research, no "are you sure you
+want to lose 12 base rates" dialog, and no partial-invalidation logic to get wrong. The
+lock rule and the cleanup rule are the same rule.
+
+**`advance` had to become `reconcile`.** `advance` asked *"does this stage have any rows
+yet?"* — a question with the same answer before and after an edit, so it could never react
+to one. `expected_steps` asks *"what do the completed payloads say should exist?"* and
+`reconcile` makes the rows match: `have - want` is deleted, `want - have` is inserted.
+Going forward `want` only grows, so the normal path is pure insert and behaves exactly as
+before — which is why the existing state-machine tests were the regression signal for the
+swap rather than an afterthought.
+
+`want` deliberately contains the whole table, finished rows included. It has to: it is
+what decides which rows are stale, so a `want` of only unfinished work would mark every
+completed step for deletion.
+
+**The guard that should never fire.** `reconcile` refuses to delete a stale row that is
+not `pending`, and raises before either write. The edit lock makes this unreachable. It
+exists because the failure it prevents — silently discarding counted evidence somebody's
+API budget paid for — is worse than a 409, and because a bug in the lock should surface as
+an error rather than as missing research.
+
+**The lens lock is per-set, not per-lens**, which is coarser than it needs to be for the
+delete rule alone. ADR 54 forces it: weights are shares of one, so changing one lens's
+weight changes another's, and a per-lens lock would let someone re-weight an
+already-measured lens indirectly. That is exactly what ADR 40 exists to prevent.
+
+Sub-claim ids are re-stamped `sc1…scN` by position after an edit, by the same helper the
+agent's own output goes through. Renumbering is safe *because* the lock guarantees nothing
+points at the old numbers yet.
+
+**Rejected: soft invalidation.** Marking downstream rows "stale" and letting the user
+re-run them keeps more work, and would allow editing at any point. It also means a run can
+hold a lens set and a base rate that disagree about which populations were chosen, with
+the UI having to explain which parts of the trail are still true. The whole premise here
+is that the reasoning trail is auditable; a trail with quietly invalid regions is not.
+
+**Deferred:** the same rule generalizes to base rates and inside-view adjustments with no
+changes — `DERIVED` takes two more entries. Writing a payload onto a *pending* step would
+skip the agent entirely and is a different decision, because it removes the guarantee that
+every non-edited payload came from a recorded agent run.
+
+---
+
+## ADR 54 — Lens weights are shares of one
+
+**Accepted.** Spec 7. **Extends ADR 40.**
+
+`Lens.weight` was relative. The agent could return `0.9, 0.6, 0.4`, and every consumer
+funnels through `checks._weighted_mean`, which divides by `Σw` — so only the ratios ever
+mattered and nothing required a sum.
+
+Weights now sum to 1.00, enforced differently on each side.
+
+**Agent output is rescaled on the way in, not rejected.** The type the agent returns is the
+type stored, so a strict validator on it would make the agent retry against arithmetic it
+has no reason to hit — spending search budget on a rounding rule. Largest-remainder
+rescaling preserves every ratio exactly, and every consumer divides by the sum anyway, so
+**no computed number moves**: `0.9, 0.6, 0.4` becomes `0.47, 0.32, 0.21` and every anchor,
+sub-question rate, and final probability is bit-for-bit what it was.
+
+**A hand-written set must already sum to 1.00** or it is a 422. Silently rewriting numbers
+somebody typed would hide the constraint rather than teach it. The editor offers a
+Normalize button — the same rescale, but on a button the user presses.
+
+Each share floors at `0.01`, because `Lens.weight` is `gt=0.0`: a weight of exactly zero is
+not a legal lens, so a rounding rule must never produce one.
+
+**What this does not change.** `weight` still means relevance and only relevance, never
+sample size (ADR 40). It is still the one number in the pipeline that no check can verify,
+so `weight_rationale` stays mandatory. What changes is that the numbers a reader sees add
+up, and that an edited set has a defined shape to conform to — without which "the weights
+must sum to 1" would be a rule the interface asserts and the data contradicts.
+
+**Existing runs keep their raw weights.** No backfill migration. The math is unaffected
+because it is scale-invariant, so a rewrite would change stored payloads a human already
+reviewed while changing no result — the riskiest kind of migration for no gain. Old runs
+display weights that do not add up; new ones do not.
+
+---
+
+## ADR 55 — Run All is a browser loop, not a server job
+
+**Accepted.** Spec 7. **Extends ADR 46.**
+
+A 30-step run took 30 clicks. Running it to completion needs no human input: the gate
+already refuses anything out of order, so the sequence is fully determined.
+
+ADR 46 made the HTTP request *be* the step, and made its final frame the updated run. Those
+two facts together mean "run everything" needs no server support at all: the browser picks
+the next legal step, opens its stream, waits, and feeds the response into the next round.
+**No new endpoint, no job queue, no background worker, no watchdog.** Stop disconnects,
+which cancels the in-flight step exactly as closing the tab does.
+
+Keeping the loop in the browser preserves ADR 46's actual promise — nothing in this
+codebase runs when nobody is watching. A server-side "run to completion" would have
+reintroduced the entire machinery ADR 46 deleted, and would have made an unattended run
+able to spend the API budget with no one watching it.
+
+**A failure stops the queue.** The stream emits an error frame and no run frame, so the
+loop has nothing to continue from and exits. No auto-retry and no skipping ahead: one
+click is one honest attempt at everything remaining. Clicking Run All again resumes from
+the failed step, because a step in `error` is runnable. An auto-retrying queue can spin on
+a permanently failing cell and bill for every attempt; this cannot.
+
+**The cost, stated plainly.** One agent step runs at a time process-wide, on purpose — the
+budget is one person's API key. Run All does not change that, so a 30-step run is 30
+sequential calls, on the order of an hour, with the tab open throughout. Running cells
+within a stage in parallel would fix it and reverses ADR 36, so it is deferred to its own
+decision rather than smuggled in here.
+
+**One bug had to be fixed first.** `RunView` derived its "something is running" flag from
+the stream's `active` state, which deliberately outlives a failure so the error card stays
+on screen. Every Run and Retry button therefore stayed disabled after any failure, with a
+page reload as the only recovery. `streaming` is now separate from `active`. Run All could
+not resume from a failure without it — and neither, it turns out, could a human.

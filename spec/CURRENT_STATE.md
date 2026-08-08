@@ -19,17 +19,19 @@ Last regenerated: 2026-08-07.
 
 ## Storage map
 
-Everything persists in four SQLite tables (`backend/superforecaster/db.py`, `SCHEMA_VERSION = 2`).
+Everything persists in four SQLite tables (`backend/superforecaster/db.py`, `SCHEMA_VERSION = 3`).
 
 | Table | One row means | Written by |
 |---|---|---|
 | `gated_runs` | one forecast question + its lifecycle | `create/update/start/complete/delete_gated_run` |
-| `run_steps` | one stage cell (`UNIQUE(run_id, stage, sub_claim_id, lens_name)`) | `insert/claim/finish/fail_step` |
+| `run_steps` | one stage cell (`UNIQUE(run_id, stage, sub_claim_id, lens_name)`) | `insert/claim/finish/fail/delete_steps`, `edit_step_payload` |
 | `forecasts` | a *published* forecast, written only at synthesis | `save_forecast`, `resolve_forecast`, `mark_refreshed` |
 | `forecast_updates` | probability history for one forecast | `save_forecast`, `add_forecast_update` |
 
 Run status: `backlog → active → complete`. Step status: `pending → running → complete|error`.
 `gated_runs.error` mirrors the latest failing step — a red chip, not a status.
+`run_steps.edited_at` is set when a person replaced a payload by hand (§3g); it never moves
+`status` or `attempts`.
 
 Two lifecycles meet at exactly one point: a gated run produces a `forecasts` row at synthesis,
 and from then on the forecast lives independently (delete the run, the forecast survives).
@@ -38,7 +40,7 @@ and from then on the forecast lives independently (delete the run, the forecast 
 
 ## Endpoint index
 
-All 20 routes, each traced in the section named.
+All 21 routes, each traced in the section named.
 
 | Method + path | Auth | Traced in |
 |---|---|---|
@@ -50,6 +52,7 @@ All 20 routes, each traced in the section named.
 | `PATCH /runs/{id}` | — | §2 Create & start |
 | `POST /runs/{id}/start` | admin | §2 Create & start |
 | `POST /runs/{id}/steps/{step_id}/stream` | admin | §3 Running one step |
+| `PUT /runs/{id}/steps/{step_id}/payload` | admin | §3g Editing a payload |
 | `GET /runs/{id}` | — | §4 Reload |
 | `DELETE /runs/{id}` | admin | §5 Delete |
 | `POST /forecasts` | admin | §6 Ungated pipeline |
@@ -200,8 +203,13 @@ FastAPI  stream_step ── preflight ──► generate()
 | `source` | diff of `deps.sources_seen` after each tool result | pushes a source chip |
 | `exhausted` | `outside_view.exhausted_notice` | "search budget exhausted — wrapping up" |
 | `result` | `work()` after `finish_step` | (not consumed — `run` supersedes it) |
-| `run` | `machine.detail(run_id)` | `setRun(payload)` — whole tree swap |
+| `run` | `machine.detail(run_id)` | `setRun(payload)`, and `start` resolves to it — whole tree swap |
 | `error` | any exception, via `_failure_hint` | red banner on the card |
+
+`api.streamStep` splits the byte stream on `/\r?\n\r?\n/` and flushes whatever is still
+buffered when the reader finishes. `sse_starlette` writes **CRLF**, so a split on `"\n\n"`
+matches nothing — every frame in this table was silently discarded until that was fixed, and
+the UI only ever updated from the refetch `onDone` does.
 
 `emit` must be synchronous — it is called from inside the agent's event handler, where an
 `await` would stall token delivery. The `asyncio.Queue` is the adapter from that push-based
@@ -212,13 +220,14 @@ can keep yielding for the minutes the agent runs. Ping every 15s.
 
 | Outcome | Writes |
 |---|---|
-| Success (non-synthesis) | `finish_step`: `run_steps.payload_json = <model_dump_json>`, `status='complete'` → then `machine.advance(run_id)` materializes the next stage's **pending** rows |
+| Success (non-synthesis) | `finish_step`: `run_steps.payload_json = <model_dump_json>`, `status='complete'` → then `machine.reconcile(run_id)` materializes the next stage's **pending** rows |
 | Success (synthesis) | `finish_step`, then `db.save_forecast` (new row in `forecasts`, first row in `forecast_updates`), then `complete_gated_run`: `status='complete'`, `forecast_id`, `error=NULL` |
 | Agent/stage failure | `fail_step`: `run_steps.status='error'`, `error=<msg>`; mirrored to `gated_runs.error` |
 | Client disconnects | generator `finally` → `task.cancel()` → `CancelledError` inside `execute_step` → `fail_step(step_id, "cancelled")` → **immediately re-claimable** |
 | Process restart mid-step | `init_db` → `mark_interrupted_steps` flips `running` → `error='interrupted by restart'` |
 
-`advance` (`machine.py:74`) is the fan-out, and it reads the payload just written:
+`reconcile` (`machine.py`) is the fan-out. It calls `expected_steps`, which reads the payloads
+just written and returns the identities `(stage, sub_claim_id, lens_name)` they imply:
 
 ```
 decompose ─► one lenses step per researchable sub-claim
@@ -228,8 +237,12 @@ base_rates─► one inside_view step per same cell
 inside_view► one synthesis step
 ```
 
-`INSERT OR IGNORE` against the UNIQUE key makes it idempotent — retrying the last cell of a
-stage must not duplicate the next stage's rows.
+`expected_steps` stops at the first stage that is not fully complete, so a stage's rows never
+appear before the stage that fans them out has finished. `reconcile` then makes the table
+match: `have - want` is deleted, `want - have` is inserted. Going forward `want` only grows,
+so this path is pure insert — the deletion half exists for §3f. `INSERT OR IGNORE` against the
+UNIQUE key makes it idempotent: retrying the last cell of a stage must not duplicate the next
+stage's rows.
 
 The stage functions carry the methodology's code-stamped invariants as data transforms:
 `run_lenses_stage` never receives a rate (populations chosen blind, ADR 40); `run_base_rate_step`
@@ -261,6 +274,58 @@ same URL with `?max_iterations=run.max_iterations * 2`, which becomes
 `ForecastInput.max_iterations` for that one call only — it is never persisted onto the run
 (ceiling `MAX_SEARCH_DEPTH = 50`).
 
+### 3f. Run All — draining every remaining step
+
+There is no server-side queue. The request *is* the step and its last frame is the updated run
+(ADR 46), so Run All is a loop in the browser (ADR 55):
+
+```
+RunHeader "Run All"  (starts a backlog run first, via POST /runs/{id}/start)
+  -> useRunQueue.drain(scope, run)
+       -> runQueue.nextRunnable(run, scope) -> step | null    [mirrors db.STAGE_ORDER + the gate]
+       -> useStepStream.start(runId, stepId) -> run | null    [the same §3 stream]
+       -> repeat with the returned run, until nextRunnable is null
+```
+
+`start` resolves to the run its `run` frame carried, or `null` if the step failed — a failure
+emits an `error` frame and no `run` frame, so the loop has nothing to continue from and halts.
+Run Section is the same loop with `scope` set to one stage. **Stop** calls `stream.abort()`,
+which disconnects, which cancels the step server-side exactly as closing the tab does.
+
+`stream.streaming` (a request is in flight) is separate from `stream.active` (there is a card
+to draw, error included). Every Run and Retry button keys off `streaming`.
+
+---
+
+## 3g. Editing a payload — `PUT /runs/{id}/steps/{step_id}/payload`
+
+Admin-only. Correct a decomposition or a lens set before anything is researched against it.
+
+```
+PUT /runs/{run_id}/steps/{step_id}/payload   {edited payload}
+  -> machine.edit_payload(run_id, step_id, body)
+       -> db.get_step / db.get_gated_run                 404, or 409 if run is not active
+       -> machine.edit_blocker(step, steps) -> None | str            [409 when set]
+       -> Decomposition | SubClaimLensesEdit .model_validate(body)   [422 on reject]
+       -> agents.decompose.with_ids(payload)             decompose only: re-stamp sc1…scN
+       -> db.edit_step_payload(step_id, payload_json)    [writes: run_steps.payload_json, edited_at]
+       -> machine.reconcile(run_id)                      [writes: run_steps — deletes and inserts]
+  -> machine.detail(run_id)
+  -> 200 {the whole run, steps included}
+```
+
+`edit_blocker` reads `machine.DERIVED`: `decompose` derives the `lenses` rows and `synthesis`;
+`lenses` derives the `base_rates` rows **for its own sub-claim only**. A payload is editable
+while every derived row is still `pending`, so an edit can only ever strand empty rows —
+which is why `reconcile`'s delete half never destroys work. It refuses (`GateError`) if a
+stale row is not `pending`, raising before either write.
+
+`status` and `attempts` do not move: the step is still complete, and an edit is not an attempt.
+`edited_at` is what distinguishes a payload a person wrote, and surfaces as an "edited" chip.
+
+The frontend mirrors the lock in `derive.editBlocker` so the Edit pencil and the lock chip
+agree with what the API will accept, the same way `derive.js` mirrors `checks.py`.
+
 ---
 
 ## 4. Reload — `GET /runs/{id}`
@@ -282,6 +347,12 @@ from SQLite with no agent calls and no in-memory state.
 ---
 
 ## 5. Deleting — `DELETE /runs/{id}`
+
+Reached from **Delete** in the run header (any run) or **Remove** in `BacklogView`. Both open
+`ConfirmDialog` first, which names the question and says what is lost — how many steps have
+run, and that a saved forecast survives its run. Cancel is focused, and Escape or a click on
+the backdrop takes it. On success `App` clears the selection and refreshes the sidebar; on
+failure the dialog stays open with the message, so a 401 is retryable rather than fatal.
 
 `db.delete_gated_run` → one `DELETE FROM gated_runs`; `run_steps` go with it via
 `ON DELETE CASCADE`. A `forecasts` row produced by that run **survives** (`ON DELETE SET
@@ -415,8 +486,8 @@ Where the functions named above live.
 
 | Module | Holds |
 |---|---|
-| `machine.py` | gated-run state machine: `start_run`, `advance`, `gate_offender`, `execute_step`, `detail`, `busy`, `REQUIRED_FIELDS`, `GateError`, `BusyError` |
-| `stages.py` | `run_decompose_stage`, `run_lenses_stage`, `run_base_rate_step`, `run_inside_step`, `assemble_outside`, `run_synthesis_stage`, `run_all` |
+| `machine.py` | gated-run state machine: `start_run`, `expected_steps`, `reconcile`, `gate_offender`, `execute_step`, `edit_blocker`, `edit_payload`, `detail`, `busy`, `DERIVED`, `REQUIRED_FIELDS`, `GateError`, `BusyError` |
+| `stages.py` | `run_decompose_stage`, `run_lenses_stage`, `run_base_rate_step`, `run_inside_step`, `assemble_outside`, `run_synthesis_stage`, `run_all`, `normalize_weights` |
 | `db.py` | SQLite (WAL, FKs, migrations). Forecast fns + gated-run fns + `NotFoundError`/`StateError` |
 | `models.py` | every Pydantic model |
 | `checks.py` | the 16 principles as pure functions; `lens_rate`, `anchor_from`, `implied_probability`, `run_forecast_checks`, `blocking` |
@@ -438,7 +509,7 @@ Where the functions named above live.
 |---|---|
 | `main.py` | FastAPI app, startup preflight, `/healthz`, `/config`, static mount (last) |
 | `deps.py` | `require_admin`, `is_local_mode` |
-| `runs.py` | gated-run CRUD + `stream_step` |
+| `runs.py` | gated-run CRUD + `stream_step` + `edit_step_payload` |
 | `questions.py` | `/questions/draft`, `/questions/critique` |
 | `forecasts.py` | forecast reads + admin writes + single refresh |
 | `calibration.py` | `/calibration` |
@@ -449,11 +520,13 @@ Where the functions named above live.
 | Module | Holds |
 |---|---|
 | `api.js` | fetch wrappers + `streamStep` (fetch + ReadableStream + AbortController, deliberately not `EventSource`) |
-| `derive.js` | mirrors `checks.py`: `lensRate`, `adjustedLensRate`, `subClaimRate`, `signedAdjustment`, `claimSupport` |
+| `runQueue.js` | `STAGE_ORDER`, `nextRunnable`, `sectionRunnable` — mirrors `db.STAGE_ORDER` and the gate. Pure |
+| `derive.js` | mirrors `checks.py`: `lensRate`, `adjustedLensRate`, `subClaimRate`, `signedAdjustment`, `claimSupport`; mirrors `machine`/`stages`: `editBlocker`, `normalizeWeights`, `weightSum` |
 | `hooks/useRuns.js` | the sidebar list |
-| `hooks/useStepStream.js` | one stream at a time; unmount aborts, abort cancels server-side |
+| `hooks/useStepStream.js` | one stream at a time; unmount aborts, abort cancels server-side. `start` resolves to the run the stream produced; `streaming` is separate from `active` |
+| `hooks/useRunQueue.js` | Run All / Run Section: `drain`, `stop`. A browser loop, no server queue (ADR 55) |
 | `App.jsx` | shell + selection model (`new` \| run id); theme toggle; `/config`-driven chips |
-| `components/` | `Sidebar`, `NewForecastView`, `BacklogView`, `RunView`, `FieldEditor`, `StepControls`, `LensCard`, `CellActivity`, `LiveTail`, `SynthesisSection` |
+| `components/` | `Sidebar`, `NewForecastView`, `BacklogView`, `RunView`, `RunHeader`, `FieldEditor`, `EditorField`, `StepControls`, `LensCard`, `CellActivity`, `LiveTail`, `SynthesisSection`, `DecomposeEditor`, `LensSetEditor`, `ConfirmDialog` |
 
 ---
 
@@ -463,6 +536,13 @@ Where the functions named above live.
   decompose → per-sub-question lenses → per-cell base rates → per-cell inside view →
   synthesis with the checks loop → saved forecast; every step user-gated, every payload
   persisted, reload-safe.
+- **Run All / Run Section** — one click drains every remaining step, or one stage, as a
+  browser loop over the same stream endpoint (§3f). Stop cancels the step in flight. A
+  failure halts the queue and leaves every button live; clicking Run All again resumes
+  from it.
+- **Editable review** — a decomposition or a lens set can be corrected while everything
+  derived from it is still pending (§3g). The lock is per sub-question, lens weights must
+  sum to 1.00, and an edited payload carries an "edited" chip.
 - Retry of any failed step (optionally with `?max_iterations=` up to 50); cancel by
   closing the tab; restart sweep marks orphans honestly.
 - The CLI pipeline (`forecast`) and component evals through the same `stages` functions.
@@ -470,16 +550,13 @@ Where the functions named above live.
   calibration report.
 - Local mode: two exported keys and `serve`, no token, no `.env`, no build step for the
   API (UI needs `npm run build` once).
-- CI on push/PR; opt-in pre-push test gate. 292 backend tests pass with no network and no
+- CI on push/PR; opt-in pre-push test gate. 318 backend tests pass with no network and no
   API keys (see the `.env` caveat in Known Issues).
 - Nothing is hosted. `docker-compose.yml` runs the API with a named SQLite volume and the
   frontend built into the image; `.github/workflows/ci.yml` is the only automation.
 
 ## Known issues
 
-- **Review gates are advance-only** — a decomposition or lens set cannot be edited before
-  advancing; that needs payload-edit endpoints and downstream invalidation (deferred in
-  spec5).
 - **A permanently failing cell blocks its run** — strict gating has no skip-a-cell escape
   hatch; retry (optionally deeper) is the only recovery today (deferred in spec5).
 - The end-to-end backtest (`test e2e`) is specified in `spec/planned/spec6.md` and not
@@ -491,3 +568,18 @@ Where the functions named above live.
   tests in `test_api_gated_runs.py` fail with 401 (surfacing as `KeyError: 'steps'`). CI has no
   `.env` so it stays green — the failure only ever hits a developer. Workaround:
   `ADMIN_API_KEY="" uv run pytest`. The fix is a conftest fixture that pins the admin key.
+- **`Forecast.decompositions[].probability` is carried by the model, not computed.**
+  `run_synthesis_stage` hands the synthesis agent the decomposition JSON — pre-research
+  working estimates included — and instructs it to carry the sub-claims through.
+  `check_linkage` verifies the ids survive; nothing compares the probabilities to
+  `checks.chain_inputs`. So a saved forecast can show a pre-research guess against a
+  sub-question that was actually measured. The fix mirrors `ResearchedLens`, which has no
+  `base_rate` field because the rate is computed from evidence. Own spec, not yet written.
+- **Old lens weights do not sum to 1.** Runs completed before ADR 54 keep their raw
+  relative weights. Every consumer divides by Σw, so no number is wrong — only the
+  displayed weights of an old run fail to add up.
+- **No frontend test runner.** CI runs `npm run build` only, so pure frontend logic has no
+  automated cover at all. This is not theoretical: the SSE frame parser split on the wrong
+  line ending and dropped every frame the server sent, from spec5 until spec7, and a build
+  cannot catch that. `runQueue.js`, `derive.js`, and `streamStep`'s parser are all pure and
+  would be testable the day a runner exists.

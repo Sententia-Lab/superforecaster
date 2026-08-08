@@ -1,5 +1,65 @@
 // Pure derivations mirroring `checks.py`. The check and the picture have to agree
 // about what the evidence implies, so they compute it the same way.
+//
+// `editBlocker` and `normalizeWeights` mirror `machine.edit_blocker` and
+// `stages.normalize_weights` for the same reason: the lock the screen draws and the lock
+// the server enforces must be the same lock, or an Edit pencil appears on a payload the
+// API will refuse.
+
+/** Which rows exist only because of this stage's payload. Mirrors `machine.DERIVED`. */
+const DERIVED = {
+  // A decomposition with no researchable sub-claims fans out straight to synthesis.
+  decompose: (steps) =>
+    steps.filter((s) => s.stage === "lenses" || s.stage === "synthesis"),
+  lenses: (steps, step) =>
+    steps.filter(
+      (s) => s.stage === "base_rates" && s.sub_claim_id === step.sub_claim_id,
+    ),
+};
+
+/**
+ * Null while the payload may still be edited; otherwise what already ran.
+ *
+ * A payload is editable exactly while everything derived from it is untouched, so an
+ * edit can only ever strand empty pending rows.
+ */
+export function editBlocker(step, steps) {
+  if (!step || !DERIVED[step.stage]) return "not editable";
+  if (step.status !== "complete") return `step is ${step.status}`;
+  const ran = DERIVED[step.stage](steps, step).find(
+    (s) => s.status !== "pending",
+  );
+  return ran ? `${ran.stage} is ${ran.status}` : null;
+}
+
+/**
+ * Rescale a lens set to sum to 1.00 at two decimals, by largest remainder.
+ *
+ * Mirrors `stages.normalize_weights`, and drives the Normalize button. Floors each share
+ * at 0.01 because a weight of exactly zero is not a legal lens.
+ */
+export function normalizeWeights(lenses) {
+  const total = lenses.reduce((t, l) => t + (Number(l.weight) || 0), 0);
+  if (total <= 0) return lenses;
+
+  const budget = 100 - lenses.length;
+  const exact = lenses.map((l) => ((Number(l.weight) || 0) / total) * budget);
+  const shares = exact.map((x) => 1 + Math.floor(x));
+
+  const order = exact
+    .map((x, i) => [x - Math.floor(x), i])
+    .sort((a, b) => b[0] - a[0]);
+  for (let i = 0; i < 100 - shares.reduce((t, s) => t + s, 0); i++) {
+    shares[order[i][1]] += 1;
+  }
+
+  return lenses.map((l, i) => ({ ...l, weight: shares[i] / 100 }));
+}
+
+/** Σ of a lens set's weights, rounded the way the Σ chip displays it. */
+export function weightSum(lenses) {
+  return Math.round(lenses.reduce((t, l) => t + (Number(l.weight) || 0), 0) * 100) / 100;
+}
 
 /** The populations a sub-question was viewed through. */
 export function lensesFor(id, outside) {

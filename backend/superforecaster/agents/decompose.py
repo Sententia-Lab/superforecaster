@@ -113,10 +113,10 @@ Return a Decomposition."""
             usage_limits=get_synthesis_limits(),
             run_name="decompose",
         )
-    return _with_ids(result.output)
+    return with_ids(result.output)
 
 
-def _with_ids(d: Decomposition) -> Decomposition:
+def with_ids(d: Decomposition) -> Decomposition:
     """Stamp `sc1`…`scN` onto the sub-claims.
 
     Assigned here rather than asked for in the prompt: later steps point back at these

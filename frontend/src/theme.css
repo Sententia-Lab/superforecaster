@@ -139,10 +139,13 @@ textarea::placeholder, input::placeholder { color: var(--pv-text-3); }
 .chip.red { background:var(--pv-red-fill); color:var(--pv-red); }
 .chip.green { background:var(--pv-green-fill); color:var(--pv-green); }
 .chip.yellow { background:var(--pv-yellow-fill); color:var(--pv-yellow); }
+/* The lens editor's running total. Red until it reads exactly 1.00. */
+.chip.sigma { font-variant-numeric:tabular-nums; text-transform:none; }
+.chip.lock { background:var(--pv-surface-3); color:var(--pv-text-3); cursor:help; }
 
 /* ---------- main pane ---------- */
 
-.main { flex:1; overflow-y:auto; padding:26px 30px 80px; }
+.main { flex:1; overflow-y:auto; --main-pad-top:26px; padding:var(--main-pad-top) 30px 80px; }
 .main-inner { max-width: 880px; margin: 0 auto; }
 .blank {
   height:100%; display:grid; place-items:center; color:var(--pv-text-3);
@@ -153,6 +156,107 @@ h1.qtitle { font-size:var(--pv-fs-h1); line-height:var(--pv-lh-h1);
   letter-spacing:var(--pv-ls-h1); margin:0 0 6px; }
 .qmeta { color:var(--pv-text-2); font-size:var(--pv-fs-sm); margin-bottom:20px; }
 .qmeta b { color:var(--pv-text); font-weight:var(--pv-fw-semibold); }
+
+/* Run All has to stay reachable from anywhere in a 30-step run, so the title row sticks.
+   Only the title row: resolution criteria run to a paragraph, and a sticky block that
+   tall hides the work it sits above. */
+.run-header {
+  position:sticky; top:0; z-index:3;
+  display:flex; align-items:center; gap:16px;
+  padding:4px 0 10px; margin-bottom:10px;
+  background:var(--pv-bg); border-bottom:1px solid var(--pv-border);
+}
+/* The scroll container's own top padding is a band the stuck bar does not cover, so
+   content scrolls visibly through it. Paint it the page colour. */
+.run-header::before {
+  content:""; position:absolute; left:0; right:0; bottom:100%;
+  height:var(--main-pad-top); background:var(--pv-bg);
+}
+.run-header h1.qtitle {
+  flex:1; min-width:0; margin:0;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+}
+.run-header-actions { flex:none; }
+.run-header .chip { flex:none; }
+
+/* ---------- confirm dialog ---------- */
+
+.modal-backdrop {
+  position:fixed; inset:0; z-index:20;
+  background:rgba(0,0,0,.45);
+  display:grid; place-items:center; padding:20px;
+  animation:pv-fade .12s ease both;
+}
+.modal {
+  width:min(460px, 100%);
+  background:var(--pv-surface); border:1px solid var(--pv-border);
+  border-radius:var(--pv-radius-panel); padding:18px 20px;
+  box-shadow:0 18px 48px rgba(0,0,0,.28);
+  animation:pv-in .16s ease both;
+}
+.modal-title {
+  font-size:var(--pv-fs-title); font-weight:var(--pv-fw-semibold);
+  margin-bottom:8px;
+}
+.modal-body { color:var(--pv-text-2); font-size:var(--pv-fs-sm); }
+.modal-body p { margin:0 0 8px; }
+.modal-body p:last-child { margin-bottom:0; }
+.modal-actions { margin-top:16px; }
+@keyframes pv-fade { from { opacity:0 } to { opacity:1 } }
+
+/* ---------- editors ---------- */
+
+.editor { border-color:var(--pv-focus); }
+
+/* One sub-question, or one lens. Separated the same way evidence rows are. */
+.editor-block { padding:14px 0; border-top:1px dashed var(--pv-border); }
+.editor-block:first-of-type { border-top:none; padding-top:2px; }
+.editor-block-head {
+  display:flex; align-items:center; gap:10px; margin-bottom:10px;
+  /* Narrow screens cannot fit the id, the dropdown, the estimate and the remove button on
+     one line, and the estimate is what falls off the card. Let it wrap instead. */
+  flex-wrap:wrap;
+}
+.editor-block-id {
+  font-size:var(--pv-fs-sm); font-weight:var(--pv-fw-bold);
+  color:var(--pv-text); flex:none;
+}
+.editor-spacer { flex:1; }
+
+/* Every field gets its own row and its own label. */
+.editor-field { display:block; margin-bottom:10px; }
+.editor-field:last-child { margin-bottom:0; }
+.editor-label {
+  display:block; margin-bottom:4px;
+  font-size:var(--pv-fs-micro); font-weight:var(--pv-fw-semibold);
+  letter-spacing:var(--pv-ls-micro); text-transform:uppercase;
+  color:var(--pv-text-2);
+}
+.editor-hint {
+  margin-left:6px; text-transform:none; letter-spacing:0;
+  font-weight:400; color:var(--pv-text-3);
+}
+
+.field-input {
+  width:100%; padding:7px 10px; border-radius:var(--pv-radius-input);
+  border:1px solid var(--pv-border); background:var(--pv-surface-2);
+  color:var(--pv-text); font-size:var(--pv-fs-sm); font-family:inherit;
+  line-height:1.5;
+}
+.field-input:focus { outline:none; border-color:var(--pv-focus); }
+/* The box grows with its text. `field-sizing` does this in CSS, so nothing has to measure
+   a scrollHeight before layout has settled. Without it the box is a fixed three lines that
+   scrolls, and stays draggable. */
+textarea.field-input {
+  display:block; resize:vertical;
+  field-sizing:content; min-height:3lh; max-height:50vh; overflow-y:auto;
+}
+@supports not (field-sizing: content) {
+  textarea.field-input { min-height:0; height:calc(3lh + 16px); }
+}
+.field-input.narrow { flex:0 1 150px; width:150px; min-width:110px; }
+.field-input.tiny-input { width:72px; flex:none; text-align:right; }
+.field-inline { display:flex; align-items:center; gap:6px; flex:none; }
 
 /* ---------- cards ---------- */
 
@@ -269,5 +373,5 @@ h1.qtitle { font-size:var(--pv-fs-h1); line-height:var(--pv-lh-h1);
 
 @media (max-width: 760px) {
   .rail { display:none; }
-  .main { padding:16px 14px 60px; }
+  .main { --main-pad-top:16px; padding:var(--main-pad-top) 14px 60px; }
 }

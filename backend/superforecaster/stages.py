@@ -77,6 +77,44 @@ async def run_decompose_stage(
     return await run_decompose(input, deps)
 
 
+def normalize_weights(lenses: list[Lens]) -> list[Lens]:
+    """Rescale a lens set to sum to 1.00 at two decimals, by largest remainder.
+
+    Ratios are preserved, and every consumer computes Σ(w × v) / Σw — scale-invariant —
+    so nothing derived changes. `weight` still means relevance only, never sample size
+    (ADR 40). What changes is that the numbers a reader sees add up, and that an edited
+    set has a defined shape to conform to.
+
+    Rescaled rather than rejected: the type the agent returns is the type stored, so a
+    strict validator on it would make the agent retry against arithmetic it has no reason
+    to hit, spending search budget on a rounding rule. A hand-written set is rejected
+    instead — see `SubClaimLensesEdit`.
+
+    Each share floors at 0.01, because `Lens.weight` is `gt=0.0`: a weight of exactly
+    zero is not a legal lens, so a rounding rule must never produce one.
+    """
+    total = sum(lens.weight for lens in lenses)
+    if total <= 0:
+        return lenses
+
+    floor = 1
+    budget = 100 - floor * len(lenses)
+    exact = [lens.weight / total * budget for lens in lenses]
+    shares = [floor + int(x) for x in exact]
+
+    # Largest remainder: hand the pennies rounding left over to the biggest fractions, so
+    # the set sums to exactly 100 without any lens drifting more than one penny.
+    remainder = 100 - sum(shares)
+    order = sorted(range(len(lenses)), key=lambda i: exact[i] - int(exact[i]), reverse=True)
+    for i in order[:remainder]:
+        shares[i] += 1
+
+    return [
+        lens.model_copy(update={"weight": share / 100})
+        for lens, share in zip(lenses, shares)
+    ]
+
+
 async def run_lenses_stage(
     input: ForecastInput,
     decomposition: Decomposition,
@@ -84,7 +122,8 @@ async def run_lenses_stage(
     deps: ForecastDeps,
 ) -> SubClaimLenses:
     """Name populations for one sub-question. No tools, no rates — pre-registration."""
-    return await run_choose_lenses(input, decomposition, sub_claim, deps)
+    chosen = await run_choose_lenses(input, decomposition, sub_claim, deps)
+    return chosen.model_copy(update={"lenses": normalize_weights(chosen.lenses)})
 
 
 async def run_base_rate_step(

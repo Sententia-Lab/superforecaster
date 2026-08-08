@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api.js";
+import { editBlocker } from "../derive.js";
+import { useRunQueue } from "../hooks/useRunQueue.js";
 import { useStepStream } from "../hooks/useStepStream.js";
+import { sectionRunnable } from "../runQueue.js";
 import CellActivity from "./CellActivity.jsx";
+import ConfirmDialog from "./ConfirmDialog.jsx";
+import DecomposeEditor from "./DecomposeEditor.jsx";
 import LensCard from "./LensCard.jsx";
+import LensSetEditor from "./LensSetEditor.jsx";
 import LiveTail from "./LiveTail.jsx";
+import RunHeader from "./RunHeader.jsx";
 import StepControls from "./StepControls.jsx";
 import SynthesisSection from "./SynthesisSection.jsx";
 
@@ -15,16 +22,34 @@ const STAGE_TITLES = {
   synthesis: "Synthesis",
 };
 
-function StageSection({ n, title, children, note }) {
+function StageSection({ n, title, children, note, action }) {
   return (
     <section className="stage">
       <div className="stage-head">
         <span className="n">{n}</span>
         <span className="title">{title}</span>
         {note ? <span className="hint">{note}</span> : null}
+        {action}
       </div>
       {children}
     </section>
+  );
+}
+
+/** The lock chip, or the Edit pencil, for one editable payload. */
+function EditGate({ step, steps, busy, onEdit }) {
+  const blocker = editBlocker(step, steps);
+  if (blocker) {
+    return (
+      <span className="chip lock" title={`Locked — ${blocker}`}>
+        locked
+      </span>
+    );
+  }
+  return (
+    <button className="btn tiny ghost" disabled={busy} onClick={onEdit}>
+      Edit
+    </button>
   );
 }
 
@@ -34,7 +59,7 @@ function StageSection({ n, title, children, note }) {
  * tail; sections 2–4 render cards up front with processing inside the active card;
  * section 5 is arithmetic + probability + rationale + violations.
  */
-export default function RunView({ runId, onChanged }) {
+export default function RunView({ runId, onChanged, onDeleted }) {
   const [run, setRun] = useState(null);
   const [loadError, setLoadError] = useState("");
 
@@ -57,6 +82,55 @@ export default function RunView({ runId, onChanged }) {
       onChanged();
     },
   });
+  const queue = useRunQueue({ stream });
+
+  const [editing, setEditing] = useState(null); // step id being edited
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+
+  const savePayload = useCallback(
+    async (stepId, payload) => {
+      setSaving(true);
+      setSaveError("");
+      try {
+        // The response is the whole run, so the tree redraws without a follow-up GET.
+        setRun(await api.editStepPayload(runId, stepId, payload));
+        setEditing(null);
+        onChanged();
+      } catch (e) {
+        setSaveError(e.message);
+      } finally {
+        setSaving(false);
+      }
+    },
+    [runId, onChanged],
+  );
+
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+
+  const deleteRun = useCallback(async () => {
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await api.deleteRun(runId);
+      onDeleted();
+    } catch (e) {
+      setDeleteError(e.message);
+      setDeleting(false);
+    }
+  }, [runId, onDeleted]);
+
+  const runAll = useCallback(async () => {
+    let tree = run;
+    if (tree.status === "backlog") {
+      tree = await api.startRun(tree.id);
+      setRun(tree);
+      onChanged();
+    }
+    await queue.drain("all", tree);
+  }, [run, queue, onChanged]);
 
   if (!run) {
     return loadError ? <div className="error-banner">{loadError}</div> : null;
@@ -79,7 +153,10 @@ export default function RunView({ runId, onChanged }) {
   );
   const synthesisStep = stepFor("synthesis");
 
-  const busy = stream.active !== null;
+  // "A request is in flight", not "there is an error on screen". Deriving this from
+  // `stream.active` left every button disabled after a failure, because the error card
+  // deliberately outlives the request that produced it.
+  const busy = stream.streaming;
   const activeFor = (step) =>
     stream.active?.stepId === step.id ? stream.active : null;
   const start = (step) =>
@@ -92,6 +169,18 @@ export default function RunView({ runId, onChanged }) {
     (decomposition?.sub_claims || []).map((s) => [s.id, s]),
   );
 
+  /** Run one stage and stop, so you review between stages instead of at every cell. */
+  const sectionAction = (stage) =>
+    sectionRunnable(run, stage) ? (
+      <button
+        className="btn tiny"
+        disabled={busy}
+        onClick={() => queue.drain(stage, run)}
+      >
+        Run section
+      </button>
+    ) : null;
+
   const cellSection = (n, stage, title, note) => {
     const cells = byStage(stage);
     if (!cells.length) return null;
@@ -99,7 +188,7 @@ export default function RunView({ runId, onChanged }) {
     for (const c of cells) (bySubClaim[c.sub_claim_id] ??= []).push(c);
 
     return (
-      <StageSection n={n} title={title} note={note}>
+      <StageSection n={n} title={title} note={note} action={sectionAction(stage)}>
         {Object.entries(bySubClaim).map(([scId, scCells]) => (
           <div key={scId} style={{ marginBottom: 12 }}>
             <div className="card-sub" style={{ margin: "0 2px 6px" }}>
@@ -136,24 +225,50 @@ export default function RunView({ runId, onChanged }) {
 
   return (
     <div>
-      <h1 className="qtitle">{run.question}</h1>
-      <div className="qmeta">
-        Resolves <b>{(run.resolution_date || "").slice(0, 10)}</b> via{" "}
-        <b>{run.resolution_source}</b> — {run.resolution_criteria}
-        {run.status === "complete" && (
-          <>
-            {" "}
-            <span className="chip green">complete</span>
-          </>
-        )}
-      </div>
+      <RunHeader
+        run={run}
+        queue={queue}
+        busy={busy}
+        onRunAll={runAll}
+        onDelete={() => setConfirmingDelete(true)}
+      />
+
+      {confirmingDelete && (
+        <ConfirmDialog
+          title="Delete this forecast?"
+          busy={deleting}
+          error={deleteError}
+          onCancel={() => {
+            setConfirmingDelete(false);
+            setDeleteError("");
+          }}
+          onConfirm={deleteRun}
+        >
+          <p>{run.question}</p>
+          <p>
+            {steps.filter((s) => s.status === "complete").length} of {steps.length}{" "}
+            steps have run. Their reasoning — every lens, counted base rate, and
+            adjustment — goes with the run and cannot be recovered.
+          </p>
+          {run.forecast_id && (
+            <p className="card-sub">
+              The saved forecast this run produced is kept, and stays scoreable.
+            </p>
+          )}
+        </ConfirmDialog>
+      )}
+
       {run.error && !busy && (
         <div className="error-banner">
           This run hit an error: {run.error}. Retry the failed step below.
         </div>
       )}
 
-      <StageSection n={1} title={STAGE_TITLES.decompose}>
+      <StageSection
+        n={1}
+        title={STAGE_TITLES.decompose}
+        action={sectionAction("decompose")}
+      >
         {decomposeStep &&
           (activeFor(decomposeStep) ? (
             <div className="card">
@@ -164,8 +279,35 @@ export default function RunView({ runId, onChanged }) {
               </div>
               <LiveTail text={activeFor(decomposeStep).thoughts} />
             </div>
+          ) : editing === decomposeStep.id ? (
+            <DecomposeEditor
+              payload={decomposition}
+              saving={saving}
+              error={saveError}
+              onCancel={() => {
+                setEditing(null);
+                setSaveError("");
+              }}
+              onSave={(payload) => savePayload(decomposeStep.id, payload)}
+            />
           ) : decomposition ? (
             <div className="card">
+              <div className="card-head">
+                <span className="headline">
+                  {decomposition.sub_claims.length} sub-questions
+                </span>
+                {decomposeStep.edited_at && (
+                  <span className="chip" title="A person wrote this payload">
+                    edited
+                  </span>
+                )}
+                <EditGate
+                  step={decomposeStep}
+                  steps={steps}
+                  busy={busy}
+                  onEdit={() => setEditing(decomposeStep.id)}
+                />
+              </div>
               {decomposition.sub_claims.map((s) => (
                 <div key={s.id} className="evidence-row">
                   <b style={{ flex: "none" }}>{s.id}</b>
@@ -202,16 +344,45 @@ export default function RunView({ runId, onChanged }) {
           n={2}
           title={STAGE_TITLES.lenses}
           note="All sub-questions need lenses before base rates unlock."
+          action={sectionAction("lenses")}
         >
           {byStage("lenses").map((step) => {
             const sc = subClaimById[step.sub_claim_id];
             const active = activeFor(step);
+            if (editing === step.id) {
+              return (
+                <LensSetEditor
+                  key={step.id}
+                  payload={step.payload}
+                  saving={saving}
+                  error={saveError}
+                  onCancel={() => {
+                    setEditing(null);
+                    setSaveError("");
+                  }}
+                  onSave={(payload) => savePayload(step.id, payload)}
+                />
+              );
+            }
             return (
               <div key={step.id} className="card">
                 <div className="card-head">
                   <span className="headline">
                     {step.sub_claim_id} — {sc?.question}
                   </span>
+                  {step.edited_at && (
+                    <span className="chip" title="A person wrote this payload">
+                      edited
+                    </span>
+                  )}
+                  {step.status === "complete" && (
+                    <EditGate
+                      step={step}
+                      steps={steps}
+                      busy={busy}
+                      onEdit={() => setEditing(step.id)}
+                    />
+                  )}
                 </div>
                 {sc?.rationale && <div className="card-sub">{sc.rationale}</div>}
                 {active ? (
@@ -254,7 +425,11 @@ export default function RunView({ runId, onChanged }) {
       )}
 
       {synthesisStep && (
-        <StageSection n={5} title={STAGE_TITLES.synthesis}>
+        <StageSection
+          n={5}
+          title={STAGE_TITLES.synthesis}
+          action={sectionAction("synthesis")}
+        >
           {activeFor(synthesisStep) ? (
             <div className="card">
               <div className="card-head">

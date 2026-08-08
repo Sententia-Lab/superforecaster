@@ -333,6 +333,27 @@ class SubClaimLenses(BaseModel):
     lenses: list[Lens] = Field(min_length=1, max_length=3)
 
 
+class SubClaimLensesEdit(SubClaimLenses):
+    """A lens set a person wrote. `SubClaimLenses` already caps the count at 1-3.
+
+    The agent's own output is rescaled to sum to 1 by `stages.normalize_weights`, but a
+    hand-written set is rejected instead. Silently rewriting numbers somebody typed would
+    hide the constraint rather than teach it.
+    """
+
+    @model_validator(mode="after")
+    def _one_whole_judgment(self) -> "SubClaimLensesEdit":
+        names = [lens.name for lens in self.lenses]
+        if len(set(names)) != len(names):
+            # A lens is identified by (sub-question, name) in `run_steps` and in
+            # `machine._chosen_lens`. Duplicates are not a style problem — they collide.
+            raise ValueError("lens names must be unique within a sub-question")
+        total = round(sum(lens.weight for lens in self.lenses), 4)
+        if total != 1.0:
+            raise ValueError(f"lens weights must sum to 1.00, got {total:.2f}")
+        return self
+
+
 class SubClaimBaseRates(BaseModel):
     """One researched lens. The `research_lens` step's answer.
 
@@ -815,6 +836,11 @@ class RunStepOut(BaseModel):
     attempts: int = 0
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
+    edited_at: Optional[datetime] = Field(
+        default=None,
+        description="Set when a person replaced this payload by hand. A payload a human "
+        "wrote is different evidence from one the agent produced, so the UI says which.",
+    )
 
 
 class GatedRunSummary(BaseModel):
