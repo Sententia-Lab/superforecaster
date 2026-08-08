@@ -31,12 +31,8 @@ Open **http://localhost:5173**, click **Keys** in the header, and paste them in.
 the whole setup — no file to write, no admin token to invent, no database to create.
 
 Keys set in that panel live in the server process and are dropped when it restarts. To
-have them survive, export them before starting:
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-export TAVILY_API_KEY=tvly-...
-```
+have them survive, set `ANTHROPIC_API_KEY` and `TAVILY_API_KEY` in the environment you
+start from — see [Configuration](#configuration) for every variable that matters.
 
 The startup banner tells you exactly what you got:
 
@@ -63,15 +59,15 @@ and the startup banner says the same, so you never get that silently.
 <details>
 <summary>Using the Logfire Gateway instead of Anthropic directly</summary>
 
-```bash
-export PYDANTIC_AI_GATEWAY_API_KEY=pylf_v2_...
-```
+Set `PYDANTIC_AI_GATEWAY_API_KEY` in the environment, from
+[logfire.pydantic.dev](https://logfire.pydantic.dev) → your org → **Gateway**. It takes
+precedence over `ANTHROPIC_API_KEY`. Legacy `paig_...` keys no longer work, and this is
+for LLM calls only — it does not send traces.
 
-From [logfire.pydantic.dev](https://logfire.pydantic.dev) → your org → **Gateway**. Legacy
-`paig_...` keys no longer work. This is for LLM calls only — it does not send traces.
-
-The Keys panel follows whichever key credentials the model, so it names this one when the
-gateway is configured and `ANTHROPIC_API_KEY` otherwise.
+The Keys panel follows whichever variable credentials the model, so it names the gateway
+key once one is set and `ANTHROPIC_API_KEY` otherwise. It cannot switch you *onto* the
+gateway — that first key has to come from the environment. `make config` says which one
+is in play.
 </details>
 
 ---
@@ -133,8 +129,9 @@ The CLI runs the same stages without the browser:
 | `make resolve ID=<uuid>` | has it resolved yet? |
 | `make cli ARGS="--help"` | everything else |
 
-**Docker**, if you would rather not install `uv` and Node at all. Export your keys **and**
-an `ADMIN_API_KEY` first — a container is not localhost:
+**Docker**, if you would rather not install `uv` and Node at all. Set your keys **and**
+an `ADMIN_API_KEY` in the environment first — a container is not localhost, so the Keys
+panel cannot authenticate you into one that has no admin key:
 
 | | |
 |---|---|
