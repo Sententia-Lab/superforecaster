@@ -170,13 +170,13 @@ DERIVED: dict[str, Callable[[list[dict], dict], list[dict]]] = {
     "decompose": lambda steps, step: [
         s for s in steps if s["stage"] in ("lenses", "synthesis")
     ],
-    "lenses": lambda steps, step: [
-        s
-        for s in steps
-        if s["stage"] == "base_rates" and s["sub_claim_id"] == step["sub_claim_id"]
-    ],
+    # Every base rate in the run, not only this sub-question's. Populations are chosen
+    # before they are measured (ADR 40), and once any rate has come back, re-choosing
+    # populations *anywhere* is choosing them with a measured number in hand — the run
+    # has seen an answer, so no part of it is pre-registered any more.
+    "lenses": lambda steps, step: [s for s in steps if s["stage"] == "base_rates"],
 }
-"""Editable stage -> the rows that exist only because of that stage's payload."""
+"""Editable stage -> the rows whose existence or blindness that stage's payload owns."""
 
 
 def edit_blocker(step: dict, steps: list[dict]) -> str | None:

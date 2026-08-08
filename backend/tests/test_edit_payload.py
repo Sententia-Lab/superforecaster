@@ -196,7 +196,23 @@ def test_editing_a_lens_set_rekeys_only_its_own_cells():
     }
 
 
-def test_lens_lock_is_per_sub_question():
+def test_every_lens_set_is_editable_while_no_rate_has_come_back():
+    run_id = _lensed()
+    one_lens = SubClaimLensesEdit(lenses=[lens("solo")]).model_dump()
+
+    machine.edit_payload(run_id, _step(run_id, "lenses", "sc1")["id"], one_lens)
+    machine.edit_payload(run_id, _step(run_id, "lenses", "sc2")["id"], one_lens)
+
+    assert _keys(run_id, "base_rates") == {("sc1", "solo"), ("sc2", "solo")}
+
+
+def test_one_measured_base_rate_locks_every_lens_set():
+    """Not just its own sub-question's.
+
+    Populations are chosen before they are measured (ADR 40). Once any rate is back the
+    run has seen an answer, so re-choosing populations anywhere — including a sub-question
+    nobody has measured yet — is choosing them with that answer in hand.
+    """
     run_id = _lensed()
     db.finish_step(
         _step(run_id, "base_rates", "sc1", "lens-a")["id"],
@@ -204,14 +220,11 @@ def test_lens_lock_is_per_sub_question():
     )
 
     one_lens = SubClaimLensesEdit(lenses=[lens("solo")]).model_dump()
-
-    # sc1 is locked because one of its cells has run...
-    with pytest.raises(machine.GateError, match="base_rates step .* is complete"):
-        machine.edit_payload(run_id, _step(run_id, "lenses", "sc1")["id"], one_lens)
-
-    # ...while sc2, whose cells are all still pending, is not.
-    machine.edit_payload(run_id, _step(run_id, "lenses", "sc2")["id"], one_lens)
-    assert ("sc2", "solo") in _keys(run_id, "base_rates")
+    for sub_claim_id in ("sc1", "sc2"):
+        with pytest.raises(machine.GateError, match="base_rates step .* is complete"):
+            machine.edit_payload(
+                run_id, _step(run_id, "lenses", sub_claim_id)["id"], one_lens
+            )
 
 
 def test_an_edited_weight_reaches_the_step_that_consumes_it():

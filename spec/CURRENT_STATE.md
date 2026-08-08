@@ -315,9 +315,11 @@ PUT /runs/{run_id}/steps/{step_id}/payload   {edited payload}
 ```
 
 `edit_blocker` reads `machine.DERIVED`: `decompose` derives the `lenses` rows and `synthesis`;
-`lenses` derives the `base_rates` rows **for its own sub-claim only**. A payload is editable
-while every derived row is still `pending`, so an edit can only ever strand empty rows —
-which is why `reconcile`'s delete half never destroys work. It refuses (`GateError`) if a
+`lenses` derives **every** `base_rates` row in the run, not only its own sub-claim's. A payload
+is editable while every derived row is still `pending`, so an edit can only ever strand empty
+rows — which is why `reconcile`'s delete half never destroys work. The lens rule is wider than
+the delete rule needs because populations are pre-registered (ADR 40): once any rate is back,
+re-choosing populations anywhere means choosing them with a measured number in hand. It refuses (`GateError`) if a
 stale row is not `pending`, raising before either write.
 
 `status` and `attempts` do not move: the step is still complete, and an edit is not an attempt.
@@ -541,8 +543,8 @@ Where the functions named above live.
   failure halts the queue and leaves every button live; clicking Run All again resumes
   from it.
 - **Editable review** — a decomposition or a lens set can be corrected while everything
-  derived from it is still pending (§3g). The lock is per sub-question, lens weights must
-  sum to 1.00, and an edited payload carries an "edited" chip.
+  derived from it is still pending (§3g). One measured base rate locks every lens set,
+  lens weights must sum to 1.00, and an edited payload carries an "edited" chip.
 - Retry of any failed step (optionally with `?max_iterations=` up to 50); cancel by
   closing the tab; restart sweep marks orphans honestly.
 - The CLI pipeline (`forecast`) and component evals through the same `stages` functions.

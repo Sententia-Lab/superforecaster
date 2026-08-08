@@ -11,10 +11,9 @@ const DERIVED = {
   // A decomposition with no researchable sub-claims fans out straight to synthesis.
   decompose: (steps) =>
     steps.filter((s) => s.stage === "lenses" || s.stage === "synthesis"),
-  lenses: (steps, step) =>
-    steps.filter(
-      (s) => s.stage === "base_rates" && s.sub_claim_id === step.sub_claim_id,
-    ),
+  // Every base rate, not only this sub-question's: once any rate is back, the run has
+  // seen an answer and no lens set is pre-registered any more (ADR 40).
+  lenses: (steps) => steps.filter((s) => s.stage === "base_rates"),
 };
 
 /**

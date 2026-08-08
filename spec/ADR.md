@@ -1599,9 +1599,8 @@ with a population that does not fit, could only be re-rolled by retrying the ste
 was no way to correct one by hand.
 
 The rule is one line. **A payload is editable exactly while everything derived from it is
-still untouched.** A decomposition is editable while no lens step has run; a
-sub-question's lens set is editable while no base rate *for that sub-question* has run.
-The lock is per sub-question, so sub-question 1 locking does not lock sub-question 2.
+still untouched.** A decomposition is editable while no lens step has run; a lens set is
+editable while no base rate anywhere in the run has come back.
 
 The rule was chosen for what it makes impossible. Because an edit is only ever allowed
 when nothing downstream has produced anything, cleaning up after one can only delete empty
@@ -1627,10 +1626,19 @@ exists because the failure it prevents — silently discarding counted evidence 
 API budget paid for — is worse than a 409, and because a bug in the lock should surface as
 an error rather than as missing research.
 
-**The lens lock is per-set, not per-lens**, which is coarser than it needs to be for the
-delete rule alone. ADR 54 forces it: weights are shares of one, so changing one lens's
+**The lens lock is deliberately coarser than the delete rule needs**, in two directions,
+and ADR 40 forces both.
+
+*Per-set rather than per-lens*: weights are shares of one (ADR 54), so changing one lens's
 weight changes another's, and a per-lens lock would let someone re-weight an
-already-measured lens indirectly. That is exactly what ADR 40 exists to prevent.
+already-measured lens indirectly.
+
+*Whole-run rather than per-sub-question*: populations are chosen before they are measured.
+Once any rate has come back the run has seen an answer, so re-choosing populations anywhere
+— including for a sub-question nobody has measured — is choosing them with that answer in
+hand. Locking only the measured sub-question leaves exactly that gap open: measure sc1,
+read the number, then re-pick sc2's populations to suit it. The delete rule would permit
+it, because sc2's cells are all still pending. Pre-registration does not.
 
 Sub-claim ids are re-stamped `sc1…scN` by position after an edit, by the same helper the
 agent's own output goes through. Renumbering is safe *because* the lock guarantees nothing

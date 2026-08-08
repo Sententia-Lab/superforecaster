@@ -183,18 +183,20 @@ lenses[sc1] ──derives──►  base_rates[sc1, each lens]
 | Payload | Editable while… |
 |---|---|
 | the decomposition | no lens step has run |
-| sub-question N's lens set | no base rate **for sub-question N** has run |
-
-The lock is per sub-question. Sub-question 1 locking does not lock sub-question 2.
+| any lens set | **no base rate anywhere in the run** has come back |
 
 Because an edit is only ever allowed when nothing downstream has produced anything, cleanup
 after an edit can only delete empty pending rows. There is no cascade that destroys hours of
 work and no partial-invalidation logic. The lock rule and the cleanup rule are the same rule.
 
-**The lens lock is per-set, not per-lens.** Once any base rate under sub-question 1 has run,
-the whole set locks. Weights sum to 1, so changing one lens's weight changes another's — a
-per-lens lock would let someone re-weight a measured lens indirectly, which is what ADR 40
-exists to prevent.
+**One measured rate locks every lens set in the run**, not only its own sub-question's.
+Populations are chosen before they are measured (ADR 40). Once any rate has come back the run
+has seen an answer, so re-choosing populations anywhere — including for a sub-question nobody
+has measured yet — is choosing them with that answer in hand. A per-sub-question lock leaves
+exactly that gap: measure sc1, read the number, then re-pick sc2's populations to suit it.
+
+The lock is also per-set rather than per-lens. Weights sum to 1, so changing one lens's weight
+changes another's, and a per-lens lock would let someone re-weight a measured lens indirectly.
 
 ### 4.2 Why `advance` had to go
 
@@ -675,7 +677,8 @@ The empty `ADMIN_API_KEY` is required while the test suite is not isolated from 
 1. `test_machine.py` passes unchanged — the safety net for replacing `advance`.
 2. `reconcile` adds missing rows, deletes stale pending ones, and refuses to delete a row that
    holds work.
-3. Editing: rows re-key per sub-question; 409 once anything downstream has run; 422 on Σ ≠ 1,
+3. Editing: rows re-key per sub-question; one measured base rate locks every lens set; 409
+   once anything downstream has run; 422 on Σ ≠ 1,
    duplicate names, and 2 or 6 sub-questions; `edited_at` set with `status` and `attempts`
    unmoved; an edited weight reaches the base-rate step that consumes it.
 4. Weights: Σ = 1.00 exactly, ratios preserved, three equal lenses land `0.33 / 0.33 / 0.34`, a
