@@ -15,7 +15,7 @@ imply, gets sent back. See [`spec/superforecasting_methodology.md`](spec/superfo
 
 ## Run it
 
-Two keys and [uv](https://docs.astral.sh/uv/):
+You need [uv](https://docs.astral.sh/uv/), Node, and two keys:
 
 | | | |
 |---|---|---|
@@ -23,23 +23,20 @@ Two keys and [uv](https://docs.astral.sh/uv/):
 | **Tavily** | [tavily.com](https://tavily.com) | web search — free tier is enough |
 
 ```bash
-git clone <this repo> && cd superforecaster/backend
-uv sync
-
-export ANTHROPIC_API_KEY=sk-ant-...
-export TAVILY_API_KEY=tvly-...
-
-uv run python -m superforecaster serve
+make install
+make dev
 ```
 
-Build the frontend once first (`cd ../frontend && npm install && npm run build`), then
-open **http://localhost:8000**. That is the whole setup — no `.env` to write, no admin
-token to invent, no database to create. (For frontend development, `npm run dev` starts a
-Vite server that proxies to the API on :8099.)
+Open **http://localhost:5173**, click **Keys** in the header, and paste them in. That is
+the whole setup — no file to write, no admin token to invent, no database to create.
 
-Or, from the repo root: `make install && make dev` runs both hot-reloading, or
-`docker compose up --build` if you'd rather not install `uv`/`npm` at all — see
-[Commands](#commands) for both.
+Keys set in that panel live in the server process and are dropped when it restarts. To
+have them survive, export them before starting:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+export TAVILY_API_KEY=tvly-...
+```
 
 The startup banner tells you exactly what you got:
 
@@ -51,17 +48,8 @@ Superforecaster
   database      ./superforecaster.db
 ```
 
-To make the keys persist, `cp .env.example .env` and fill it in. Real environment
-variables always win over that file — `superforecaster config` shows which is which:
-
-```
-  setting                          origin       value
-  ANTHROPIC_API_KEY                .env         set (108 chars)
-  TAVILY_API_KEY                   environment  set (37 chars)   <- an export is shadowing .env
-  AGENT_MODEL                      unset        —
-
-  resolved model                   anthropic:claude-sonnet-4-6
-```
+and `make config` shows every setting, where its value came from, and which one is
+shadowing which — with the secrets redacted.
 
 <details>
 <summary>Running without a Tavily key</summary>
@@ -81,6 +69,9 @@ export PYDANTIC_AI_GATEWAY_API_KEY=pylf_v2_...
 
 From [logfire.pydantic.dev](https://logfire.pydantic.dev) → your org → **Gateway**. Legacy
 `paig_...` keys no longer work. This is for LLM calls only — it does not send traces.
+
+The Keys panel follows whichever key credentials the model, so it names this one when the
+gateway is configured and `ANTHROPIC_API_KEY` otherwise.
 </details>
 
 ---
@@ -104,84 +95,72 @@ conjunction, not an average of lenses pointed at different questions — and the
 probability may deviate from the implied number by at most ±5 points
 (`CHECK_DERIVATION_SLACK`).
 
+Every stage collapses, and a finished run leads with its answer. Each measured cell
+restates the lens it was measured through, so what came from the lens stays separate from
+what the cell found. The synthesis table lays out every lens and every modifier in one
+place.
+
 The connection is the agent's lifetime: close the laptop and the in-flight step stops,
 lands as `cancelled`, and is one click to re-run. A step that fails is retryable from the
-database — there is no separate checkpoint system. `superforecaster forecast` (CLI) runs
-the same stages back-to-back with no gates.
+database — there is no separate checkpoint system. `make forecast` runs the same stages
+back-to-back with no gates.
 
 ---
 
 ## Commands
 
-All from `backend/`.
+`make` on its own lists all of them.
 
 | | |
 |---|---|
-| `uv run python -m superforecaster serve` | API + web UI on :8000 |
-| `uv run python -m superforecaster serve --port 9000 --reload` | pick a port, restart on edits |
-| `uv run python -m superforecaster forecast` | one forecast, interactive prompts, saved to SQLite |
-| `uv run python -m superforecaster forecast --fixture --no-save -v` | smoke test on a bundled question, prints JSON |
-| `uv run python -m superforecaster forecast --fixture --max-iterations 3` | shallower research — cheaper and faster |
-| `uv run python -m superforecaster refresh --id <uuid>` | re-check an existing forecast against new evidence |
-| `uv run python -m superforecaster resolve --id <uuid>` | has this resolved yet? |
-| `uv run python -m superforecaster config` | every setting and **where its value came from** — secrets redacted |
-| `uv run python -m superforecaster diagram` | the pipeline shape, as mermaid |
-| `uv run pytest` | the whole suite — no network, no API keys |
-| `uv run python -m superforecaster --help` | everything else |
-
-**Docker**, from the repo root. Put both keys **and** an `ADMIN_API_KEY` in `backend/.env`
-first — a container is not localhost:
-
-```bash
-docker compose up --build
-```
-
-That's the whole thing — no `npm run build` first. The image builds the frontend in a
-Node stage and copies `dist/` in, then serves it from FastAPI on :8000, SQLite in the
-`sqlite_data` volume. Still ADR 47's "one process serving everything" — the frontend build
-just moved from your machine into the image, so a fresh clone with nothing installed but
-Docker works.
-
-<details>
-<summary>Dockerized frontend dev loop (hot reload, no local Node needed)</summary>
-
-```bash
-docker compose --profile dev up --build
-```
-
-This also starts a `frontend` service (`frontend/Dockerfile.dev`) running `npm run dev` on
-**:5173**, proxying API routes to the `api` service over the compose network. It's opt-in
-via the `dev` profile — plain `docker compose up` never starts it, so production stays the
-single-process deploy above.
-</details>
-
-**Makefile**, wraps the commands above:
-
-| | |
-|---|---|
-| `make install` | `uv sync` + `npm install` |
-| `make dev` | backend on :8099 and `npm run dev` on :5173, both hot-reloading, one Ctrl+C stops both |
+| `make install` | backend and frontend dependencies |
+| `make dev` | backend :8099 + frontend :5173, both hot-reloading, one Ctrl+C stops both |
 | `make backend` / `make frontend` | either one alone |
-| `make build` | `npm run build` |
-| `make test` | `uv run pytest` |
-| `make docker` | `docker compose up --build` |
-| `make docker-dev` | `docker compose --profile dev up --build` |
-| `make docker-down` | stop the compose stack |
+| `make serve` | builds the frontend, then serves the whole app as one process on :8000 |
+| `make build` | the frontend into `frontend/dist` |
+| `make test` | the backend suite — no network, no API keys |
+| `make clean` | build output, `node_modules`, and the venv |
 
-Every target that touches the backend depends on `backend/.env` and creates it from
-`backend/.env.example` if missing — you still have to fill in the keys yourself.
+The CLI runs the same stages without the browser:
+
+| | |
+|---|---|
+| `make forecast` | one forecast, interactive prompts, saved to SQLite |
+| `make smoke` | a bundled question, shallow research, nothing saved — the cheap end-to-end check |
+| `make config` | every setting and **where its value came from** — secrets redacted |
+| `make diagram` | the pipeline shape, as mermaid |
+| `make refresh ID=<uuid>` | re-check a saved forecast against new evidence |
+| `make resolve ID=<uuid>` | has it resolved yet? |
+| `make cli ARGS="--help"` | everything else |
+
+**Docker**, if you would rather not install `uv` and Node at all. Export your keys **and**
+an `ADMIN_API_KEY` first — a container is not localhost:
+
+| | |
+|---|---|
+| `make docker` | the whole app in one container on :8000 |
+| `make docker-dev` | containerized hot-reload: frontend :5173, api :8000 |
+| `make docker-down` | stop the stack |
+
+`make docker` needs no separate build step. The image builds the frontend in a Node stage
+and copies `dist/` in, then serves it from FastAPI, SQLite in the `sqlite_data` volume.
+Still ADR 47's "one process serving everything" — the frontend build just moved from your
+machine into the image, so a fresh clone with nothing installed but Docker works.
+`make docker-dev` adds a Vite container proxying to the API over the compose network; it
+is opt-in, so the production path stays the single-process deploy.
 
 ---
 
 ## Configuration
 
-Beyond the two keys, nothing here is required. Real environment variables beat
-`backend/.env`.
+Beyond the two keys, nothing here is required. Every setting is an environment variable,
+and `make config` prints all of them with their origins.
 
 | Variable | Why you would set it |
 |---|---|
 | `ANTHROPIC_API_KEY` | The model. Or `PYDANTIC_AI_GATEWAY_API_KEY` to route through Logfire |
 | `TAVILY_API_KEY` | Web search for every research agent |
+| `WIKIPEDIA_API_KEY` | Optional. Raises the Wikimedia rate limit; nothing needs it |
 | `ADMIN_API_KEY` | **Required to serve this anywhere but your own machine** — see below |
 | `AGENT_MODEL` | Override the model for every agent, e.g. `anthropic:claude-sonnet-4-6` |
 | `LOGFIRE_TOKEN` | A `pylf_v1_...` *write* token for cloud traces. Different from the gateway key |
@@ -189,8 +168,12 @@ Beyond the two keys, nothing here is required. Real environment variables beat
 | `CELL_HARD_HEADROOM` | Calls between the cline and the hard cap (default 3) |
 | `DATABASE_PATH` | Default `./superforecaster.db`; Docker uses `/app/data/` |
 
-Full list in [`backend/.env.example`](backend/.env.example); every check threshold is an
-env var too — see `spec/CURRENT_STATE.md`.
+Every check threshold is an environment variable too — see
+[`spec/CURRENT_STATE.md`](spec/CURRENT_STATE.md).
+
+The LLM, Tavily, and Wikipedia keys can also be set from the **Keys** panel in the header.
+Those apply on the next request and are dropped when the process restarts; no route ever
+returns a key's value, only where it came from.
 
 ### Admin auth
 
@@ -203,7 +186,7 @@ protects nothing and costs the entire first-run experience.
 A request carrying any proxy header (`X-Forwarded-For` and friends) is never treated as
 local — a reverse proxy in front of this is the shape of a real deployment, and anything
 upstream can rewrite the origin. **Set `ADMIN_API_KEY` before exposing the port.** Once
-set, the UI shows an **Admin** button; paste the same value there.
+set, paste the same value into the **Keys** panel.
 
 ### Search budget
 
@@ -220,24 +203,7 @@ result and the run continues — one greedy column no longer costs the others th
 
 ---
 
-## Layout
-
-```
-backend/
-  superforecaster/
-    agents/          decompose, lenses, outside_view, inside_view, reflect, synthesize, …
-    stages.py        the per-stage functions + run_all (CLI/eval auto-advance)
-    machine.py       the gated state machine — every legal transition
-    graphs/          the update graph (resolution checks + Bayesian updates)
-    checks.py        the 16 principles as pure functions over typed output
-    db.py            SQLite: forecasts, gated_runs, run_steps — with schema migrations
-  api/               FastAPI routes, including /runs and its per-step SSE stream
-  config.py          settings, budgets, check thresholds — every number an env var
-frontend/            React + Vite: src/ components, derive.js mirrors checks.py
-spec/                CURRENT_STATE.md (what exists), ADR.md (why)
-Makefile             install / dev / build / test / docker / docker-dev
-docker-compose.yml   api (prod, builds frontend in-image) + frontend (dev profile only)
-```
+## Where things are
 
 - **What exists and what it does** → [`spec/CURRENT_STATE.md`](spec/CURRENT_STATE.md)
 - **Why it is shaped this way** → [`spec/ADR.md`](spec/ADR.md)
@@ -249,8 +215,8 @@ docker-compose.yml   api (prod, builds frontend in-image) + frontend (dev profil
 
 With a `LOGFIRE_TOKEN` set, runs send structured traces to
 [logfire.pydantic.dev](https://logfire.pydantic.dev) — filter by service `superforecaster`
-and expand the per-column research spans. Without one, `--verbose` prints the same tool
-calls and results to the terminal.
+and expand the per-column research spans. Without one, `make cli ARGS="forecast --verbose"`
+prints the same tool calls and results to the terminal.
 
 ---
 

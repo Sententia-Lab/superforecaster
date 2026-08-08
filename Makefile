@@ -1,45 +1,87 @@
-.PHONY: install dev backend frontend build test docker docker-dev docker-down clean
+.PHONY: help install dev backend frontend serve build test forecast smoke config \
+        diagram refresh resolve cli docker docker-dev docker-down clean
 
-BACKEND_ENV := backend/.env
+.DEFAULT_GOAL := help
 
-install:
+UV := cd backend && uv run
+CLI := $(UV) python -m superforecaster
+
+help: ## List every target
+	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
+	  | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[1m%-12s\033[0m %s\n", $$1, $$2}'
+
+# ---------- setup ----------
+
+install: ## Install backend and frontend dependencies
 	cd backend && uv sync
 	cd frontend && npm install
 
-$(BACKEND_ENV):
-	cp backend/.env.example $(BACKEND_ENV)
-	@echo "Created $(BACKEND_ENV) — add ANTHROPIC_API_KEY (or PYDANTIC_AI_GATEWAY_API_KEY)"
-	@echo "and TAVILY_API_KEY before running again."
+# ---------- running it ----------
 
-## Backend + frontend dev servers together, hot-reload on both, one Ctrl+C stops both.
-dev: $(BACKEND_ENV)
+dev: ## Backend :8099 + frontend :5173, both hot-reloading, one Ctrl+C stops both
 	@trap 'kill 0' EXIT; \
 	(cd backend && uv run uvicorn api.main:app --port 8099 --reload) & \
 	(cd frontend && npm install && npm run dev) & \
 	wait
 
-backend: $(BACKEND_ENV)
+backend: ## Backend alone on :8099, hot-reloading
 	cd backend && uv run uvicorn api.main:app --port 8099 --reload
 
-frontend:
+frontend: ## Frontend alone on :5173, proxying the API on :8099
 	cd frontend && npm run dev
 
-build:
+serve: build ## The whole app as one process on :8000
+	$(CLI) serve
+
+build: ## Build the frontend into frontend/dist
 	cd frontend && npm run build
 
-test:
-	cd backend && uv run pytest
+test: ## The backend suite — no network, no API keys
+	$(UV) pytest
 
-## The whole app, one process, :8000 — builds the frontend inside the image.
-docker: $(BACKEND_ENV)
+# ---------- the CLI ----------
+
+forecast: ## One forecast, interactive, saved to SQLite
+	$(CLI) forecast
+
+smoke: ## Forecast a bundled question without saving — the cheap end-to-end check
+	$(CLI) forecast --fixture --no-save --max-iterations 3 -v
+
+config: ## Every setting and where its value came from — secrets redacted
+	$(CLI) config
+
+diagram: ## The pipeline shape, as mermaid
+	$(CLI) diagram
+
+refresh: ## Re-check a saved forecast against new evidence — make refresh ID=<uuid>
+	@test -n "$(ID)" || { echo "usage: make refresh ID=<uuid>"; exit 2; }
+	$(CLI) refresh --id $(ID)
+
+resolve: ## Has a saved forecast resolved yet — make resolve ID=<uuid>
+	@test -n "$(ID)" || { echo "usage: make resolve ID=<uuid>"; exit 2; }
+	$(CLI) resolve --id $(ID)
+
+cli: ## Anything else — make cli ARGS="postmortem <uuid>"
+	$(CLI) $(ARGS)
+
+# ---------- docker ----------
+
+# Compose v2.7 fails when `env_file` names a file that does not exist, and it predates
+# the `required: false` form. Nothing goes in it — keys are exported, or set in the Keys
+# panel — so an empty file is enough to let compose start.
+backend/.env:
+	@touch $@
+
+docker: backend/.env ## The whole app in one container on :8000
 	docker compose up --build
 
-## Hot-reloading frontend (:5173) + api (:8000), each in its own container.
-docker-dev: $(BACKEND_ENV)
+docker-dev: backend/.env ## Containerized hot-reload: frontend :5173, api :8000
 	docker compose --profile dev up --build
 
-docker-down:
+docker-down: ## Stop the compose stack
 	docker compose down
 
-clean:
+# ---------- housekeeping ----------
+
+clean: ## Remove build output, node_modules, and the venv
 	rm -rf frontend/dist frontend/node_modules backend/.venv
