@@ -25,8 +25,6 @@ You need [uv](https://docs.astral.sh/uv/), Node, and three keys:
 | **Tavily** | [tavily.com](https://tavily.com) | web search — free tier is enough |
 | **Wikipedia** | [wikipedia.com](https://pypi.org/project/Wikipedia-API/) | general knowledge |
 
-Create a .env and set an admin api key there.
-
 ```bash
 make install
 make dev
