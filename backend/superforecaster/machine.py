@@ -358,7 +358,9 @@ async def _dispatch(
         return payload.model_dump_json()
 
     if stage == "inside_view":
-        base = _cell_payload(steps, "base_rates", step["sub_question_id"], step["lens_name"])
+        base = _cell_payload(
+            steps, "base_rates", step["sub_question_id"], step["lens_name"]
+        )
         payload = await stages.run_inside_step(
             input, sub_question, BaseRateStepPayload.model_validate_json(base), deps
         )
@@ -389,7 +391,11 @@ async def _dispatch(
 
 def _decomposition_of(steps: list[dict]) -> Decomposition:
     for s in steps:
-        if s["stage"] == "decompose" and s["status"] == "complete" and s["payload_json"]:
+        if (
+            s["stage"] == "decompose"
+            and s["status"] == "complete"
+            and s["payload_json"]
+        ):
             return Decomposition.model_validate_json(s["payload_json"])
     raise GateError("decompose has not completed")
 
@@ -435,7 +441,9 @@ def _cell_payload(
             and s["payload_json"]
         ):
             return s["payload_json"]
-    raise GateError(f"no completed {stage} payload for ({sub_question_id}, {lens_name})")
+    raise GateError(
+        f"no completed {stage} payload for ({sub_question_id}, {lens_name})"
+    )
 
 
 def detail(run_id: str) -> dict:

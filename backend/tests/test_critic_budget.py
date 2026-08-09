@@ -70,7 +70,9 @@ async def test_hitting_the_wall_degrades_instead_of_raising(monkeypatch):
         raise UsageLimitExceeded("tool_calls_limit of 5 exceeded")
 
     monkeypatch.setattr(critic, "run_agent", blow_the_budget)
-    out = await critic.run_critique("Will X happen?", "X is at least 10% by 2027-01-01.")
+    out = await critic.run_critique(
+        "Will X happen?", "X is at least 10% by 2027-01-01."
+    )
 
     assert isinstance(out, CriteriaCritique)
     assert out.is_resolvable is False
@@ -117,7 +119,9 @@ async def test_a_critique_naming_no_source_cannot_pass(monkeypatch):
     forecast nobody can score is a whole run spent for nothing, and the gap only becomes
     visible on the one day it is too late to fix."""
     _capture(monkeypatch)  # returns CRITIQUE: is_resolvable=True, no source
-    out = await critic.run_critique("Will X happen?", "X is at least 10% by 2027-01-01.")
+    out = await critic.run_critique(
+        "Will X happen?", "X is at least 10% by 2027-01-01."
+    )
 
     assert out.is_resolvable is False
     assert any("No resolution source" in m for m in out.missing)
@@ -136,7 +140,9 @@ async def test_a_critique_that_names_a_source_is_left_alone(monkeypatch):
         return R()
 
     monkeypatch.setattr(critic, "run_agent", fake_run_agent)
-    out = await critic.run_critique("Will X happen?", "X is at least 10% by 2027-01-01.")
+    out = await critic.run_critique(
+        "Will X happen?", "X is at least 10% by 2027-01-01."
+    )
 
     assert out.is_resolvable is True
     assert out.missing == []

@@ -23,9 +23,7 @@ pytestmark = pytest.mark.asyncio
 @pytest.fixture
 async def client():
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://test"
-    ) as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
 
 
@@ -156,9 +154,7 @@ async def test_stream_404_and_409_preflights(client, stub_decompose):
 async def test_stream_409_when_gate_not_satisfied(client, stub_decompose):
     detail = await _started_run(client)
     db.insert_steps(detail["id"], [("synthesis", "", "")])
-    synth = next(
-        s for s in db.list_steps(detail["id"]) if s["stage"] == "synthesis"
-    )
+    synth = next(s for s in db.list_steps(detail["id"]) if s["stage"] == "synthesis")
     resp = await client.post(f"/runs/{detail['id']}/steps/{synth['id']}/stream")
     assert resp.status_code == 409
     assert "gate not satisfied" in resp.json()["detail"]

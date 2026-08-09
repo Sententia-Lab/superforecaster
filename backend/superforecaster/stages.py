@@ -105,7 +105,9 @@ def normalize_weights(lenses: list[Lens]) -> list[Lens]:
     # Largest remainder: hand the pennies rounding left over to the biggest fractions, so
     # the set sums to exactly 100 without any lens drifting more than one penny.
     remainder = 100 - sum(shares)
-    order = sorted(range(len(lenses)), key=lambda i: exact[i] - int(exact[i]), reverse=True)
+    order = sorted(
+        range(len(lenses)), key=lambda i: exact[i] - int(exact[i]), reverse=True
+    )
     for i in order[:remainder]:
         shares[i] += 1
 

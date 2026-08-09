@@ -150,9 +150,11 @@ def _rename_sub_claims(node: object) -> object:
             out[key] = [_renumber(v) for v in value]
         elif key in ("sub_questions", "decompositions") and isinstance(value, list):
             out[key] = [
-                {**_rename_sub_claims(s), "id": _renumber(s.get("id"))}
-                if isinstance(s, dict)
-                else _rename_sub_claims(s)
+                (
+                    {**_rename_sub_claims(s), "id": _renumber(s.get("id"))}
+                    if isinstance(s, dict)
+                    else _rename_sub_claims(s)
+                )
                 for s in value
             ]
         else:
@@ -267,9 +269,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
 def init_db() -> None:
     """Create tables if they don't exist, then migrate. Safe to call repeatedly."""
     with connect() as conn:
-        fresh = conn.execute(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='forecasts'"
-        ).fetchone()[0] == 0
+        fresh = (
+            conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='forecasts'"
+            ).fetchone()[0]
+            == 0
+        )
 
         conn.executescript(
             """
@@ -655,6 +660,7 @@ def calibration_report() -> CalibrationReport:
         ambiguous_count,
     )
 
+
 # ---------- Gated runs ----------
 #
 # A run is a persisted state machine of user-gated stages (ADR 45). Every stage output
@@ -813,9 +819,7 @@ def delete_gated_run(run_id: str) -> None:
             raise NotFoundError(f"run {run_id}")
 
 
-def insert_steps(
-    run_id: str, steps: list[tuple[str, str, str]]
-) -> list[dict]:
+def insert_steps(run_id: str, steps: list[tuple[str, str, str]]) -> list[dict]:
     """Materialize pending steps. Each entry is (stage, sub_question_id, lens_name).
 
     `INSERT OR IGNORE` against the UNIQUE key makes re-materialization idempotent —
@@ -941,7 +945,9 @@ def list_steps(run_id: str) -> list[dict]:
         ).fetchall()
     order = {stage: i for i, stage in enumerate(STAGE_ORDER)}
     steps = [_row_to_step(r) for r in rows]
-    steps.sort(key=lambda s: (order.get(s["stage"], 99), s["sub_question_id"], s["lens_name"]))
+    steps.sort(
+        key=lambda s: (order.get(s["stage"], 99), s["sub_question_id"], s["lens_name"])
+    )
     return steps
 
 

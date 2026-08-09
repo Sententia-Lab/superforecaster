@@ -178,9 +178,7 @@ def inside(**kwargs) -> InsideView:
     return InsideView(**{**defaults, **kwargs})
 
 
-def forecast(
-    probability: float = 0.28, extreme_justification: str = ""
-) -> Forecast:
+def forecast(probability: float = 0.28, extreme_justification: str = "") -> Forecast:
     return Forecast(
         question="Will A acquire B?",
         resolution_criteria="Deal closes",
@@ -393,9 +391,7 @@ def test_derivation_clean():
 
 def test_derivation_catches_narrative_drift():
     """Base rate 0.20, adjustments summing 0.10, final 0.75 — unsupported by its own evidence."""
-    o = outside(
-        lenses=[ref("a", 0.20), ref("b", 0.20)], aggregate_base_rate=0.20
-    )
+    o = outside(lenses=[ref("a", 0.20), ref("b", 0.20)], aggregate_base_rate=0.20)
     i = inside(
         adjustments=[adjustment("up", 0.10), adjustment("down", 0.0, is_noise=True)]
     )
@@ -406,17 +402,13 @@ def test_derivation_catches_narrative_drift():
 
 def test_derivation_allows_a_round_number():
     """P8 note: 0.60 is a legitimate answer when the arithmetic lands there."""
-    o = outside(
-        lenses=[ref("a", 0.50), ref("b", 0.50)], aggregate_base_rate=0.50
-    )
+    o = outside(lenses=[ref("a", 0.50), ref("b", 0.50)], aggregate_base_rate=0.50)
     i = inside(adjustments=[adjustment("up", 0.10)])
     assert checks.check_derivation(forecast(0.60), o, i) is None
 
 
 def test_derivation_ignores_noise_adjustments():
-    o = outside(
-        lenses=[ref("a", 0.30), ref("b", 0.30)], aggregate_base_rate=0.30
-    )
+    o = outside(lenses=[ref("a", 0.30), ref("b", 0.30)], aggregate_base_rate=0.30)
     i = inside(
         adjustments=[
             adjustment("up", 0.10),
@@ -428,17 +420,13 @@ def test_derivation_ignores_noise_adjustments():
 
 def test_derivation_clamps_to_unit_interval():
     """base 0.90 + 0.30 up would imply 1.20; it clamps to 1.00."""
-    o = outside(
-        lenses=[ref("a", 0.90), ref("b", 0.90)], aggregate_base_rate=0.90
-    )
+    o = outside(lenses=[ref("a", 0.90), ref("b", 0.90)], aggregate_base_rate=0.90)
     i = inside(adjustments=[adjustment("up", 0.30)])
     assert checks.check_derivation(forecast(0.98), o, i) is None
 
 
 def test_derivation_slack_is_configurable(monkeypatch):
-    o = outside(
-        lenses=[ref("a", 0.30), ref("b", 0.30)], aggregate_base_rate=0.30
-    )
+    o = outside(lenses=[ref("a", 0.30), ref("b", 0.30)], aggregate_base_rate=0.30)
     i = inside(adjustments=[adjustment("up", 0.10)])
     assert checks.check_derivation(forecast(0.48), o, i) is not None
 
@@ -472,10 +460,10 @@ def test_calibration_hygiene_is_advisory_not_blocking():
 
 def test_calibration_hygiene_allows_argued_extreme():
     """An extreme is justified, not forbidden — writing the argument is what clears it."""
-    o = outside(
-        lenses=[ref("a", 0.97), ref("b", 0.99)], aggregate_base_rate=0.98
+    o = outside(lenses=[ref("a", 0.97), ref("b", 0.99)], aggregate_base_rate=0.98)
+    f = forecast(
+        0.99, extreme_justification="class 'b' carries it; n=40 and both agree"
     )
-    f = forecast(0.99, extreme_justification="class 'b' carries it; n=40 and both agree")
     assert checks.check_calibration_hygiene(f, o) is None
 
 
@@ -500,9 +488,7 @@ def test_calibration_hygiene_flags_retreat_to_the_boundary():
 
 def test_calibration_hygiene_allows_the_boundary_when_classes_agree():
     """Sitting at the edge is only suspect when the outside view is itself unsure."""
-    o = outside(
-        lenses=[ref("a", 0.02), ref("b", 0.04)], aggregate_base_rate=0.03
-    )
+    o = outside(lenses=[ref("a", 0.02), ref("b", 0.04)], aggregate_base_rate=0.03)
     assert checks.check_calibration_hygiene(forecast(0.02), o) is None
 
 
@@ -516,7 +502,9 @@ def test_calibration_bounds_are_configurable(monkeypatch):
 
 def ided(*ids: str) -> Decomposition:
     return decomposition(
-        sub_questions=[sub().model_copy(update={"id": i}) for i in ids or ("sq1", "sq2", "sq3")]
+        sub_questions=[
+            sub().model_copy(update={"id": i}) for i in ids or ("sq1", "sq2", "sq3")
+        ]
     )
 
 
@@ -629,8 +617,8 @@ def a_grid(rule: str, rates: dict[str, float], estimates: dict[str, float]):
         chain_note="stated",
     )
     o = OutsideView(
-        lenses=[researched(i, r) for i, r in sorted(rates.items())] or
-                          [ref("a", 0.2), ref("b", 0.2)],
+        lenses=[researched(i, r) for i, r in sorted(rates.items())]
+        or [ref("a", 0.2), ref("b", 0.2)],
         aggregate_base_rate=0.0,
         disagreement="",
     )
@@ -727,8 +715,10 @@ def test_dragonfly_still_fires_within_one_column():
 def test_the_worst_column_is_the_one_reported():
     o = outside(
         lenses=[
-            researched("sq1", 0.20), researched("sq1", 0.24),
-            researched("sq2", 0.10), researched("sq2", 0.70),
+            researched("sq1", 0.20),
+            researched("sq1", 0.24),
+            researched("sq2", 0.10),
+            researched("sq2", 0.70),
         ],
         disagreement="",
     )
@@ -1035,9 +1025,7 @@ def test_run_update_checks_reports_direction_and_magnitude():
 
 
 def test_blocking_filters_non_blocking_violations():
-    v_block = checks.check_dragonfly(
-        outside(lenses=[ref("a", 0.10), ref("b", 0.60)])
-    )
+    v_block = checks.check_dragonfly(outside(lenses=[ref("a", 0.10), ref("b", 0.60)]))
     assert v_block is not None
     v_soft = v_block.model_copy(update={"blocking": False})
     assert checks.blocking([v_block, v_soft]) == [v_block]

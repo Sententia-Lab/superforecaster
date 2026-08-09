@@ -96,7 +96,9 @@ async def test_config_reports_where_each_key_came_from(client):
 
 
 @pytest.mark.asyncio
-async def test_the_llm_row_follows_the_key_that_credentials_the_model(client, monkeypatch):
+async def test_the_llm_row_follows_the_key_that_credentials_the_model(
+    client, monkeypatch
+):
     """A gateway install has no `ANTHROPIC_API_KEY`, so a panel hard-wired to that name
     reported "unset" on a working server and wrote a key the gateway then overruled."""
     monkeypatch.setenv("PYDANTIC_AI_GATEWAY_API_KEY", "pylf_v1_test")
