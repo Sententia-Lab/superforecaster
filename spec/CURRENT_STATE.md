@@ -146,27 +146,67 @@ Writes: **the process environment.** No table.
 
 ## 1. Drafting a question — `POST /questions/draft`, `POST /questions/critique`
 
+Two independent one-call endpoints, each behind its own button. Neither writes anything.
+
+**a. "Draft with AI" — freeform text into four filled fields.**
+
 ```
 NewForecastView  "Draft with AI"
    text (≥20 chars) ──► POST /questions/draft { text }
-                          run_draft(text)      ← agent call 1
-                          run_critique(...)    ← agent call 2
-                        ◄── { parsed: {question, criteria, date, source, category},
-                              critique: {is_resolvable, ambiguities, missing,
-                                         suggested_criteria, suggested_resolution_source} }
-   setFields(parsed); setCritique(critique); phase → "review"
+                          run_draft(text)      ← the only agent call, no tools
+   ◄── { "question": "Will UK CPI inflation exceed 3% in any month of 2027?",
+         "resolution_criteria": "Yes if a 2027 month prints above 3.0% year on year.",
+         "resolution_date": "2028-01-31T00:00:00Z",
+         "resolution_source": "ONS Consumer Price Inflation bulletin",
+         "category": "economics" }
+   setFields(parsed); phase → "review"
 ```
+
+All four fields come back filled, so `isComplete(fields)` passes and **"Run now" is live
+immediately**. `resolution_source` is named by the agent whether or not the text named
+one — it is required on `DraftedQuestion`, so an output missing it is a validation error
+pydantic-ai retries (ADR 64). The draft budget allows no tool calls; the name is checked
+only if the reader presses "Check resolvable", which does search.
+
+**b. "Check resolvable" — the fields are rewritten in place.**
+
+```
+NewForecastView  "Check resolvable"   (needs question + criteria)
+   ──► POST /questions/critique { question, resolution_criteria, resolution_date }
+         run_critique(...)  →  _require_a_source(...)
+   ◄── { "is_resolvable": false,
+         "what_changed": "Replaced 'above 3.0%' with the exact series and vintage, and
+                          named the ONS bulletin as the adjudicator.",
+         "suggested_criteria": "Yes if the ONS CPIH-excluding-owner-occupiers 12-month
+                                rate for any month Jan–Dec 2027 is at or above 3.1%, on
+                                first publication.",
+         "suggested_resolution_source": "ONS Consumer Price Inflation bulletin" }
+
+   fields.resolution_criteria  ← suggested_criteria         (overwritten)
+   fields.resolution_source    ← suggested_resolution_source (overwritten)
+   what_changed rendered under the button
+```
+
+The rewrite replaces the text rather than offering itself. There is no accept step and
+nothing to dismiss — the previous wording is one undo away in the textarea. An empty
+suggestion leaves the field alone. `is_resolvable` is not rendered; the API and the CLI
+read it, the editor reads the two rewrites.
+
+The check is optional. A drafted question is already runnable; this sharpens it and
+verifies the adjudicator with a live search.
 
 | Layer | Detail |
 |---|---|
-| FE | `NewForecastView.jsx:20` — spinner, no streaming |
-| API | `questions.py:37` — public, **stateless**, two sequential agent calls |
+| FE | `NewForecastView.jsx:24` draft, `:42` check — spinners, no streaming |
+| API | `questions.py:20` critique, `:39` draft — public, **stateless**, one agent call each |
 | DB | **nothing written.** The draft lives in React state until you press a save button |
-| Errors | parse `AgentTimeout` → **504** (you get your text back); critique degrades silently rather than raising |
+| Errors | draft `AgentTimeout` → **504** (you get your text back); the critique degrades to "Nothing changed" with your own criteria handed back, never raising |
 
-`POST /questions/critique` is the same critique half exposed alone — P3 resolvability review of
-a question + criteria, also stateless, also writing nothing. The React app does not call it;
-`api.js` has no wrapper. It exists for the CLI (`superforecaster critique`) and scripts.
+`_require_a_source` (`agents/critic.py:139`) forces `is_resolvable=False` and appends the
+gap to `what_changed` when the critic named no source. `POST /runs` refuses an empty
+`resolution_source` regardless (ADR 44).
+
+`POST /questions/critique` also serves the CLI (`superforecaster critique`) and scripts.
 
 ---
 

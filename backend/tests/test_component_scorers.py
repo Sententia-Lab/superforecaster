@@ -142,11 +142,10 @@ def test_inside_view_scorer_fails_when_noise_was_treated_as_signal():
 # ---------- critic ----------
 
 
-def critique(is_resolvable: bool, ambiguities=None) -> CriteriaCritique:
+def critique(is_resolvable: bool, what_changed="") -> CriteriaCritique:
     return CriteriaCritique(
         is_resolvable=is_resolvable,
-        ambiguities=ambiguities or [],
-        missing=[],
+        what_changed=what_changed,
         suggested_criteria="rewritten" if not is_resolvable else "",
     )
 
@@ -156,12 +155,12 @@ def test_critic_scorer_matches_the_label():
     assert not ce.score_critic(critique(True), {"is_resolvable": False}).passed
 
 
-def test_critic_scorer_wants_a_named_ambiguity_on_a_bad_case():
-    s = ce.score_critic(critique(False, []), {"is_resolvable": False})
-    assert not s.assertions["named_an_ambiguity"]
+def test_critic_scorer_wants_the_edit_named_on_a_bad_case():
+    s = ce.score_critic(critique(False, ""), {"is_resolvable": False})
+    assert not s.assertions["said_what_it_changed"]
 
     s = ce.score_critic(
-        critique(False, ["'significant' is undefined"]),
+        critique(False, "Replaced 'significant' with 'at least 10%'."),
         {"is_resolvable": False, "known_ambiguity": "significant"},
     )
     assert s.passed

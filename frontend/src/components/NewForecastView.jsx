@@ -3,25 +3,29 @@ import { api } from "../api.js";
 import FieldEditor, { isComplete } from "./FieldEditor.jsx";
 
 /**
- * Freeform text → AI-suggested forecast fields → run or backlog.
+ * Freeform text → AI-drafted forecast fields → run or backlog.
  *
- * The AI draft fills all four required fields, so "Run now" is immediately live for
- * it; hand-typed fields stay gated until question, criteria, date, and source are
- * all present. Partial drafts can always be parked in the backlog.
+ * "Check resolvable" is a rewrite, not a report: the AI's criteria and source replace
+ * what is in the fields, and one sentence says what it changed. The old text is one
+ * undo away in the editor, so there is nothing to accept or dismiss.
+ *
+ * Hand-typed fields stay gated until question, criteria, date, and source are all
+ * present. Partial drafts can always be parked in the backlog.
  */
 export default function NewForecastView({ onCreated }) {
   const [text, setText] = useState("");
   const [phase, setPhase] = useState("draft"); // draft | parsing | review
   const [fields, setFields] = useState({});
-  const [critique, setCritique] = useState(null);
+  const [whatChanged, setWhatChanged] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [checking, setChecking] = useState(false);
 
   const onDraft = async () => {
     setPhase("parsing");
     setError("");
     try {
-      const { parsed, critique } = await api.draftQuestion(text);
+      const parsed = await api.draftQuestion(text);
       setFields({
         question: parsed.question,
         resolution_criteria: parsed.resolution_criteria,
@@ -29,11 +33,32 @@ export default function NewForecastView({ onCreated }) {
         resolution_source: parsed.resolution_source,
         category: parsed.category || "general",
       });
-      setCritique(critique);
+      setWhatChanged("");
       setPhase("review");
     } catch (e) {
       setError(e.message);
       setPhase("draft");
+    }
+  };
+
+  const onCheck = async () => {
+    setChecking(true);
+    setError("");
+    try {
+      const c = await api.critiqueQuestion(fields);
+      setFields({
+        ...fields,
+        resolution_criteria: c.suggested_criteria || fields.resolution_criteria,
+        resolution_source:
+          c.suggested_resolution_source || fields.resolution_source,
+      });
+      setWhatChanged(
+        c.what_changed || "Nothing to change — this resolves as written.",
+      );
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setChecking(false);
     }
   };
 
@@ -82,7 +107,7 @@ export default function NewForecastView({ onCreated }) {
             className="btn ghost"
             onClick={() => {
               setFields({ question: text.trim() });
-              setCritique(null);
+              setWhatChanged("");
               setPhase("review");
             }}
           >
@@ -94,50 +119,35 @@ export default function NewForecastView({ onCreated }) {
   }
 
   const complete = isComplete(fields);
+  const checkable = Boolean(
+    (fields.question || "").trim() && (fields.resolution_criteria || "").trim(),
+  );
   return (
     <div>
       <h1 className="qtitle">Review the forecast</h1>
       {error && <div className="error-banner">{error}</div>}
-      {critique &&
-      (!critique.is_resolvable ||
-        critique.ambiguities?.length ||
-        critique.missing?.length) ? (
-        <div className="critique">
-          <b>Critique (P3 — resolvability):</b>{" "}
-          {[...(critique.ambiguities || []), ...(critique.missing || [])].join(
-            " · ",
-          ) || "the criteria could not be adjudicated as written"}
-          <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {critique.suggested_criteria ? (
-              <button
-                className="btn tiny"
-                onClick={() =>
-                  setFields({
-                    ...fields,
-                    resolution_criteria: critique.suggested_criteria,
-                  })
-                }
-              >
-                Apply suggested criteria
-              </button>
-            ) : null}
-            {critique.suggested_resolution_source ? (
-              <button
-                className="btn tiny"
-                onClick={() =>
-                  setFields({
-                    ...fields,
-                    resolution_source: critique.suggested_resolution_source,
-                  })
-                }
-              >
-                Use source: {critique.suggested_resolution_source}
-              </button>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
       <FieldEditor fields={fields} onChange={setFields} />
+      <div className="form-actions">
+        <button
+          className="btn"
+          disabled={!checkable || checking}
+          onClick={onCheck}
+        >
+          {checking ? (
+            <>
+              <span className="spinner" /> Checking…
+            </>
+          ) : (
+            "Check resolvable"
+          )}
+        </button>
+        {!checkable && (
+          <span className="hint">
+            Checking needs a question and criteria to rewrite.
+          </span>
+        )}
+      </div>
+      {whatChanged && <div className="critique">{whatChanged}</div>}
       <div className="form-actions">
         <button
           className="btn primary"
