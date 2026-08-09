@@ -5,7 +5,8 @@ all, which is the only time fixing the criteria is cheap.
 
 "Ambiguity here silently corrupts everything downstream" — a question whose criteria
 cannot be adjudicated produces a forecast that cannot be scored, and the problem is
-invisible until resolution day. This agent is the frontend's suggestion box.
+invisible until resolution day. This agent is what the frontend's "Check resolvable"
+button calls, and its rewrite is written straight into the fields being edited.
 """
 
 from __future__ import annotations
@@ -43,14 +44,28 @@ WHAT MAKES CRITERIA FAIL
   Unfalsifiable         no observable event would settle it either way.
 
 WHAT TO RETURN
+
+Your rewrite goes straight into the author's editor, over the text they wrote. They read
+one sentence from you and then look at the new wording. Write for that reader.
+
   is_resolvable  false if you found anything above that two reasonable people could
                  argue over. Be strict — this is the cheap moment to fix it.
-  ambiguities    each specific phrase that could be read two ways, quoted.
-  missing        structural gaps: no resolution source, no timezone, no threshold.
   suggested_criteria
                  a rewritten version that is actually adjudicable. Keep the author's
                  intent; change only what has to change. Name a source, give numbers
                  and units, and state the exact observable event that counts as yes.
+                 Return the criteria unchanged when nothing needs changing.
+                 This field is pasted over the author's own text, so it holds criteria
+                 and nothing else. Never write instructions, questions, or a refusal
+                 into it. When the question is too vague to rewrite — you cannot tell
+                 what "X" is, and guessing would invent a question they did not ask —
+                 return their criteria unchanged and ask for what you need in
+                 `what_changed` instead.
+  what_changed   one or two sentences naming the edits you made and why each was
+                 needed. Quote the phrase you replaced. "Replaced 'significant' with
+                 'at least 10%', and named the ONS bulletin as the adjudicator." Empty
+                 when you changed nothing. Never a list of complaints — the fix is
+                 already applied, so say what it was.
   suggested_resolution_source
                  REQUIRED, always, whether or not you found anything else wrong. The
                  specific publication, dataset, register, or body whose output settles
@@ -59,7 +74,7 @@ WHAT TO RETURN
                  not "public filings"; "the ONS Consumer Price Inflation bulletin", not
                  "official statistics". A question with no named adjudicator is not
                  resolvable no matter how crisp its wording, so if you cannot name one,
-                 say so in `missing` and set `is_resolvable` false.
+                 say so in `what_changed` and set `is_resolvable` false.
 
 At most TWO searches, and only to check that a source you are about to name exists and
 publishes what the criteria assume it does — a criterion resting on a statistic nobody
@@ -142,10 +157,12 @@ def _require_a_source(critique: CriteriaCritique) -> CriteriaCritique:
     Enforced here rather than trusted to the prompt because it is the one gap that
     survives to resolution day silently: criteria can be perfectly crisp and still have
     nobody who adjudicates them, and a forecast nobody can score is a forecast that was
-    never worth running. The frontend blocks the run on `is_resolvable`, so flipping it
-    is what makes "name a source" a requirement rather than a suggestion.
+    never worth running. `is_resolvable` is the flag the API and the CLI read, so
+    flipping it is what makes "name a source" a requirement rather than a suggestion.
 
-    Nothing is invented — the finding says exactly what is absent.
+    Nothing is invented — the note says exactly what is absent. It is appended to the
+    rewrite rationale rather than replacing it, because the criteria rewrite still
+    happened and the reader is about to see it in their editor.
     """
     if critique.suggested_resolution_source.strip():
         return critique
@@ -155,13 +172,14 @@ def _require_a_source(critique: CriteriaCritique) -> CriteriaCritique:
         "body whose output settles this on the resolution date — without one, nobody "
         "can score the forecast."
     )
+    already_said = note in critique.what_changed
     return critique.model_copy(
         update={
             "is_resolvable": False,
-            "missing": (
-                [*critique.missing, note]
-                if note not in critique.missing
-                else critique.missing
+            "what_changed": (
+                critique.what_changed
+                if already_said
+                else f"{critique.what_changed} {note}".strip()
             ),
         }
     )
@@ -174,15 +192,14 @@ def _unfinished(
 
     Two walls, and they degrade the same way. `UsageLimitExceeded` means it searched too
     many times; `AgentTimeout` means it stopped responding. Neither leaves a partial
-    critique to salvage — but there is a parsed question, and `/questions/draft` returns
-    both from one call. Raising here 500s that endpoint and the frontend drops the user
-    back to an empty draft box, losing text they just typed. Degrading costs them a
-    dismiss click instead.
+    critique to salvage. Raising instead would 500 `/questions/critique`, and the button
+    that called it writes its result into fields the reader is still editing — an error
+    banner over a half-typed question is a worse answer than a sentence saying the check
+    did not finish.
 
-    `is_resolvable=False` is what surfaces this in the UI at all — the suggestion box is
-    hidden when it is true — and it claims only that the check did not clear the
-    criteria, which is exactly what happened. The rewrite is the author's own text
-    unchanged, so applying it is a no-op rather than a fabricated suggestion.
+    Nothing is claimed to be wrong with the criteria, because nothing was reviewed. The
+    rewrite is the author's own text unchanged, so writing it back is a no-op rather
+    than a fabricated suggestion.
     """
     why = (
         "stopped responding"
@@ -191,14 +208,11 @@ def _unfinished(
     )
     return CriteriaCritique(
         is_resolvable=False,
-        ambiguities=[],
-        missing=[
-            f"The resolvability check {why} before it reached a verdict. Nothing is "
-            "known to be wrong with these criteria — they are simply unreviewed. "
-            "Dismiss to proceed, or edit and re-run the check.",
-            "No resolution source was suggested, because nothing was reviewed. Name "
-            "one yourself before running the forecast.",
-        ],
+        what_changed=(
+            f"Nothing changed. The resolvability check {why} before it reached a "
+            "verdict, so these criteria are unreviewed rather than known to be wrong. "
+            "Name a resolution source yourself, or run the check again."
+        ),
         suggested_criteria=resolution_criteria,
         suggested_resolution_source="",
     )

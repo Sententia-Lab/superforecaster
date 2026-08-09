@@ -574,19 +574,24 @@ class ResolutionCheckResult(BaseModel):
 class CriteriaCritique(BaseModel):
     """Output of critic agent. P3.
 
-    Standalone — not part of the forecast graph. Powers the frontend's suggestion
-    box while a user is drafting a question.
+    Standalone — not part of the forecast graph. The frontend writes both suggestions
+    straight into the editor, so every field here is either text to paste or the
+    sentence that explains the paste.
     """
 
     is_resolvable: bool = Field(
         description="False when the criteria could not be adjudicated as written"
     )
-    ambiguities: list[str] = Field(default_factory=list)
-    missing: list[str] = Field(
-        default_factory=list,
-        description="e.g. 'no resolution source', 'no timezone on the date'",
+    what_changed: str = Field(
+        default="",
+        description="One or two sentences naming the edits, written for the person "
+        "who is about to see them applied. Empty when nothing needed changing.",
     )
-    suggested_criteria: str
+    suggested_criteria: str = Field(
+        description="Criteria and nothing else — this is pasted over the author's own "
+        "text. A question too vague to rewrite returns their text unchanged and asks "
+        "for what is missing in `what_changed`."
+    )
     suggested_resolution_source: str = Field(
         default="",
         description="REQUIRED in practice: the specific publication, dataset, register "
@@ -760,10 +765,11 @@ class DraftQuestionRequest(BaseModel):
 
 
 class DraftedQuestion(BaseModel):
-    """Freeform text split into the fields a forecast needs.
+    """Freeform text split into the fields a forecast needs. The `/questions/draft` body.
 
-    Extraction only. Whether the criteria are any good is `CriteriaCritique`'s job —
-    keeping them separate is what lets each be scored on one thing.
+    All four are filled, so a drafted question is runnable without a second call.
+    Whether the criteria are any *good* is still `CriteriaCritique`'s job — keeping the
+    two apart is what lets each be scored on one thing.
     """
 
     question: str = Field(description="The question as a single interrogative sentence")
@@ -771,15 +777,10 @@ class DraftedQuestion(BaseModel):
     resolution_date: datetime
     category: str
     resolution_source: str = Field(
-        default="", description="Empty when the text never named one"
+        description="Named for every question, whether or not the text named one — the "
+        "publication, dataset, register, or body that settles it. The one field the "
+        "draft supplies rather than extracts (ADR 64)."
     )
-
-
-class DraftResponse(BaseModel):
-    """Response from POST /questions/draft — extraction plus its critique."""
-
-    parsed: DraftedQuestion
-    critique: CriteriaCritique
 
 
 # ---------- Gated runs ----------

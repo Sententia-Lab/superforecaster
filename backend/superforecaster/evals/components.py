@@ -181,20 +181,21 @@ def score_critic(out: Any, expect: dict) -> ComponentScore:
     """P3. Precision/recall on resolvability, over deliberately good and bad criteria.
 
     expect: is_resolvable (bool, the label), known_ambiguity (str, a phrase the
-    critic should have flagged on a bad case).
+    critic should have named on a bad case).
     """
     label = expect.get("is_resolvable")
     assertions = {"verdict_matches_label": out.is_resolvable == label}
     if label is False:
-        assertions["named_an_ambiguity"] = bool(out.ambiguities or out.missing)
+        assertions["said_what_it_changed"] = bool(out.what_changed.strip())
         assertions["suggested_a_fix"] = bool(out.suggested_criteria.strip())
         if phrase := expect.get("known_ambiguity"):
-            found = " ".join(out.ambiguities + out.missing).lower()
-            assertions["found_the_known_ambiguity"] = phrase.lower() in found
+            assertions["found_the_known_ambiguity"] = (
+                phrase.lower() in out.what_changed.lower()
+            )
     return _score(
         expect.get("id", ""),
         assertions,
-        detail=f"is_resolvable={out.is_resolvable}, {len(out.ambiguities)} ambiguities",
+        detail=f"is_resolvable={out.is_resolvable}",
     )
 
 

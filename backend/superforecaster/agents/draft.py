@@ -8,13 +8,17 @@ things at once.
 This exists because the UI opens with a single textarea. Everything downstream —
 `run_critique`, `ForecastInput`, the graph — needs the question, the criteria, and the
 date as separate fields, so something has to split them before any of that can run.
+
+It fills all four fields, so "Draft with AI" produces a runnable forecast on its own.
+`resolution_source` is the one field it supplies rather than extracts — see ADR 64. Its
+budget allows no tool calls, so it names the adjudicator from what the model knows; the
+critic, which does search, is what verifies the name behind "Check resolvable".
 """
 
 from __future__ import annotations
 
 from config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
-from superforecaster.tools import search_web
 
 from ..deps import ForecastDeps
 from ..models import DraftedQuestion
@@ -27,9 +31,12 @@ criteria and another produces a probability.
 
 EXTRACT ONLY WHAT IS THERE
 The author's intent is the thing to preserve. Do not add a threshold they did not
-state, do not name a resolution source they did not name, and do not sharpen a vague
-phrase — a later step is responsible for finding exactly those gaps, and filling them
-here would hide them.
+state, and do not sharpen a vague phrase — a later step is responsible for finding
+exactly those gaps, and filling them here would hide them.
+
+`resolution_source` is the one exception. Name one for every question, whether or not
+the author did. It is not part of what they said; it is what makes the question
+scoreable at all, and leaving it empty stops the forecast from being run.
 
 FIELDS
   question        One interrogative sentence, ending in a question mark. If the text
@@ -47,9 +54,17 @@ FIELDS
   category        One lowercase word: finance, economics, politics, ai, energy,
                   science, health, sport, tech, or general.
   resolution_source
-                  Only when the text names one. Empty string otherwise — an invented
-                  source is worse than a missing one, because the next step is
-                  looking for exactly this gap.
+                  The publication, dataset, register, or body whose output settles this
+                  on the resolution date. Required for every question. Use the author's
+                  source when they named one; name the obvious adjudicator for the
+                  subject when they did not.
+                  Be specific enough that someone could go and read it — "the ONS
+                  Consumer Price Inflation bulletin", not "official statistics"; "the
+                  SEC EDGAR full-text filing search", not "public filings".
+                  Do not invent a publication you are unsure exists. When nothing
+                  standard covers the subject, name the body that would announce the
+                  event itself — a company's own press release, a ministry, a court.
+                  That is a real adjudicator and it is checkable.
 """
 
 
@@ -62,7 +77,6 @@ def build_draft_agent(model: str | None = None) -> Agent[ForecastDeps, DraftedQu
         output_type=DraftedQuestion,
         system_prompt=INSTRUCTIONS,
         retries=1,
-        tools=[search_web],
     )
 
 

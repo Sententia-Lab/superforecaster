@@ -22,6 +22,13 @@
       ],
       "cwd": "backend",
       "port": 8098
+    },
+    {
+      "name": "frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--port", "5199"],
+      "cwd": "frontend",
+      "port": 5199
     }
   ]
 }

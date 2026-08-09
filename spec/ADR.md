@@ -62,7 +62,7 @@ Sources: `spec/implemented/SPEC_04_26_2026.md` (v3), `spec/implemented/spec3.md`
 | [41](#adr-41--scoring-is-arithmetic-not-persistence-and-no-orm) | Scoring is arithmetic, not persistence; and no ORM | Accepted |
 | [42](#adr-42--the-cli-is-typer-the-corpus-is-json) | The CLI is typer; the corpus is JSON | Accepted |
 | [43](#adr-43--every-agent-call-has-a-ceiling-and-every-run-has-a-deadline) | Every agent call has a ceiling, and every run has a deadline | Accepted |
-| [44](#adr-44--a-forecast-with-no-adjudicator-is-not-worth-running) | A forecast with no adjudicator is not worth running | Accepted |
+| [44](#adr-44--a-forecast-with-no-adjudicator-is-not-worth-running) | A forecast with no adjudicator is not worth running | Accepted, amended by 63 |
 | [45](#adr-45--a-run-is-a-persisted-machine-of-gated-stages) | A run is a persisted machine of gated stages | Accepted |
 | [46](#adr-46--the-connection-is-the-agents-lifetime) | The connection is the agent's lifetime | Accepted, extended by 55 |
 | [47](#adr-47--react--vite-for-the-frontend) | React + Vite for the frontend | Accepted |
@@ -71,6 +71,15 @@ Sources: `spec/implemented/SPEC_04_26_2026.md` (v3), `spec/implemented/spec3.md`
 | [53](#adr-53--a-payload-is-editable-while-everything-derived-from-it-is-untouched) | A payload is editable while everything derived from it is untouched | Accepted |
 | [54](#adr-54--lens-weights-are-shares-of-one) | Lens weights are shares of one | Accepted |
 | [55](#adr-55--run-all-is-a-browser-loop-not-a-server-job) | Run All is a browser loop, not a server job | Accepted |
+| [56](#adr-56--a-sub-question-is-a-question-not-a-claim) | A sub-question is a question, not a claim | Accepted |
+| [57](#adr-57--a-migration-step-may-be-python) | A migration step may be Python | Accepted |
+| [58](#adr-58--a-modifier-states-its-own-title) | A modifier states its own title | Accepted |
+| [59](#adr-59--display-labels-are-a-frontend-concern) | Display labels are a frontend concern | Accepted |
+| [60](#adr-60--agent-prose-is-markdown) | Agent prose is markdown | Accepted |
+| [61](#adr-61--runtime-keys-are-set-in-the-process-never-on-disk) | Runtime keys are set in the process, never on disk | Accepted |
+| [62](#adr-62--four-ceilings-per-agent-injected-every-iteration) | Four ceilings per agent, injected every iteration | Accepted |
+| [63](#adr-63--the-critique-is-a-rewrite-not-a-report) | The critique is a rewrite, not a report | Accepted, narrowed by 64 |
+| [64](#adr-64--the-draft-names-the-adjudicator) | The draft names the adjudicator | Accepted |
 
 ---
 
@@ -1467,15 +1476,19 @@ is spent by then.
 
 Three changes, deliberately at three layers, because each alone is bypassable:
 
+- **The draft names one too**, since ADR 64 — so the field arrives filled rather than
+  empty, and the layers below are a check rather than the only source of a value.
 - **The critic must name one.** `suggested_resolution_source` is required by the prompt for
   every question it reviews, whether or not it found anything else wrong.
   `_require_a_source` enforces it in code: a critique naming none is forced to
-  `is_resolvable=False` with a finding that says exactly what is absent. Nothing is
+  `is_resolvable=False` with a note that says exactly what is absent. Nothing is
   invented — the critic's own suggestion is offered, or the gap is reported.
 - **The API refuses without one.** `CreateRunRequest.resolution_source` is `min_length=1`.
-- **The UI blocks the button** and offers the critic's suggestion as its own one-click
-  action, separate from "apply rewrite" — the two findings are independent, and a question
-  with fine criteria and no source has no rewrite to apply.
+- **The UI blocks the button** until all four fields are present, and the critic's source
+  is one of the two things "Check resolvable" writes into them.
+
+*Amended by ADR 63*, which replaced the two one-click actions with a single button that
+overwrites both fields at once. The three layers are unchanged.
 
 `ForecastInput` is unchanged. Who adjudicates a question is a property of the run, not
 something the agents are asked to reason about.
@@ -1946,3 +1959,97 @@ a broken setting rather than a budget.
 `get_critique_limits`, `get_research_limits`, `get_synthesis_limits`, `get_monitor_limits`,
 `SearchBudget`, `tools._budget_notice`, and nine environment variables. One override remains:
 `BUDGET_<AGENT>="cost,tokens,tool_calls,iterations"`.
+
+---
+
+## ADR 63 — The critique is a rewrite, not a report
+
+**Amends ADR 44.**
+
+The resolvability check produced a finding list. `CriteriaCritique` carried `ambiguities`
+and `missing` — two arrays of complaints — and the frontend joined them with a separator,
+printed them in a yellow box labelled "Critique (P3 — resolvability)", and put two small
+buttons underneath: "Apply suggested criteria" and "Use source: …". The reader had to read
+the complaints, map each one onto a field, and press the right button.
+
+**Decision.** One button, "Check resolvable". It calls `POST /questions/critique` with what
+is in the editor and writes the answer back over the criteria and the source. One sentence,
+`what_changed`, says what it did.
+
+```
+before                                   after
+  ambiguities: string[]                    what_changed: string
+  missing: string[]                        suggested_criteria: str
+  suggested_criteria: str                  suggested_resolution_source: str
+  suggested_resolution_source: str
+  → 2 apply buttons + a finding list      → 1 button that overwrites both fields
+```
+
+**The rewrite already exists, so showing complaints is showing work twice.** Every finding
+in `ambiguities` had a corresponding edit in `suggested_criteria`. The reader was asked to
+review the diagnosis before accepting a cure that was already written. `what_changed` names
+the edits instead of the faults, and it is read *after* the fields change, next to the new
+wording.
+
+**Undo is the accept step.** The old text is one Cmd-Z away in a textarea the reader is
+already editing, so nothing needs an accept button or a dismiss button. Overwriting is safe
+here for that reason and not in general.
+
+**`suggested_criteria` holds criteria and nothing else.** Behind an Apply button, a critic
+that answered "this cannot be rewritten until you tell me what X is" was a readable reply.
+Pasted into the field, it destroys the author's text and leaves an instruction where their
+criteria were. Observed on a real call with deliberately vague input. The prompt now says
+the field is pasted over their text, and that a question too vague to rewrite comes back
+unchanged with the request in `what_changed`.
+
+**`is_resolvable` survives, unrendered.** The eval scorer measures precision and recall on
+it, `_require_a_source` flips it, and the CLI prints it. It stopped being a UI state.
+
+**Drafting no longer critiques.** `POST /questions/draft` ran the parse and the critique as
+two sequential agent calls and returned both, which is why a critic that blew its budget
+could take the parsed question with it (ADR 43's `_unfinished` path exists for that). It
+returns `DraftedQuestion` alone now — one call, half the wait — and the reader asks for the
+check when they want it. `DraftResponse` is deleted.
+
+**What was lost.** A question drafted and never checked is now possible. It cannot be run:
+`resolution_source` comes back empty from the parse when the text never named one, and
+`POST /runs` requires it (ADR 44). The gate is the button that starts the forecast, which
+is where it always was.
+
+---
+
+## ADR 64 — The draft names the adjudicator
+
+**Extends ADR 44. Narrows ADR 63's split between extraction and adjudication.**
+
+`run_draft` extracted and nothing else: "do not name a resolution source they did not
+name … an invented source is worse than a missing one, because the next step is looking
+for exactly this gap." So "Draft with AI" returned three filled fields and one empty one,
+`POST /runs` refused an empty `resolution_source` (ADR 44), and "Run now" sat disabled
+until the reader ran a second agent. The one field nobody types was the one field the
+drafting step refused to supply.
+
+**Decision.** `resolution_source` is required on `DraftedQuestion` and the draft agent
+names one for every question. All four fields come back filled, and a drafted forecast is
+runnable on the first call.
+
+**The gap was never load-bearing.** Its purpose was to make the critic's finding visible.
+But `_require_a_source` already forces `is_resolvable=False` when the critic names none,
+and `CreateRunRequest` already refuses an empty one. Two layers still catch a missing
+adjudicator; the empty field was a third that cost every reader a click.
+
+**Extraction still governs the other three.** A threshold the author did not state is
+still not invented, and vague wording is still left vague for the critic to find. The
+source is the single carve-out, because it is not a claim about what they meant — it is
+the thing that makes their question scoreable at all.
+
+**Named from knowledge, verified on request.** `Budget("draft")` allows zero tool calls,
+so the agent names the obvious adjudicator for the subject without searching. The critic
+has the search budget, and "Check resolvable" is where a name gets checked against
+something that publishes. `tools=[search_web]` was attached to the draft agent and
+unreachable under that budget — a model that reached for it would have raised
+`UsageLimitExceeded` on a path that catches nothing. Removed.
+
+**What was lost.** A source the model is confident about but that does not publish what
+the criteria assume now reaches the reader as a filled field rather than an empty one. It
+is checkable in one click, and an empty field was never evidence of anything either.

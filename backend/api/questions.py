@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from config import resolve_agent_model
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from superforecaster.agents.critic import run_critique
 from superforecaster.agents.draft import run_draft
@@ -10,20 +11,45 @@ from superforecaster.errors import AgentTimeout
 from superforecaster.models import (
     CriteriaCritique,
     CritiqueQuestionRequest,
+    DraftedQuestion,
     DraftQuestionRequest,
-    DraftResponse,
 )
 
-router = APIRouter(prefix="/questions", tags=["questions"])
+
+def require_a_model() -> None:
+    """Refuse before the agent is built when no LLM key is configured.
+
+    `resolve_agent_model` raises `RuntimeError` naming the variable to set. Reaching the
+    agent with it unhandled turns that sentence into a 500 and an "Internal Server Error"
+    banner, which sends the reader to the server log to learn they need a key. These are
+    the first two endpoints anyone touches, so they are where the message has to survive.
+    """
+    try:
+        resolve_agent_model()
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        )
+
+
+router = APIRouter(
+    prefix="/questions",
+    tags=["questions"],
+    dependencies=[Depends(require_a_model)],
+)
 
 
 @router.post("/critique")
 async def critique_question(body: CritiqueQuestionRequest) -> CriteriaCritique:
-    """Review a draft question for resolvability. Principle 3.
+    """Review a draft question for resolvability, and rewrite it. Principle 3.
 
     Public and stateless — this runs while someone is still typing, which is the only
     point at which fixing ambiguous criteria is cheap. Ambiguity that survives to
     resolution day silently corrupts the score.
+
+    The caller writes `suggested_criteria` and `suggested_resolution_source` straight
+    into the fields being edited and shows `what_changed` beneath them, so the response
+    is a replacement rather than a report.
     """
     return await run_critique(
         question=body.question,
@@ -33,28 +59,22 @@ async def critique_question(body: CritiqueQuestionRequest) -> CriteriaCritique:
 
 
 @router.post("/draft")
-async def draft_question(body: DraftQuestionRequest) -> DraftResponse:
-    """Parse freeform text into a question, then critique its resolvability.
+async def draft_question(body: DraftQuestionRequest) -> DraftedQuestion:
+    """Parse freeform text into the four fields a forecast needs.
 
-    Two sequential agent calls. Deliberately not streamed: it is the cheapest step in
-    the system, and a spinner is a truthful UI for something that takes seconds.
+    One agent call. Deliberately not streamed: it is the cheapest step in the system,
+    and a spinner is a truthful UI for something that takes seconds.
 
-    A spinner is only truthful while the request is still alive, which is why the parse
-    turns a timeout into a 504 rather than letting the connection hang: the frontend
-    toasts the failure and gives the reader their text back. The critique half degrades
-    instead of raising — see `agents.critic._unfinished` — because there is a parsed
-    question to hand back by then and losing it costs the reader more than an unreviewed
-    draft does.
+    Extraction only. The resolvability review is a second call the reader asks for by
+    pressing "Check resolvable", so a slow critic no longer sits between someone and the
+    question they just typed.
+
+    A timeout becomes a 504 rather than hanging the connection: the frontend shows the
+    failure and gives the reader their text back.
     """
     try:
-        parsed = await run_draft(body.text)
+        return await run_draft(body.text)
     except AgentTimeout as exc:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(exc)
         )
-    critique = await run_critique(
-        question=parsed.question,
-        resolution_criteria=parsed.resolution_criteria,
-        resolution_date=parsed.resolution_date,
-    )
-    return DraftResponse(parsed=parsed, critique=critique)
