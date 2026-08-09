@@ -37,7 +37,6 @@ from superforecaster.models import (
     UpdateDecision,
 )
 
-
 # ---------- factories ----------
 
 

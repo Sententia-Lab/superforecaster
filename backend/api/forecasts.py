@@ -19,7 +19,6 @@ from superforecaster.models import (
 
 from .deps import require_admin
 
-
 router = APIRouter(prefix="/forecasts", tags=["forecasts"])
 
 

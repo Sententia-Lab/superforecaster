@@ -161,16 +161,14 @@ def test_migration_v2_drops_community_tables(tmp_path, monkeypatch):
     """A v1 database with the old tables loses them; a fresh one never has them."""
     old = tmp_path / "old.db"
     conn = sqlite3.connect(old)
-    conn.executescript(
-        """
+    conn.executescript("""
         CREATE TABLE forecasts (id TEXT PRIMARY KEY);
         CREATE TABLE questions (id TEXT PRIMARY KEY);
         CREATE TABLE votes (id TEXT PRIMARY KEY);
         CREATE TABLE refresh_runs (id TEXT PRIMARY KEY);
         CREATE TABLE runs (id TEXT PRIMARY KEY);
         PRAGMA user_version = 1;
-        """
-    )
+        """)
     conn.close()
 
     monkeypatch.setenv("DATABASE_PATH", str(old))

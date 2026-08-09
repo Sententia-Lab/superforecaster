@@ -6,7 +6,6 @@ from fastapi import Header, HTTPException, Request, status
 
 from config import get_settings
 
-
 _PROXY_HEADERS = ("x-forwarded-for", "x-real-ip", "x-forwarded-host", "forwarded")
 
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}

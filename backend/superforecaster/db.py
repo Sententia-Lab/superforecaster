@@ -20,7 +20,6 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
-
 # ---------- sqlite datetime adapters ----------
 # Python 3.12 deprecated the default datetime adapter; it also doesn't handle
 # timezone-aware datetimes correctly. Register our own that round-trip ISO 8601.
@@ -54,7 +53,6 @@ from .models import (
     ResearchSummary,
     SubPrediction,
 )
-
 
 # ---------- Errors ----------
 
@@ -276,8 +274,7 @@ def init_db() -> None:
             == 0
         )
 
-        conn.executescript(
-            """
+        conn.executescript("""
             CREATE TABLE IF NOT EXISTS forecasts (
                 id TEXT PRIMARY KEY,
                 question TEXT NOT NULL,
@@ -346,8 +343,7 @@ def init_db() -> None:
             );
 
             CREATE INDEX IF NOT EXISTS ix_run_steps_run ON run_steps(run_id, stage);
-            """
-        )
+            """)
         if fresh:
             # Born at the current schema, so no historical step has anything to do here.
             # Stamping now is what stops a future migration — a rename, say — from
@@ -644,13 +640,11 @@ def mark_refreshed(forecast_id: str, flagged: bool = False) -> None:
 def calibration_report() -> CalibrationReport:
     """Read every resolved, non-ambiguous forecast and score it. Maths in `scoring`."""
     with connect() as conn:
-        rows = conn.execute(
-            """
+        rows = conn.execute("""
             SELECT scored_probability, outcome, brier_score
             FROM forecasts
             WHERE outcome IS NOT NULL AND is_ambiguous = 0 AND scored_probability IS NOT NULL
-            """
-        ).fetchall()
+            """).fetchall()
         ambiguous_count = conn.execute(
             "SELECT COUNT(*) FROM forecasts WHERE is_ambiguous = 1"
         ).fetchone()[0]

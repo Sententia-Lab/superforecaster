@@ -150,8 +150,7 @@ def test_v3_adds_edited_at_to_a_database_that_already_had_run_steps(
     monkeypatch.setenv("DATABASE_PATH", str(path))
     conn = sqlite3.connect(path)
     conn.executescript(PRE_ADR29)
-    conn.executescript(
-        """
+    conn.executescript("""
         CREATE TABLE gated_runs (
             id TEXT PRIMARY KEY,
             status TEXT NOT NULL DEFAULT 'backlog',
@@ -164,8 +163,7 @@ def test_v3_adds_edited_at_to_a_database_that_already_had_run_steps(
             attempts INTEGER NOT NULL DEFAULT 0,
             started_at TIMESTAMP, finished_at TIMESTAMP
         );
-        """
-    )
+        """)
     conn.execute("PRAGMA user_version = 2")
     conn.commit()
     conn.close()
@@ -201,8 +199,7 @@ def v3_db(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_PATH", str(path))
     conn = sqlite3.connect(path)
     conn.executescript(PRE_ADR29)
-    conn.executescript(
-        """
+    conn.executescript("""
         CREATE TABLE gated_runs (
             id TEXT PRIMARY KEY,
             status TEXT NOT NULL DEFAULT 'backlog',
@@ -215,8 +212,7 @@ def v3_db(tmp_path, monkeypatch):
             attempts INTEGER NOT NULL DEFAULT 0,
             started_at TIMESTAMP, finished_at TIMESTAMP, edited_at TIMESTAMP
         );
-        """
-    )
+        """)
     conn.execute("INSERT INTO gated_runs VALUES ('r1','active','2026-01-01')")
     conn.execute(
         "INSERT INTO run_steps (id, run_id, stage, sub_claim_id, lens_name, status, "

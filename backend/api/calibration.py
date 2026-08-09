@@ -7,7 +7,6 @@ from fastapi import APIRouter
 from superforecaster import db
 from superforecaster.models import CalibrationReport
 
-
 router = APIRouter(tags=["calibration"])
 
 

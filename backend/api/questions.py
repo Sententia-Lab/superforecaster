@@ -14,7 +14,6 @@ from superforecaster.models import (
     DraftResponse,
 )
 
-
 router = APIRouter(prefix="/questions", tags=["questions"])
 
 

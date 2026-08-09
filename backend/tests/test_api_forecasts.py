@@ -24,7 +24,6 @@ from superforecaster.models import (
     SubPrediction,
 )
 
-
 ADMIN_KEY = "test-admin-key"
 
 

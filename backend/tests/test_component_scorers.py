@@ -40,7 +40,6 @@ from tests.test_checks import (
     sub,
 )
 
-
 # ---------- decompose ----------
 
 

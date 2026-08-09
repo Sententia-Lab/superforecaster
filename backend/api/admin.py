@@ -9,7 +9,6 @@ from superforecaster.models import RefreshSummary
 
 from .deps import require_admin
 
-
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
