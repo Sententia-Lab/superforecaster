@@ -10,19 +10,18 @@ invisible until resolution day. This agent is the frontend's suggestion box.
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import datetime
 
-from config import get_model_settings, get_critique_budget, get_critique_limits, resolve_agent_model
+from config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import UsageLimitExceeded
 
-from ..deps import ForecastDeps, SearchBudget
+from ..deps import ForecastDeps
 from ..errors import AgentTimeout
 from ..models import CriteriaCritique
 from ..observability import run_agent
 from ..tools import search_web
-from . import attach_budget_pressure, with_model
+from . import attach_budget, with_model
 
 INSTRUCTIONS = """You review forecast questions for resolvability. You do not forecast
 them — you decide whether they COULD be scored fairly once the date arrives.
@@ -77,14 +76,14 @@ def build_critic_agent(
     agent = Agent[ForecastDeps, CriteriaCritique](
         model=model or resolve_agent_model(),
         model_settings=get_model_settings(),
-        name="critic_agent",
+        name="critic",
         deps_type=ForecastDeps,
         output_type=CriteriaCritique,
         system_prompt=INSTRUCTIONS,
         tools=[search_web],
         retries=1,
     )
-    attach_budget_pressure(agent)
+    attach_budget(agent)
     return agent
 
 
@@ -121,11 +120,6 @@ PROPOSED RESOLUTION CRITERIA:
 
 Return a CriteriaCritique."""
 
-    # The critic owns its budget rather than inheriting one: it is standalone, never a
-    # cell in a fanned-out row, so there is no caller whose budget it should share.
-    soft, hard = get_critique_budget()
-    deps = replace(deps, budget=SearchBudget(soft_depth=soft, hard_depth=hard))
-
     agent = get_critic_agent()
     try:
         with with_model(agent, deps) as bound:
@@ -134,7 +128,7 @@ Return a CriteriaCritique."""
                 prompt,
                 deps=deps,
                 verbose=deps.verbose,
-                usage_limits=get_critique_limits(),
+                budget=get_budget(agent.name),
                 run_name="criteria critique",
             )
     except (UsageLimitExceeded, AgentTimeout) as exc:
@@ -164,12 +158,18 @@ def _require_a_source(critique: CriteriaCritique) -> CriteriaCritique:
     return critique.model_copy(
         update={
             "is_resolvable": False,
-            "missing": [*critique.missing, note] if note not in critique.missing else critique.missing,
+            "missing": (
+                [*critique.missing, note]
+                if note not in critique.missing
+                else critique.missing
+            ),
         }
     )
 
 
-def _unfinished(resolution_criteria: str, cause: Exception | None = None) -> CriteriaCritique:
+def _unfinished(
+    resolution_criteria: str, cause: Exception | None = None
+) -> CriteriaCritique:
     """What the critic returns when it hit a wall instead of converging.
 
     Two walls, and they degrade the same way. `UsageLimitExceeded` means it searched too

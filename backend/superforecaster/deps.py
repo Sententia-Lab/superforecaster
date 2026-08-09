@@ -11,41 +11,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
 
+from config import Budget
+
 from .models import SourceRef
-
-
-@dataclass
-class SearchBudget:
-    """One cell's search budget, and the column tag every event that cell produces carries.
-
-    A *cell* is one column of the grid at one stage — `sq2`'s base-rate research, say.
-    Decompose fixes the columns; each research stage runs one agent per column
-    concurrently, and each of those agents gets its own budget rather than sharing one
-    across the whole row.
-
-    Two thresholds, not one. `soft_depth` — the cline — is where the agent starts being
-    pushed to stop searching and commit; `hard_depth` is `UsageLimits.tool_calls_limit`
-    and is a wall. The gap between them exists because a wall on its own gives the model
-    no warning: it searches at full tilt and then dies mid-thought.
-
-    `used` is incremented by the tools rather than read off `RunContext.usage`, because a
-    tool needs the count at *return* time and `usage.tool_calls` is only incremented
-    afterwards. One counter with one owner beats two that can drift.
-    """
-
-    sub_question: str | None = None
-    soft_depth: int = 0
-    hard_depth: int = 0
-    used: int = 0
-    exhausted: bool = False
-
-    @property
-    def past_the_cline(self) -> bool:
-        return self.soft_depth > 0 and self.used >= self.soft_depth
-
-    @property
-    def left(self) -> int:
-        return max(0, self.hard_depth - self.used)
 
 
 @dataclass
@@ -87,18 +55,22 @@ class ForecastDeps:
     event stream, and awaiting there would stall token delivery.
     """
 
-    budget: SearchBudget | None = None
-    """The cell this deps copy is bound to, when a stage fans out across columns.
+    sub_question: str | None = None
+    """Which column of the grid this deps copy is researching, if any.
 
-    None when nothing fanned out — the CLI, the update graph, an eval. A cell gets its
-    own via `dataclasses.replace(deps, budget=…, sources_seen=[])`; the private
-    `sources_seen` is not incidental, see that field.
+    A *cell* is one column at one stage — `sq2`'s base-rate research, say. Decompose
+    fixes the columns; each research stage runs one agent per column concurrently, and
+    each of those agents gets a deps copy carrying its own tag and its own
+    `sources_seen`. None when nothing fanned out — the CLI, the update graph, an eval.
     """
 
-    @property
-    def sub_question(self) -> str | None:
-        """Which column this deps copy is researching, if any."""
-        return self.budget.sub_question if self.budget else None
+    budget: Budget | None = None
+    """What this run may spend. `observability.run_agent` puts it here.
+
+    It rides on deps rather than staying a `run_agent` local because the budget
+    instruction reads it from `ctx.deps` on every model request — which is what makes
+    the remaining budget a live number rather than a sentence written once.
+    """
 
     @property
     def leaked_sources(self) -> list[SourceRef]:

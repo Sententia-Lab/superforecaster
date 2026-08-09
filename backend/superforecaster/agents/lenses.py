@@ -16,7 +16,7 @@ not see.
 
 from __future__ import annotations
 
-from config import get_model_settings, get_synthesis_limits, resolve_agent_model
+from config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
@@ -70,12 +70,14 @@ population first is meant to keep out of the answer.
 """
 
 
-def build_lenses_agent(model: str | None = None) -> Agent[ForecastDeps, SubQuestionLenses]:
+def build_lenses_agent(
+    model: str | None = None,
+) -> Agent[ForecastDeps, SubQuestionLenses]:
     """Names populations for one sub-question. No tools, by design — see the module docstring."""
     return Agent[ForecastDeps, SubQuestionLenses](
         model=model or resolve_agent_model(),
         model_settings=get_model_settings(),
-        name="lenses_agent",
+        name="lenses",
         deps_type=ForecastDeps,
         output_type=SubQuestionLenses,
         system_prompt=INSTRUCTIONS,
@@ -126,7 +128,7 @@ enough that someone else could count the same cases, and weigh them by fit alone
             prompt,
             deps=deps,
             verbose=deps.verbose,
-            usage_limits=get_synthesis_limits(),
+            budget=get_budget(agent.name),
             run_name=f"lenses · {sub_question.id}",
         )
     return result.output

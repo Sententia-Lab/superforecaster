@@ -137,7 +137,7 @@ async def run_base_rate_step(
     The identity and weight come from the *chosen* lens, never from what came back — a
     research cell must not re-weight its own population after seeing what it measured.
     """
-    cdeps = cell_deps(deps, sub_question.id or "", input.max_iterations)
+    cdeps = cell_deps(deps, sub_question.id or "")
     try:
         result = await run_research_lens(input, sub_question, lens, cdeps)
     except Exception as exc:
@@ -172,7 +172,7 @@ async def run_inside_step(
     `lens_name` and `sub_question_ids` are stamped by code: a cell moved exactly one
     population, and a link it volunteered could point anywhere.
     """
-    cdeps = cell_deps(deps, sub_question.id or "", input.max_iterations)
+    cdeps = cell_deps(deps, sub_question.id or "")
     try:
         result = await run_adjust_lens(
             input, sub_question, payload.lens, payload.disagreement, cdeps

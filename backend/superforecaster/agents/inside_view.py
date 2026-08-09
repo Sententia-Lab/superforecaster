@@ -21,7 +21,7 @@ they cannot be asked of one lens.
 
 from __future__ import annotations
 
-from config import get_model_settings, get_cell_limits, resolve_agent_model
+from config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import UsageLimitExceeded
 
@@ -37,7 +37,7 @@ from ..models import (
 )
 from ..observability import run_agent
 from ..tools import find_disconfirming_evidence, search_web, search_wikipedia
-from . import as_of_note, attach_budget_pressure, format_question, with_model
+from . import as_of_note, attach_budget, format_question, with_model
 
 INSTRUCTIONS = """You supply the INSIDE VIEW for ONE part of a larger question: what
 makes this specific case differ from its reference class. You do not produce a final
@@ -123,14 +123,14 @@ def build_inside_view_agent(
     agent = Agent[ForecastDeps, SubQuestionAdjustments](
         model=model or resolve_agent_model(),
         model_settings=get_model_settings(),
-        name="inside_view_agent",
+        name="inside_view",
         deps_type=ForecastDeps,
         output_type=SubQuestionAdjustments,
         system_prompt=INSTRUCTIONS,
         tools=[search_web, search_wikipedia, find_disconfirming_evidence],
         retries=1,
     )
-    attach_budget_pressure(agent)
+    attach_budget(agent)
     return agent
 
 
@@ -189,7 +189,7 @@ rate for THIS population, not for the question — each with a flip test. Say in
             prompt,
             deps=deps,
             verbose=deps.verbose,
-            usage_limits=get_cell_limits(input.max_iterations),
+            budget=get_budget(agent.name, max_iterations=input.max_iterations),
             run_name=f"inside view · {sub_question.id} · {lens.name}",
         )
     return result.output
@@ -231,7 +231,9 @@ async def whole_question_adjustments(
     result = await run_adjust_lens(input, fallback, lens, "", deps)
     # Named after the lens so `adjusted_lens_rate` picks them up like any other.
     adjustments = [
-        a.model_copy(update={"lens_name": lens.name, "sub_question_ids": lens.sub_question_ids})
+        a.model_copy(
+            update={"lens_name": lens.name, "sub_question_ids": lens.sub_question_ids}
+        )
         for a in result.adjustments
     ]
     return adjustments, {"whole question": result.steel_man}

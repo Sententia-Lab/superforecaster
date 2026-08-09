@@ -17,12 +17,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from config import get_model_settings, get_cell_budget, get_cell_limits, resolve_agent_model
+from config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import UsageLimitExceeded
 
 from .. import checks
-from ..deps import ForecastDeps, SearchBudget
+from ..deps import ForecastDeps
 from ..models import (
     Decomposition,
     Evidence,
@@ -35,7 +35,7 @@ from ..models import (
 )
 from ..observability import run_agent
 from ..tools import search_web, search_wikipedia
-from . import as_of_note, attach_budget_pressure, format_question, with_model
+from . import as_of_note, attach_budget, format_question, with_model
 
 INSTRUCTIONS = """You measure ONE population. It has already been chosen and defined for
 you, and its definition is not yours to revise. You do not produce a probability for the
@@ -110,7 +110,7 @@ def build_base_rate_cell_agent(
         tools=[search_web, search_wikipedia],
         retries=1,
     )
-    attach_budget_pressure(agent)
+    attach_budget(agent)
     return agent
 
 
@@ -124,20 +124,18 @@ def get_base_rate_cell_agent() -> Agent[ForecastDeps, SubQuestionBaseRates]:
     return _cell_agent
 
 
-def cell_deps(deps: ForecastDeps, sub_question_id: str, max_iterations: int) -> ForecastDeps:
-    """A deps copy bound to one column, with its own budget and its own source list.
+def cell_deps(deps: ForecastDeps, sub_question_id: str) -> ForecastDeps:
+    """A deps copy bound to one column, with its own source list.
 
     The private `sources_seen` is not a style choice: `observability` detects new sources
     by remembering how long that list was and slicing off the tail, and two cells
     appending to one list makes that index hand each cell the other's sources. The parent
     extends from these after the barrier.
+
+    The budget is not set here. `run_agent` attaches it, so a cell's tag and a cell's
+    ceilings have one owner each rather than sharing this function.
     """
-    soft, hard = get_cell_budget(max_iterations)
-    return replace(
-        deps,
-        budget=SearchBudget(sub_question=sub_question_id, soft_depth=soft, hard_depth=hard),
-        sources_seen=[],
-    )
+    return replace(deps, sub_question=sub_question_id, sources_seen=[])
 
 
 async def run_research_lens(
@@ -171,14 +169,14 @@ your evidence blocks and analogs."""
             prompt,
             deps=deps,
             verbose=deps.verbose,
-            usage_limits=get_cell_limits(input.max_iterations),
+            budget=get_budget("base_rate_cell", max_iterations=input.max_iterations),
             run_name=f"base rates · {sub_question.id} · {lens.name}",
         )
     return result.output
 
 
 def exhausted_notice(deps: ForecastDeps) -> None:
-    """Mark a cell as having blown its hard cap, and say so on the wire.
+    """Say on the wire that a cell blew one of its ceilings.
 
     `UsageLimitExceeded` is raised *before* the tools run, so by the time it reaches a
     caller there is no output to salvage — the cell contributes nothing and the column
@@ -187,22 +185,9 @@ def exhausted_notice(deps: ForecastDeps) -> None:
     That fallback is why one greedy column no longer costs the other three their work,
     which is the whole point of moving the budget from the row to the cell.
     """
-    b = deps.budget
-    if b is None:
+    if deps.emit is None:
         return
-    b.exhausted = True
-    if deps.emit is not None:
-        deps.emit(
-            "exhausted",
-            {
-                "id": b.sub_question,
-                "used": b.used,
-                "soft_depth": b.soft_depth,
-                "hard_depth": b.hard_depth,
-                "recovered": False,
-            },
-            b.sub_question,
-        )
+    deps.emit("exhausted", {"id": deps.sub_question}, deps.sub_question)
 
 
 async def _whole_question_cell(

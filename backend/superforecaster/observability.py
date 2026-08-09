@@ -7,6 +7,7 @@ import contextlib
 import json
 import sys
 from collections.abc import AsyncIterable
+from dataclasses import is_dataclass, replace
 from typing import Any
 from urllib.parse import urlparse
 
@@ -24,8 +25,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.tools import RunContext
 
-from config import get_agent_timeout, get_settings, get_usage_limits
-from pydantic_ai import UsageLimits
+from config import Budget, get_agent_timeout, get_settings
 
 from .errors import AgentTimeout
 
@@ -293,27 +293,29 @@ async def run_agent(
     agent: Agent[Any, Any],
     prompt: str,
     *,
+    budget: Budget,
     deps: Any = None,
     verbose: bool = False,
-    max_iterations: int | None = None,
-    usage_limits: UsageLimits | None = None,
     timeout: float | None = None,
     run_name: str = "agent run",
 ) -> Any:
-    """Run an agent with tracing, budget, a deadline, and progress output.
+    """Run an agent with tracing, a budget, a deadline, and progress output.
 
     `deps` is forwarded to `agent.run` so tools can read the contamination clamps
-    (`ForecastDeps.as_of`) and append to the leakage audit trail.
+    (`ForecastDeps.as_of`) and append to the leakage audit trail. The budget is attached
+    to that copy so `agents.attach_budget`'s instruction can read it back off `ctx.deps`
+    on every model request — one place puts it there, rather than every call site.
 
-    Two independent ceilings, because there are two ways to never finish. `usage_limits`
-    bounds how many times the agent may act. The deadline bounds how long one act may
-    take, and it is the one that matters for a stuck browser: a provider request that
-    never returns reaches no limit, raises nothing, and leaves every subscriber waiting
-    on an `end` frame that is never sent. Every call site passes explicit limits; the
-    `get_usage_limits` fallback is a backstop for callers outside this package.
+    Two independent ceilings, because there are two ways to never finish. The budget
+    bounds how much the agent may spend. The deadline bounds how long one act may take,
+    and it is the one that matters for a stuck browser: a provider request that never
+    returns reaches no limit, raises nothing, and leaves every subscriber waiting on an
+    `end` frame that is never sent.
     """
     configure_logfire(verbose=verbose)
-    limits = usage_limits or get_usage_limits(max_iterations=max_iterations)
+    limits = budget.limits()
+    if is_dataclass(deps) and not isinstance(deps, type):
+        deps = replace(deps, budget=budget)
     deadline = get_agent_timeout() if timeout is None else timeout
     full = not cloud_tracing_active()
     show = verbose or full
@@ -326,8 +328,9 @@ async def run_agent(
     if show:
         print("[agent] starting run...", file=sys.stderr, flush=True)
         print(
-            f"[agent] limits: {limits.request_limit} LLM requests, "
-            f"{limits.tool_calls_limit} tool calls",
+            f"[agent] budget {budget.name}: {budget.iterations} LLM requests, "
+            f"{budget.tool_calls} tool calls, {budget.tokens} tokens, "
+            f"${budget.cost_usd:.2f}",
             file=sys.stderr,
             flush=True,
         )
@@ -341,8 +344,11 @@ async def run_agent(
             "starting {run_name}",
             run_name=run_name,
             prompt_preview=_preview(prompt, 500),
-            request_limit=limits.request_limit,
-            tool_calls_limit=limits.tool_calls_limit,
+            budget_name=budget.name,
+            request_limit=budget.iterations,
+            tool_calls_limit=budget.tool_calls,
+            total_tokens_limit=budget.tokens,
+            cost_limit_usd=budget.cost_usd,
             _tags=["agent-progress", "run-start"],
         )
 

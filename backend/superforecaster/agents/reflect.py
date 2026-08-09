@@ -22,7 +22,7 @@ so the wording that produced today's outputs is preserved.
 
 from __future__ import annotations
 
-from config import get_model_settings, get_synthesis_limits, resolve_agent_model
+from config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
@@ -72,7 +72,7 @@ def build_reflect_agent(model: str | None = None) -> Agent[ForecastDeps, Reflect
     return Agent[ForecastDeps, Reflection](
         model=model or resolve_agent_model(),
         model_settings=get_model_settings(),
-        name="reflect_agent",
+        name="reflect",
         deps_type=ForecastDeps,
         output_type=Reflection,
         system_prompt=INSTRUCTIONS,
@@ -132,7 +132,7 @@ question, plus all five bias checks."""
             prompt,
             deps=deps,
             verbose=deps.verbose,
-            usage_limits=get_synthesis_limits(),
+            budget=get_budget(agent.name),
             run_name="reflect",
         )
     return result.output

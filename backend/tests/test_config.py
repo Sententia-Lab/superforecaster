@@ -1,14 +1,6 @@
 import pytest
 
-import config
-
-from config import (
-    get_monitor_limits,
-    get_research_limits,
-    get_synthesis_limits,
-    get_usage_limits,
-    resolve_agent_model,
-)
+from config import BUDGETS, get_budget, resolve_agent_model
 
 
 def test_resolve_agent_model_prefers_explicit_override(monkeypatch):
@@ -31,53 +23,6 @@ def test_resolve_agent_model_falls_back_to_anthropic(monkeypatch):
     assert resolve_agent_model() == "anthropic:claude-sonnet-4-6"
 
 
-def test_get_usage_limits_default(monkeypatch):
-    monkeypatch.delenv("AGENT_REQUEST_LIMIT", raising=False)
-    monkeypatch.delenv("AGENT_TOOL_CALLS_LIMIT", raising=False)
-    limits = get_usage_limits()
-    assert limits.request_limit == 40
-    assert limits.tool_calls_limit == 20
-
-
-def test_get_usage_limits_scales_with_max_iterations(monkeypatch):
-    monkeypatch.delenv("AGENT_REQUEST_LIMIT", raising=False)
-    monkeypatch.delenv("AGENT_TOOL_CALLS_LIMIT", raising=False)
-    limits = get_usage_limits(max_iterations=5)
-    assert limits.request_limit == 25
-    assert limits.tool_calls_limit == 15
-
-
-def test_get_usage_limits_unlimited_env(monkeypatch):
-    monkeypatch.setenv("AGENT_REQUEST_LIMIT", "none")
-    monkeypatch.setenv("AGENT_TOOL_CALLS_LIMIT", "none")
-    limits = get_usage_limits()
-    assert limits.request_limit == 40
-    assert limits.tool_calls_limit == 20
-
-
-def test_get_research_limits_scales_with_max_iterations():
-    limits = get_research_limits(5)
-    assert limits.request_limit == 16
-    assert limits.tool_calls_limit == 15
-
-
-def test_research_limits_are_tunable_per_iteration(monkeypatch):
-    """These were literals at 2 and 2, which capped a default run at ten tool calls —
-    reachable in a normal run, and reaching it killed the whole graph."""
-    monkeypatch.setenv("RESEARCH_TOOL_CALLS_PER_ITERATION", "6")
-    monkeypatch.setenv("RESEARCH_REQUESTS_PER_ITERATION", "4")
-
-    limits = get_research_limits(5)
-    assert limits.tool_calls_limit == 30
-    assert limits.request_limit == 21
-
-
-def test_get_synthesis_limits():
-    limits = get_synthesis_limits()
-    assert limits.request_limit == 4
-    assert limits.tool_calls_limit == 0
-
-
 def test_resolve_agent_model_rejects_legacy_gateway_key(monkeypatch):
     monkeypatch.delenv("AGENT_MODEL", raising=False)
     monkeypatch.setenv("PYDANTIC_AI_GATEWAY_API_KEY", "paig_old_key")
@@ -85,64 +30,95 @@ def test_resolve_agent_model_rejects_legacy_gateway_key(monkeypatch):
         resolve_agent_model()
 
 
-def test_cell_budget_puts_the_wall_above_the_cline():
-    soft, hard = config.get_cell_budget(5)
-    assert soft == 5
-    assert hard == 8
-    assert hard > soft  # the headroom is where the agent lands its answer
+# ---------- the four ceilings ----------
 
 
-def test_cell_budget_respects_both_env_vars(monkeypatch):
-    monkeypatch.setenv("CELL_SOFT_CALLS_PER_ITERATION", "2")
-    monkeypatch.setenv("CELL_HARD_HEADROOM", "1")
-    assert config.get_cell_budget(4) == (8, 9)
+def test_a_budget_carries_all_four_ceilings():
+    """One agent runs away in four ways, and stopping one does not stop the others. A
+    tool-call cap does not stop a model re-reading a growing transcript; a token cap does
+    not stop a model searching forty times for cheap results."""
+    b = get_budget("base_rate_cell")
+
+    assert (b.cost_usd, b.tokens, b.tool_calls, b.iterations) == (0.40, 200_000, 8, 11)
 
 
-def test_cell_limits_cap_tool_calls_at_the_hard_depth():
-    assert config.get_cell_limits(5).tool_calls_limit == 8
+def test_three_of_the_four_reach_pydantic_ai():
+    """Cost is the one this codebase enforces itself, in `agents.attach_budget`."""
+    limits = get_budget("critic").limits()
+
+    assert limits.request_limit == 6
+    assert limits.tool_calls_limit == 3
+    assert limits.total_tokens_limit == 60_000
 
 
-def test_a_headroom_of_zero_makes_the_cline_the_wall(monkeypatch):
-    """The setting the verification step uses to force degradation on purpose."""
-    monkeypatch.setenv("CELL_HARD_HEADROOM", "0")
-    soft, hard = config.get_cell_budget(3)
-    assert soft == hard == 3
+def test_every_agent_has_a_budget():
+    """A missing row is a `KeyError` at the call site rather than an agent quietly
+    running on a process-wide default nobody chose."""
+    expected = {
+        "base_rate_cell",
+        "inside_view",
+        "critic",
+        "resolution",
+        "update",
+        "postmortem",
+        "decompose",
+        "lenses",
+        "reflect",
+        "synthesize",
+        "draft",
+    }
 
-
-# ---------- every agent call is bounded ----------
-
-
-def test_monitor_limits_bound_the_agents_outside_the_graph(monkeypatch):
-    """The resolution check, the daily update, and the post-mortem used to fall through
-    to `get_usage_limits()` — twenty tool calls and forty requests nobody chose for them."""
-    monkeypatch.delenv("MONITOR_TOOL_CALLS", raising=False)
-    limits = get_monitor_limits()
-
-    assert limits.tool_calls_limit == 4
-    assert limits.request_limit == 7
-
-
-def test_monitor_limits_are_tunable(monkeypatch):
-    monkeypatch.setenv("MONITOR_TOOL_CALLS", "8")
-    assert get_monitor_limits().tool_calls_limit == 8
+    assert set(BUDGETS) == expected
 
 
 def test_no_tool_agents_are_capped_at_zero_tool_calls():
     """decompose, choose-lenses, reflect, synthesize and draft are built with no tools.
     A ceiling of zero is what makes that a fact the runtime enforces rather than a
-    property of how the agent happened to be constructed."""
-    assert get_synthesis_limits().tool_calls_limit == 0
+    property of how the agent happened to be constructed. Pydantic AI does not charge the
+    structured answer as a tool call, so zero does not block the run from ending."""
+    for name in ("decompose", "lenses", "reflect", "synthesize", "draft"):
+        assert get_budget(name).tool_calls == 0
 
 
-def test_every_agent_run_passes_explicit_limits():
-    """The process-wide default is a backstop, not a budget. An agent reaching it means
-    somebody added a call site and forgot to say what it may spend — which is exactly how
-    the critic came to run on twenty tool calls.
-    """
+# ---------- scaling and overrides ----------
+
+
+def test_a_deeper_run_scales_all_four_numbers():
+    """Scaling only the iteration count would let a deeper run hit its token or cost
+    ceiling before it reached the depth the user asked for."""
+    base = get_budget("base_rate_cell")
+    deep = get_budget("base_rate_cell", max_iterations=10)
+
+    assert deep.iterations == base.iterations * 2
+    assert deep.tool_calls == base.tool_calls * 2
+    assert deep.tokens == base.tokens * 2
+    assert deep.cost_usd == base.cost_usd * 2
+
+
+def test_the_baseline_depth_changes_nothing():
+    assert get_budget("critic", max_iterations=5) == get_budget("critic")
+
+
+def test_one_env_var_overrides_one_agent(monkeypatch):
+    monkeypatch.setenv("BUDGET_CRITIC", "0.50,90000,6,9")
+    b = get_budget("critic")
+
+    assert (b.cost_usd, b.tokens, b.tool_calls, b.iterations) == (0.50, 90_000, 6, 9)
+    assert get_budget("draft").tool_calls == 0  # the others are untouched
+
+
+# ---------- every agent call is bounded ----------
+
+
+def test_every_agent_run_passes_a_budget():
+    """`run_agent` requires a budget, so this is belt and braces — but it is the test that
+    names the rule: an agent call site says what it may spend, always."""
     import ast
     import pathlib
 
-    agents_dir = pathlib.Path(__file__).resolve().parent.parent / "superforecaster" / "agents"
+    agents_dir = (
+        pathlib.Path(__file__).resolve().parent.parent / "superforecaster" / "agents"
+    )
     unbounded = []
     for path in sorted(agents_dir.glob("*.py")):
         tree = ast.parse(path.read_text())
@@ -152,7 +128,7 @@ def test_every_agent_run_passes_explicit_limits():
             fn = node.func
             if not (isinstance(fn, ast.Name) and fn.id == "run_agent"):
                 continue
-            if not any(kw.arg == "usage_limits" for kw in node.keywords):
+            if not any(kw.arg == "budget" for kw in node.keywords):
                 unbounded.append(path.name)
 
     assert unbounded == []

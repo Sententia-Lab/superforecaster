@@ -889,7 +889,8 @@ network at all.
 
 ## ADR 32 — The search budget is a gradient, and it is per cell
 
-**Status:** Accepted (2026-08-05)
+**Status:** Superseded by ADR 62 (2026-08-08). Per cell survives; the two-tier cline and the
+hand-rolled counter do not.
 
 **Decision.** Two thresholds per cell instead of one wall for the row. `soft_depth` — the cline —
 is where the agent starts being pushed to stop searching and commit. `hard_depth` is
@@ -1882,3 +1883,66 @@ provenance in the one place a reader goes to check provenance.
 **The cost, stated plainly.** A key set here is server-wide, so every run spends it
 whoever started it. The panel is a single-instance convenience, not multi-tenant key
 management, and its own text says so.
+
+
+---
+
+## ADR 62 — Four ceilings per agent, injected every iteration
+
+**Status:** Accepted (2026-08-08). Supersedes ADR 32.
+
+**Decision.** One `Budget` per agent, carrying four numbers: cost in dollars, tokens, tool
+calls, and iterations. `config.BUDGETS` has one row per agent and no exceptions.
+`run_agent(agent, prompt, budget=...)` is the only way to run one.
+
+```python
+Budget("critic", cost_usd=0.10, tokens=60_000, tool_calls=3, iterations=6)
+```
+
+**Why four.** An agent runs away in four different ways, and stopping one does not stop the
+others. A tool-call cap does not stop a model that re-reads a growing transcript. A token cap
+does not stop a model that searches forty times for cheap results. Neither one is money, which
+is the number the operator actually cares about.
+
+**Pydantic AI enforces three of them.** `UsageLimits` takes `request_limit`,
+`tool_calls_limit`, and `total_tokens_limit`. Cost is the only ceiling this codebase
+implements, in `agents.attach_budget`, from `genai_prices` — already a Pydantic AI dependency.
+An unpriced model costs 0.0, so an unknown price never stops a run.
+
+**One instruction replaces two channels.** Pydantic AI re-fetches instructions before every
+model request, and `ctx.usage` is current when it does. So the remaining budget is read out
+at each point the agent decides whether to spend more:
+
+```
+BUDGET LEFT — 4 of 6 turns, 71,320 of 100,000 tokens, $0.62 of $1.00.
+2 of 3 searches left. Prefer a few well-chosen searches over exhaustive looping.
+```
+
+ADR 32 ran two channels for this, because it believed the instruction could not state the
+budget before the first request. It can — the hook runs before request 1, where every counter
+is legitimately zero. The tool-result notice is deleted with `SearchBudget`, and with it the
+hand-rolled `used` counter that existed only because a tool needs a count at return time.
+`ctx.usage` is the counter now, and there is one of it.
+
+**What was lost.** The tool result could say "this is your last search result" at the moment
+the model read it. The instruction speaks one step later, before the next request — still in
+time to stop a search, so nothing that mattered.
+
+**Raising from an instruction is how the cost ceiling is enforced.** It aborts the run before
+the next request rather than reporting an overrun after it was paid for. It raises
+`UsageLimitExceeded`, so every existing catch site — the cell that degrades, the critic that
+returns an unfinished critique — keeps working with no change.
+
+**The soft cline is gone.** Two thresholds existed because a wall gives no warning. A number
+counted down out loud on every request is the warning, and it needs no second threshold to
+carry it.
+
+**One knob still scales.** `max_iterations` — the search depth on a run — scales all four
+numbers together (`Budget.scaled`). Scaling only the iteration count would let a deeper run
+reach its token or cost ceiling before it reached the depth the user asked for, which reads as
+a broken setting rather than a budget.
+
+**Deleted.** `get_usage_limits`, `get_cell_budget`, `get_cell_limits`, `get_critique_budget`,
+`get_critique_limits`, `get_research_limits`, `get_synthesis_limits`, `get_monitor_limits`,
+`SearchBudget`, `tools._budget_notice`, and nine environment variables. One override remains:
+`BUDGET_<AGENT>="cost,tokens,tool_calls,iterations"`.

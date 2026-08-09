@@ -11,10 +11,10 @@ is a correction rather than a re-roll.
 from __future__ import annotations
 
 from config import (
-    get_model_settings,
     CheckThresholds,
+    get_budget,
     get_check_thresholds,
-    get_synthesis_limits,
+    get_model_settings,
     resolve_agent_model,
 )
 from pydantic_ai import Agent
@@ -79,7 +79,7 @@ def build_synthesize_agent(model: str | None = None) -> Agent[ForecastDeps, Fore
     return Agent[ForecastDeps, Forecast](
         model=model or resolve_agent_model(),
         model_settings=get_model_settings(),
-        name="synthesize_agent",
+        name="synthesize",
         deps_type=ForecastDeps,
         output_type=Forecast,
         system_prompt=INSTRUCTIONS,
@@ -186,7 +186,7 @@ exactly. Carry the sub-questions into `decompositions`."""
             prompt,
             deps=deps,
             verbose=deps.verbose,
-            usage_limits=get_synthesis_limits(),
+            budget=get_budget(agent.name),
             run_name="synthesize",
         )
     return result.output

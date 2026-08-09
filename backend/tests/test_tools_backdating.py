@@ -18,7 +18,7 @@ import pytest
 from pydantic_ai import RunContext
 
 from superforecaster import tools
-from superforecaster.deps import ForecastDeps, SearchBudget
+from superforecaster.deps import ForecastDeps
 
 AS_OF = datetime(2022, 2, 1, tzinfo=timezone.utc)
 
@@ -265,81 +265,10 @@ async def test_find_disconfirming_evidence_runs_several_angles(monkeypatch, tavi
         queries.append(query)
         return "results"
 
-    # `_search_web`, not the tool: the sweep deliberately bypasses the tool wrapper so
-    # its three searches cost one call against the budget, matching the one decision the
-    # model actually made.
-    monkeypatch.setattr(tools, "_search_web", fake_search)
+    monkeypatch.setattr(tools, "search_web", fake_search)
     out = await tools.find_disconfirming_evidence(make_ctx(ForecastDeps()), "X happens")
 
     assert len(queries) == 3
     assert any("against" in q for q in queries)
     assert any("will not happen" in q for q in queries)
     assert "results" in out
-
-
-async def test_a_disconfirming_sweep_costs_one_call_not_three(monkeypatch, tavily_key):
-    """`SearchBudget.used` and `UsageLimits.tool_calls_limit` have to count the same
-    thing, or the cline fires at a depth the wall does not agree with."""
-
-    async def fake_search(ctx, query):
-        return "results"
-
-    monkeypatch.setattr(tools, "_search_web", fake_search)
-    deps = ForecastDeps(budget=SearchBudget(sub_question="sq1", soft_depth=5, hard_depth=8))
-    await tools.find_disconfirming_evidence(make_ctx(deps), "X happens")
-
-    assert deps.budget.used == 1
-
-
-# ---------- the search budget ----------
-
-
-def budgeted(soft: int = 3, hard: int = 5, used: int = 0) -> ForecastDeps:
-    return ForecastDeps(
-        budget=SearchBudget(sub_question="sq1", soft_depth=soft, hard_depth=hard, used=used)
-    )
-
-
-def test_below_the_cline_the_notice_is_just_a_count():
-    deps = budgeted(used=0)
-    notice = tools._budget_notice(make_ctx(deps))
-
-    assert "1 of 3 used" in notice
-    assert "Stop searching" not in notice
-
-
-def test_past_the_cline_the_notice_tells_the_agent_to_converge():
-    deps = budgeted(used=2)  # this call makes it 3, which is the cline
-    notice = tools._budget_notice(make_ctx(deps))
-
-    assert "SEARCH BUDGET SPENT" in notice
-    assert "Stop searching" in notice
-    assert "2 calls remain" in notice
-
-
-def test_at_the_wall_the_notice_says_it_is_the_last_result():
-    deps = budgeted(used=4)  # this call makes it 5 == hard_depth
-    notice = tools._budget_notice(make_ctx(deps))
-
-    assert "EXHAUSTED" in notice
-    assert "last search result" in notice
-    assert deps.budget.exhausted is True
-
-
-def test_no_budget_means_no_notice():
-    """The CLI, cron, and the evals never fanned out and have nothing to spend."""
-    assert tools._budget_notice(make_ctx(ForecastDeps())) == ""
-
-
-def test_an_errored_search_still_costs_a_call(monkeypatch):
-    """Counted at the result, matching what pydantic-ai's own UsageLimits counts."""
-    deps = budgeted()
-
-    async def boom(ctx, query):
-        return "Web search error: connection refused"
-
-    monkeypatch.setattr(tools, "_search_web", boom)
-    import asyncio
-
-    asyncio.run(tools.search_web(make_ctx(deps), "anything"))
-    assert deps.budget.used == 1
