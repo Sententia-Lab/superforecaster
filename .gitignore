@@ -28,3 +28,5 @@ backend/run_durability.sqlite*
 # Obsolete: artifacts of the pre-ADR-37 checkpoint files
 run_checkpoints/
 *.db.bak-*
+
+/references

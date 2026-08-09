@@ -82,32 +82,10 @@ def origin(name: str) -> str:
         return ".env"
     return "unset"
 
+
 DEFAULT_GATEWAY_MODEL = "gateway/anthropic:claude-sonnet-4-6"
 DEFAULT_ANTHROPIC_MODEL = "anthropic:claude-sonnet-4-6"
 GATEWAY_MIGRATION_URL = "https://pydantic.dev/docs/logfire/gateway-migration/"
-DEFAULT_AGENT_REQUEST_LIMIT = 40
-DEFAULT_AGENT_TOOL_CALLS_LIMIT = 20
-
-# How much budget one unit of `max_iterations` buys a researching agent. These were
-# hardcoded at 2 and 2, which meant the default `max_iterations=5` capped the outside
-# and inside view at ten tool calls — reachable in a normal run, and hitting it killed
-# the whole graph. Configuration rather than a literal, per ADR 14.
-DEFAULT_RESEARCH_REQUESTS_PER_ITERATION = 3
-DEFAULT_RESEARCH_TOOL_CALLS_PER_ITERATION = 3
-
-DEFAULT_CELL_SOFT_CALLS_PER_ITERATION = 1
-DEFAULT_CELL_HARD_HEADROOM = 3
-
-# The critic checks that a named resolution source exists and publishes what the criteria
-# assume. Two searches covers that; the third is headroom to write the verdict down. It
-# was 3/5, which in practice meant five searches on a question that needed one.
-DEFAULT_CRITIQUE_SOFT_CALLS = 2
-DEFAULT_CRITIQUE_HARD_HEADROOM = 1
-
-# Bounded, tool-using agents that are not cells: the resolution check, the daily update,
-# the post-mortem. They ran on the process-wide fallback of 20 tool calls, which is the
-# same "no ceiling anyone chose" the cells were moved off.
-DEFAULT_MONITOR_TOOL_CALLS = 4
 
 # Output-token ceiling per model response. The provider default (4096 for Anthropic)
 # is too small for the synthesize agent's structured output — a full Forecast with
@@ -143,8 +121,6 @@ class Settings:
     refresh_cron_schedule: str
     min_probability_delta: float
     search_lookback_hours: int
-    agent_request_limit: int | None
-    agent_tool_calls_limit: int | None
     agent_timeout_seconds: float
     stage_timeout_seconds: float
     frontend_dir: str
@@ -174,26 +150,7 @@ class CheckThresholds:
     support_medium: float  # at or above this, "medium"; below it, "low"
 
 
-def _parse_optional_int(
-    raw: str | None,
-    *,
-    unlimited_values: frozenset[str] = frozenset({"none", "unlimited"}),
-) -> int | None:
-    if raw is None:
-        return None
-    if raw.lower() in unlimited_values:
-        return None
-    return int(raw)
-
-
 def get_settings() -> Settings:
-    request_limit = _parse_optional_int(
-        os.getenv("AGENT_REQUEST_LIMIT", str(DEFAULT_AGENT_REQUEST_LIMIT))
-    )
-    tool_calls_limit = _parse_optional_int(
-        os.getenv("AGENT_TOOL_CALLS_LIMIT", str(DEFAULT_AGENT_TOOL_CALLS_LIMIT))
-    )
-
     return Settings(
         admin_api_key=os.getenv("ADMIN_API_KEY"),
         pydantic_ai_gateway_api_key=os.getenv("PYDANTIC_AI_GATEWAY_API_KEY"),
@@ -206,8 +163,6 @@ def get_settings() -> Settings:
         refresh_cron_schedule=os.getenv("REFRESH_CRON_SCHEDULE", "0 6 * * *"),
         min_probability_delta=float(os.getenv("MIN_PROBABILITY_DELTA", "0.03")),
         search_lookback_hours=int(os.getenv("SEARCH_LOOKBACK_HOURS", "48")),
-        agent_request_limit=request_limit,
-        agent_tool_calls_limit=tool_calls_limit,
         agent_timeout_seconds=float(
             os.getenv("AGENT_TIMEOUT_SECONDS", str(DEFAULT_AGENT_TIMEOUT_SECONDS))
         ),
@@ -245,140 +200,126 @@ def get_model_garden_margin_days() -> int:
     return int(os.getenv("MODEL_GARDEN_MARGIN_DAYS", "90"))
 
 
-def get_usage_limits(*, max_iterations: int | None = None) -> UsageLimits:
-    settings = get_settings()
-    request_limit = settings.agent_request_limit or DEFAULT_AGENT_REQUEST_LIMIT
-    tool_calls_limit = settings.agent_tool_calls_limit or DEFAULT_AGENT_TOOL_CALLS_LIMIT
-
-    if max_iterations is not None:
-        request_limit = min(request_limit, max_iterations * 5)
-        tool_calls_limit = min(tool_calls_limit, max_iterations * 3)
-
-    return UsageLimits(request_limit=request_limit, tool_calls_limit=tool_calls_limit)
+BASELINE_ITERATIONS = 5
+"""The `max_iterations` every number in `BUDGETS` is written for. See `Budget.scaled`."""
 
 
-def get_cell_budget(max_iterations: int) -> tuple[int, int]:
-    """`(soft_depth, hard_depth)` for ONE cell — one column at one research stage.
+@dataclass(frozen=True, slots=True)
+class Budget:
+    """What one agent run may spend, in the four units an agent run spends.
 
-    Per cell, not per stage. The old `get_research_limits` handed the whole outside view
-    `max_iterations * 3` calls to cover three to five sub-questions, and in practice the
-    single agent spent them all on the most searchable one.
+    Four ceilings rather than one because an agent can run away in four different ways,
+    and stopping one does not stop the others. A tool-call cap does not stop a model that
+    re-reads a growing transcript, and a token cap does not stop a model that searches
+    forty times for cheap results.
 
-    Two numbers because one is a wall with no warning. `soft_depth` is the cline: past it
-    the agent is told to stop searching and commit. `hard_depth` is
-    `UsageLimits.tool_calls_limit`, and the headroom between them is what the agent gets
-    to actually land its answer in.
-
-    The defaults are the decision, so here is the arithmetic. At `max_iterations=5` a cell
-    gets soft 5 / hard 8. Against today's 15 calls for the whole row:
-
-        3 researchable columns -> 24 worst case (1.6x the calls, ~1/3 the wall-clock)
-        4 researchable columns -> 32 worst case (2.1x, ~1/4)
-        5 researchable columns -> 40 worst case (2.7x, ~1/5)   <- the case to watch
-
-    and they are spent evenly across the question rather than pooled into one column.
+    `cost_usd` is the only one this codebase enforces itself, in
+    `agents.attach_budget`. Pydantic AI enforces the other three, through `limits()`.
     """
-    soft_per = int(
-        os.getenv(
-            "CELL_SOFT_CALLS_PER_ITERATION", str(DEFAULT_CELL_SOFT_CALLS_PER_ITERATION)
+
+    name: str
+    cost_usd: float
+    tokens: int
+    tool_calls: int
+    iterations: int
+    """Model requests. One iteration is one round of "think, maybe call a tool"."""
+
+    def limits(self) -> UsageLimits:
+        return UsageLimits(
+            request_limit=self.iterations,
+            tool_calls_limit=self.tool_calls,
+            total_tokens_limit=self.tokens,
         )
-    )
-    headroom = int(os.getenv("CELL_HARD_HEADROOM", str(DEFAULT_CELL_HARD_HEADROOM)))
-    soft = max(1, max_iterations * soft_per)
-    return soft, soft + max(0, headroom)
 
+    def scaled(self, max_iterations: int) -> Budget:
+        """This budget at a different search depth. `max_iterations` is the user's knob.
 
-def get_cell_limits(max_iterations: int) -> UsageLimits:
-    """Hard limits for one cell. The wall `get_cell_budget`'s cline sits below.
-
-    Exceeding this still raises `UsageLimitExceeded` — but a cell catches its own and
-    degrades to no result, so one greedy column no longer kills the run.
-    """
-    _, hard = get_cell_budget(max_iterations)
-    return UsageLimits(request_limit=hard + 3, tool_calls_limit=hard)
-
-
-def get_critique_budget() -> tuple[int, int]:
-    """`(soft_depth, hard_depth)` for the criteria critic. Same two-number shape as a cell.
-
-    Flat rather than scaled by `max_iterations` — the critic runs before a question is
-    forecast at all, so there is no iteration count to scale by, and its job is bounded:
-    check that a named resolution source exists and publishes what the criteria assume.
-    **Two searches covers that, and three is the wall.** A resolvability review is one or
-    two lookups; anything past that is the critic drifting into forecasting the question,
-    which its prompt forbids and its budget should not fund.
-
-    It was previously running on the process-wide default of 20 tool calls with no cline
-    at all, and a question with several checkable sources would spend them all and die on
-    `UsageLimitExceeded` — taking the parsed draft down with it, since `/questions/draft`
-    returns both from one call.
-    """
-    soft = max(1, int(os.getenv("CRITIQUE_SOFT_CALLS", str(DEFAULT_CRITIQUE_SOFT_CALLS))))
-    headroom = int(
-        os.getenv("CRITIQUE_HARD_HEADROOM", str(DEFAULT_CRITIQUE_HARD_HEADROOM))
-    )
-    return soft, soft + max(0, headroom)
-
-
-def get_critique_limits() -> UsageLimits:
-    """The wall `get_critique_budget`'s cline sits below."""
-    _, hard = get_critique_budget()
-    return UsageLimits(request_limit=hard + 3, tool_calls_limit=hard)
-
-
-def get_research_limits(max_iterations: int) -> UsageLimits:
-    """Budget for a research agent covering the whole question at once.
-
-    Now only the fallback path — a decomposition with nothing researchable — plus the
-    component evals. The fanned-out rows use `get_cell_limits`, which is per column.
-
-    Scales with `max_iterations` so a caller asking for deeper research gets it. The
-    per-iteration rates are configurable because the right number is a guess until a
-    backtest says otherwise — and because exceeding it raises `UsageLimitExceeded`,
-    which on this path still kills the run rather than degrading it.
-    """
-    requests_per = int(
-        os.getenv(
-            "RESEARCH_REQUESTS_PER_ITERATION",
-            str(DEFAULT_RESEARCH_REQUESTS_PER_ITERATION),
+        All four numbers move together. Scaling only the iteration count would let a
+        deeper run reach its token or cost ceiling before it reached the depth the user
+        asked for, which reads as a broken setting rather than a budget.
+        """
+        factor = max(1, max_iterations) / BASELINE_ITERATIONS
+        return Budget(
+            name=self.name,
+            cost_usd=self.cost_usd * factor,
+            tokens=int(self.tokens * factor),
+            tool_calls=max(1, int(self.tool_calls * factor)),
+            iterations=max(2, int(self.iterations * factor)),
         )
+
+
+BUDGETS: dict[str, Budget] = {
+    b.name: b
+    for b in (
+        # The two research cells. Fanned out per column per stage, so these are the
+        # numbers a whole run multiplies by: five columns of three lenses is fifteen.
+        Budget(
+            "base_rate_cell", cost_usd=0.40, tokens=200_000, tool_calls=8, iterations=11
+        ),
+        Budget(
+            "inside_view",
+            cost_usd=0.40,
+            tokens=200_000,
+            tool_calls=8,
+            iterations=11,
+        ),
+        # Bounded lookups outside the forecast. Each answers one question: is this
+        # resolvable, has it resolved, what happened in the last two days, what did the
+        # reasoning get wrong.
+        Budget("critic", cost_usd=0.10, tokens=60_000, tool_calls=3, iterations=6),
+        Budget(
+            "resolution", cost_usd=0.10, tokens=60_000, tool_calls=4, iterations=7
+        ),
+        Budget("update", cost_usd=0.10, tokens=60_000, tool_calls=4, iterations=7),
+        Budget(
+            "postmortem", cost_usd=0.10, tokens=60_000, tool_calls=4, iterations=7
+        ),
+        # No-tool steps. `tool_calls=0` is the point: these agents are built with no
+        # tools, and a ceiling of zero makes that a fact the runtime enforces rather
+        # than a property of how the agent happened to be constructed. The structured
+        # answer is not counted — Pydantic AI does not charge the output tool.
+        Budget(
+            "decompose", cost_usd=0.15, tokens=80_000, tool_calls=0, iterations=4
+        ),
+        Budget("lenses", cost_usd=0.15, tokens=80_000, tool_calls=0, iterations=4),
+        Budget(
+            "reflect", cost_usd=0.20, tokens=100_000, tool_calls=0, iterations=4
+        ),
+        Budget(
+            "synthesize",
+            cost_usd=0.25,
+            tokens=120_000,
+            tool_calls=0,
+            iterations=4,
+        ),
+        Budget("draft", cost_usd=0.10, tokens=40_000, tool_calls=0, iterations=4),
     )
-    tool_calls_per = int(
-        os.getenv(
-            "RESEARCH_TOOL_CALLS_PER_ITERATION",
-            str(DEFAULT_RESEARCH_TOOL_CALLS_PER_ITERATION),
+}
+"""Every agent in the system, and what it may spend. One row per agent, no exceptions.
+
+The numbers are guesses until a backtest says otherwise, so `BUDGET_<NAME>` overrides
+any row — `BUDGET_CRITIC="0.10,60000,3,6"`, in the field order of `Budget`.
+"""
+
+
+def get_budget(name: str, *, max_iterations: int | None = None) -> Budget:
+    """The named agent's budget, scaled when the caller asked for a deeper run.
+
+    Re-reads the environment on every call, matching `get_settings()`, so a test can
+    monkeypatch one agent's ceiling without touching the others.
+    """
+    budget = BUDGETS[name]
+    raw = os.getenv(f"BUDGET_{name.upper()}")
+    if raw:
+        cost, tokens, tool_calls, iterations = raw.split(",")
+        budget = Budget(
+            name=name,
+            cost_usd=float(cost),
+            tokens=int(tokens),
+            tool_calls=int(tool_calls),
+            iterations=int(iterations),
         )
-    )
-    return UsageLimits(
-        request_limit=max_iterations * requests_per + 1,
-        tool_calls_limit=max_iterations * tool_calls_per,
-    )
-
-
-def get_synthesis_limits() -> UsageLimits:
-    """Single-shot structured output — no tools, small retry budget.
-
-    Every no-tool step runs on this: decompose, choose-lenses, reflect, synthesize, draft.
-    `tool_calls_limit=0` is the point — those agents are built with no tools, and a
-    ceiling of zero is what makes that a fact the runtime enforces rather than a property
-    of how the agent happened to be constructed.
-    """
-    return UsageLimits(request_limit=4, tool_calls_limit=0)
-
-
-def get_monitor_limits() -> UsageLimits:
-    """Budget for the tool-using agents outside the forecast graph.
-
-    The resolution check, the daily update, and the post-mortem. None of them is a cell,
-    none of them scales with `max_iterations`, and all three used to fall through to
-    `get_usage_limits()` — twenty tool calls and forty requests that nobody chose for
-    them. Each is a bounded lookup: has this resolved, what happened in the last two
-    days, what did the reasoning get wrong.
-    """
-    tool_calls = max(
-        1, int(os.getenv("MONITOR_TOOL_CALLS", str(DEFAULT_MONITOR_TOOL_CALLS)))
-    )
-    return UsageLimits(request_limit=tool_calls + 3, tool_calls_limit=tool_calls)
+    return budget if max_iterations is None else budget.scaled(max_iterations)
 
 
 def get_model_settings() -> dict:
@@ -387,9 +328,7 @@ def get_model_settings() -> dict:
     Read per call, matching the budget getters, so tests can monkeypatch the env var.
     """
     return {
-        "max_tokens": int(
-            os.getenv("AGENT_MAX_TOKENS", str(DEFAULT_AGENT_MAX_TOKENS))
-        )
+        "max_tokens": int(os.getenv("AGENT_MAX_TOKENS", str(DEFAULT_AGENT_MAX_TOKENS)))
     }
 
 

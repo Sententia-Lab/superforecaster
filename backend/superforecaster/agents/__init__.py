@@ -17,26 +17,49 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any, Iterator
 
+from genai_prices import Usage as PriceUsage, calc_price
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.usage import RunUsage
 
 from ..deps import ForecastDeps
 
 
-def attach_budget_pressure(agent: Agent) -> None:
-    """Register the cline instruction on a research agent.
+def spent_usd(model: Any, usage: RunUsage) -> float:
+    """What this run has cost so far, from published per-token prices.
 
-    The second of the two channels that push a cell to converge. `tools._budget_notice`
-    is the primary one — it lands at the moment the model decides whether to search
-    again — but it has two blind spots this covers:
+    Returns 0.0 when the price of a model is unknown — a test model, a provider
+    `genai_prices` has no row for. An unpriced model must not stop a run, so the cost
+    ceiling silently does not apply to one.
+    """
+    try:
+        return float(
+            calc_price(
+                PriceUsage(
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    cache_read_tokens=usage.cache_read_tokens,
+                    cache_write_tokens=usage.cache_write_tokens,
+                ),
+                model_ref=model.model_name,
+                provider_id=model.system,
+            ).total_price
+        )
+    except Exception:
+        return 0.0
 
-      - there is no tool result before the first request, so it cannot state the budget
-        up front. The static `SEARCH BUDGET: at most N rounds` line this replaces did
-        state it, but was frozen into request 1 and never updated afterwards.
-      - after the last tool result it goes silent, while the model may still make several
-        more requests: an output-validation retry, a text-only turn.
 
-    Instructions are re-fetched per model request rather than once per run, which is what
-    makes the pressure escalate *within* a run instead of being a fixed sentence.
+def attach_budget(agent: Agent) -> None:
+    """Register the one instruction that tells an agent what it has left.
+
+    Pydantic AI re-fetches instructions before **every** model request, so this runs once
+    per iteration and `ctx.usage` is current when it does. That is the whole mechanism:
+    the agent is told the remaining budget at each point it decides whether to spend more,
+    rather than being handed a fixed sentence in request 1 that goes stale immediately.
+
+    It is also where the cost ceiling is enforced. Pydantic AI counts requests, tool
+    calls, and tokens, but not money; raising here stops the *next* request, before it is
+    paid for.
 
     Registered on the lazy singleton at construction, so it appends once.
 
@@ -54,16 +77,32 @@ def attach_budget_pressure(agent: Agent) -> None:
         b = getattr(ctx.deps, "budget", None)
         if b is None:
             return None
-        if not b.past_the_cline:
+
+        spent = spent_usd(ctx.model, ctx.usage)
+        if spent >= b.cost_usd:
+            raise UsageLimitExceeded(
+                f"{b.name} spent ${spent:.2f} of its ${b.cost_usd:.2f} cost limit"
+            )
+
+        left = (
+            f"BUDGET LEFT — {b.iterations - ctx.usage.requests} of {b.iterations} turns, "
+            f"{b.tokens - ctx.usage.total_tokens:,} of {b.tokens:,} tokens, "
+            f"${b.cost_usd - spent:.2f} of ${b.cost_usd:.2f}."
+        )
+        if b.tool_calls == 0:
+            return left
+
+        searches = b.tool_calls - ctx.usage.tool_calls
+        if searches > 0:
             return (
-                f"SEARCH BUDGET: {b.used} of {b.soft_depth} searches used. Prefer a few "
+                f"{left} {searches} of {b.tool_calls} searches left. Prefer a few "
                 "well-chosen searches over exhaustive looping."
             )
         return (
-            "SEARCH BUDGET SPENT. Run no further searches. Shorten your reasoning and "
-            "return your structured answer now, from what you already found — returning "
-            "it is the only thing left to do, and it is still a tool call. Grade thin "
-            "evidence as thin rather than searching for better."
+            f"{left} No searches left. Run no further searches — shorten your reasoning "
+            "and return your structured answer now, from what you already found. "
+            "Returning it is the only thing left to do, and it is still a tool call. "
+            "Grade thin evidence as thin rather than searching for better."
         )
 
 

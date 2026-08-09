@@ -12,8 +12,9 @@ date as separate fields, so something has to split them before any of that can r
 
 from __future__ import annotations
 
-from config import get_model_settings, get_synthesis_limits, resolve_agent_model
+from config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
+from superforecaster.tools import search_web
 
 from ..deps import ForecastDeps
 from ..models import DraftedQuestion
@@ -56,11 +57,12 @@ def build_draft_agent(model: str | None = None) -> Agent[ForecastDeps, DraftedQu
     return Agent[ForecastDeps, DraftedQuestion](
         model=model or resolve_agent_model(),
         model_settings=get_model_settings(),
-        name="draft_agent",
+        name="draft",
         deps_type=ForecastDeps,
         output_type=DraftedQuestion,
         system_prompt=INSTRUCTIONS,
         retries=1,
+        tools=[search_web],
     )
 
 
@@ -95,7 +97,7 @@ Return a DraftedQuestion."""
             prompt,
             deps=deps,
             verbose=deps.verbose,
-            usage_limits=get_synthesis_limits(),
+            budget=get_budget(agent.name),
             run_name="draft question",
         )
     return result.output

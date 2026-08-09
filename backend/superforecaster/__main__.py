@@ -43,7 +43,6 @@ from .models import (
 from . import model_garden
 from .evals import components as component_evals
 
-
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
 
@@ -326,8 +325,8 @@ _REPORTED = (
     "LOGFIRE_TOKEN",
     "AGENT_MODEL",
     "DATABASE_PATH",
-    "CELL_SOFT_CALLS_PER_ITERATION",
-    "CELL_HARD_HEADROOM",
+    "BUDGET_BASE_RATE_CELL",
+    "BUDGET_INSIDE_VIEW",
 )
 
 
@@ -345,7 +344,9 @@ def _cmd_config(args: argparse.Namespace) -> int:
 
     from config import ENV_FILE, origin, resolve_agent_model
 
-    print(f"\n.env file   {ENV_FILE}  ({'present' if ENV_FILE.exists() else 'ABSENT'})\n")
+    print(
+        f"\n.env file   {ENV_FILE}  ({'present' if ENV_FILE.exists() else 'ABSENT'})\n"
+    )
     print(f"  {'setting':32} {'origin':12} value")
     print(f"  {'-' * 32} {'-' * 12} {'-' * 30}")
     for name in _REPORTED:
@@ -469,13 +470,20 @@ def forecast(
     verbose: bool = VERBOSE,
 ) -> None:
     """Run the forecast agent."""
-    _run(_cmd_forecast, fixture=fixture, no_save=no_save,
-         max_iterations=max_iterations, verbose=verbose)
+    _run(
+        _cmd_forecast,
+        fixture=fixture,
+        no_save=no_save,
+        max_iterations=max_iterations,
+        verbose=verbose,
+    )
 
 
 @app.command()
 def refresh(
-    fixture: str = typer.Option(None, help="Load forecast from a fixture (no DB write)"),
+    fixture: str = typer.Option(
+        None, help="Load forecast from a fixture (no DB write)"
+    ),
     id: str = typer.Option(None, help="Refresh a forecast by UUID from the DB"),
     verbose: bool = VERBOSE,
 ) -> None:
@@ -486,7 +494,9 @@ def refresh(
 
 @app.command()
 def resolve(
-    fixture: str = typer.Option(None, help="Load forecast from a fixture (no DB write)"),
+    fixture: str = typer.Option(
+        None, help="Load forecast from a fixture (no DB write)"
+    ),
     id: str = typer.Option(None, help="Check resolution by UUID from the DB"),
     verbose: bool = VERBOSE,
 ) -> None:
@@ -503,12 +513,15 @@ def critique(
     verbose: bool = VERBOSE,
 ) -> None:
     """Check whether a question is resolvable."""
-    _run(_cmd_critique, question=question, criteria=criteria, date=date, verbose=verbose)
+    _run(
+        _cmd_critique, question=question, criteria=criteria, date=date, verbose=verbose
+    )
 
 
 @app.command()
-def postmortem(id: str = typer.Argument(..., help="Forecast UUID"),
-               verbose: bool = VERBOSE) -> None:
+def postmortem(
+    id: str = typer.Argument(..., help="Forecast UUID"), verbose: bool = VERBOSE
+) -> None:
     """Review a resolved forecast for process errors."""
     _run(_cmd_postmortem, id=id, verbose=verbose)
 
@@ -526,8 +539,10 @@ def models(
 
 
 @app.command()
-def diagram(graph: str = typer.Argument("forecast", help="forecast | update"),
-            verbose: bool = VERBOSE) -> None:
+def diagram(
+    graph: str = typer.Argument("forecast", help="forecast | update"),
+    verbose: bool = VERBOSE,
+) -> None:
     """Print the graph as mermaid."""
     if graph not in ("forecast", "update"):
         raise typer.BadParameter("graph must be forecast or update")
@@ -538,7 +553,9 @@ def diagram(graph: str = typer.Argument("forecast", help="forecast | update"),
 def test(
     suite: str = typer.Argument("component", help="component | e2e"),
     agent: str = typer.Argument("all", help="Agent name, or 'all'"),
-    mode: str = typer.Option("clean", help="clean picks a model trained before the case"),
+    mode: str = typer.Option(
+        "clean", help="clean picks a model trained before the case"
+    ),
     verbose: bool = VERBOSE,
 ) -> None:
     """Run the component eval harness."""

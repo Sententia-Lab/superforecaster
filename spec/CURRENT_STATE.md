@@ -254,7 +254,7 @@ FastAPI  stream_step ── preflight ──► generate()
 | `thought` | `PartDeltaEvent.content_delta` | appends to `thoughts`, tail-clipped to 4000 chars |
 | `query` | `FunctionToolCallEvent` | replaces the one-line `"tool: query"` |
 | `source` | diff of `deps.sources_seen` after each tool result | pushes a source chip |
-| `exhausted` | `outside_view.exhausted_notice` | "search budget exhausted — wrapping up" |
+| `exhausted` | `outside_view.exhausted_notice` | "search budget exhausted — wrapping up". Payload `{id}` |
 | `result` | `work()` after `finish_step` | (not consumed — `run` supersedes it) |
 | `run` | `machine.detail(run_id)` | `setRun(payload)`, and `start` resolves to it — whole tree swap |
 | `error` | any exception, via `_failure_hint` | red banner on the card |
@@ -568,14 +568,14 @@ Where the functions named above live.
 | `models.py` | every Pydantic model |
 | `checks.py` | the 16 principles as pure functions; `lens_rate`, `anchor_from`, `implied_probability`, `run_forecast_checks`, `blocking` |
 | `scoring.py` | `time_weighted_probability`, `brier_score`, `calibration` — pure |
-| `deps.py` | `ForecastDeps`, `SearchBudget`, `sources_seen`, the `emit` sink |
+| `deps.py` | `ForecastDeps` — the `as_of`/`model` clamps, the column tag, the run's `Budget`, `sources_seen`, the `emit` sink |
 | `tools.py` | `search_web` (Tavily), `search_wikipedia` (optional bearer key), `as_of` backdating clamps |
-| `observability.py` | logfire config, the `run_agent` wrapper, agent-event → stream-frame handler |
+| `observability.py` | logfire config, the `run_agent` wrapper (attaches the budget, applies the deadline), agent-event → stream-frame handler |
 | `errors.py` | `AgentTimeout`, `StageTimeout` |
 | `cron.py` | `run_daily_refresh`, APScheduler wiring |
 | `model_garden.py` | model registry with published training cutoffs (backtest clamp) |
 | `graphs/update.py` | the only graph: `CheckResolved → ApplyBayes → VerifyLargeMove → GuardUpdate`, `run_update_graph` |
-| `agents/` | eleven agents, one module each: `decompose`, `lenses`, `outside_view`, `inside_view`, `reflect`, `synthesize`, `critic`, `draft`, `resolution`, `update`, `postmortem` |
+| `agents/` | eleven agents, one module each: `decompose`, `lenses`, `outside_view`, `inside_view`, `reflect`, `synthesize`, `critic`, `draft`, `resolution`, `update`, `postmortem`. `__init__.py` holds `attach_budget` and `spent_usd` |
 | `evals/components.py` | per-agent eval harness (`run_component`, `SCORERS`) |
 | `__main__.py` | typer CLI: `forecast`, `refresh`, `resolve`, `critique`, `postmortem`, `models`, `diagram`, `test`, `config`, `serve` |
 

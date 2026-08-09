@@ -1,7 +1,7 @@
-"""The criteria critic's cline, its wall, and what it returns when it hits the wall.
+"""The criteria critic's budget, and what it returns when it blows one of its ceilings.
 
-The critic ran on the process-wide default of 20 tool calls with no cline at all, which
-made `UsageLimitExceeded` reachable on an ordinary draft — and since `/questions/draft`
+The critic ran on the process-wide default of 20 tool calls, which made
+`UsageLimitExceeded` reachable on an ordinary draft — and since `/questions/draft`
 returns the parsed question and the critique from one call, that exception took the
 user's parsed draft down with it.
 """
@@ -44,55 +44,22 @@ def _capture(monkeypatch) -> dict:
 # ---------- the budget ----------
 
 
-def test_critique_budget_puts_the_wall_above_the_cline():
-    """Three tool calls, total. A resolvability review is one or two lookups — checking
-    that a source it is about to name exists — and anything past that is the critic
-    drifting into forecasting the question, which its own prompt forbids."""
-    soft, hard = config.get_critique_budget()
-    assert soft == 2
-    assert hard == 3
-    assert hard > soft  # the headroom is where it writes the critique down
+def test_the_critic_gets_three_searches_total():
+    """A resolvability review is one or two lookups — checking that a source it is about
+    to name exists. Anything past that is the critic drifting into forecasting the
+    question, which its own prompt forbids and its budget should not fund."""
+    b = config.get_budget("critic")
+
+    assert b.tool_calls == 3
+    assert b.iterations == 6
 
 
-def test_critique_budget_respects_both_env_vars(monkeypatch):
-    monkeypatch.setenv("CRITIQUE_SOFT_CALLS", "2")
-    monkeypatch.setenv("CRITIQUE_HARD_HEADROOM", "1")
-    assert config.get_critique_budget() == (2, 3)
-
-
-def test_critique_limits_cap_tool_calls_well_below_the_global_default():
-    limits = config.get_critique_limits()
-    assert limits.tool_calls_limit == 3
-    assert limits.tool_calls_limit < config.DEFAULT_AGENT_TOOL_CALLS_LIMIT
-
-
-# ---------- what the run gets ----------
-
-
-async def test_the_critic_runs_on_its_own_budget_not_the_global_default(monkeypatch):
+async def test_the_critic_runs_on_its_own_budget_not_a_shared_default(monkeypatch):
     seen = _capture(monkeypatch)
     await critic.run_critique("Will X happen?", "X is significant.")
 
-    assert seen["usage_limits"].tool_calls_limit == 3
-
-
-async def test_the_critic_installs_a_budget_so_the_cline_can_fire(monkeypatch):
-    """Without this the tool notices and the dynamic instruction are both silent —
-    `ForecastDeps()` arrives from the API with `budget=None`."""
-    seen = _capture(monkeypatch)
-    await critic.run_critique("Will X happen?", "X is significant.")
-
-    budget = seen["deps"].budget
-    assert budget is not None
-    assert (budget.soft_depth, budget.hard_depth) == (2, 3)
-
-
-async def test_the_cline_sits_below_the_wall_the_run_is_given(monkeypatch):
-    """The gap is the point: a wall with no warning kills the agent mid-thought."""
-    seen = _capture(monkeypatch)
-    await critic.run_critique("Will X happen?", "X is significant.")
-
-    assert seen["deps"].budget.soft_depth < seen["usage_limits"].tool_calls_limit
+    assert seen["budget"].name == "critic"
+    assert seen["budget"].tool_calls == 3
 
 
 # ---------- the wall ----------

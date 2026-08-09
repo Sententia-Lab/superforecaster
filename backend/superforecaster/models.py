@@ -204,7 +204,7 @@ ChainRule = Literal["conjunction", "disjunction", "custom"]
 
 
 class Decomposition(BaseModel):
-    """Output of decompose_agent. P1.
+    """Output of decompose agent. P1.
 
     Reuses `SubPrediction` rather than defining a parallel type — the decomposition
     the agent produces is the same decomposition that gets persisted on the Forecast.
@@ -256,8 +256,9 @@ class Evidence(BaseModel):
         "population it was measured over."
     )
     source: GradedSource | None = Field(
-        default=None, description="Required for `published`. A statistic with no source "
-        "is an assertion."
+        default=None,
+        description="Required for `published`. A statistic with no source "
+        "is an assertion.",
     )
 
     @model_validator(mode="after")
@@ -313,8 +314,9 @@ class ResearchedLens(Lens):
     """
 
     evidence: list[Evidence] = Field(
-        min_length=1, description="At least one block. A rate you reasoned your way to "
-        "is not a base rate."
+        min_length=1,
+        description="At least one block. A rate you reasoned your way to "
+        "is not a base rate.",
     )
     analogs: list[HistoricalAnalog] = Field(
         default_factory=list,
@@ -465,7 +467,7 @@ class SubQuestionAdjustments(BaseModel):
 
 
 class Reflection(BaseModel):
-    """Output of reflect_agent. P14 + P15, over the whole question.
+    """Output of reflect agent. P14 + P15, over the whole question.
 
     Runs after the inside-view barrier with every column's adjustments in front of it and
     no tools. That is what makes `check_disconfirming`'s "every adjustment points the same
@@ -532,7 +534,7 @@ class EvidenceItem(BaseModel):
 
 
 class UpdateDecision(BaseModel):
-    """Output of update_agent. P10, P11, P12."""
+    """Output of update agent. P10, P11, P12."""
 
     evidence: list[EvidenceItem] = Field(default_factory=list)
     prior: float = Field(ge=0.0, le=1.0)
@@ -557,7 +559,7 @@ class UpdateOutcome(BaseModel):
 
 
 class ResolutionCheckResult(BaseModel):
-    """Output from resolution_agent — binary classification."""
+    """Output from resolution agent — binary classification."""
 
     appears_resolved: bool
     suggested_outcome: Optional[float] = Field(default=None, description="0.0 or 1.0")
@@ -570,7 +572,7 @@ class ResolutionCheckResult(BaseModel):
 
 
 class CriteriaCritique(BaseModel):
-    """Output of critic_agent. P3.
+    """Output of critic agent. P3.
 
     Standalone — not part of the forecast graph. Powers the frontend's suggestion
     box while a user is drafting a question.
@@ -597,7 +599,7 @@ class CriteriaCritique(BaseModel):
 
 
 class PostMortem(BaseModel):
-    """Output of postmortem_agent. P13.
+    """Output of postmortem agent. P13.
 
     The point is the split: a 70% forecast that resolved "no" is not automatically
     wrong. `process_errors` is what the reasoning got wrong; `outcome_noise` is what

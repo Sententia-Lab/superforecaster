@@ -161,8 +161,7 @@ and `make config` prints all of them with their origins.
 | `ADMIN_API_KEY` | **Required to serve this anywhere but your own machine** — see below |
 | `AGENT_MODEL` | Override the model for every agent, e.g. `anthropic:claude-sonnet-4-6` |
 | `LOGFIRE_TOKEN` | A `pylf_v1_...` *write* token for cloud traces. Different from the gateway key |
-| `CELL_SOFT_CALLS_PER_ITERATION` | The cline — searches per unit of depth before an agent is pushed to commit (default 1) |
-| `CELL_HARD_HEADROOM` | Calls between the cline and the hard cap (default 3) |
+| `BUDGET_<AGENT>` | Override one agent's four ceilings — see **Agent budgets** below |
 | `DATABASE_PATH` | Default `./superforecaster.db`; Docker uses `/app/data/` |
 
 Every check threshold is an environment variable too — see
@@ -185,18 +184,35 @@ local — a reverse proxy in front of this is the shape of a real deployment, an
 upstream can rewrite the origin. **Set `ADMIN_API_KEY` before exposing the port.** Once
 set, paste the same value into the **Keys** panel.
 
-### Search budget
+### Agent budgets
 
-Each cell — one column at one research stage — gets its own two-tier budget:
+Every agent has four ceilings, because an agent runs away in four different ways. A
+tool-call cap does not stop a model that re-reads a growing transcript, and a token cap
+does not stop a model that searches forty times for cheap results.
+
+| Ceiling | Unit | Enforced by |
+|---|---|---|
+| cost | US dollars, from published per-token prices | `agents.attach_budget` |
+| tokens | input + output, cumulative over the run | Pydantic AI |
+| tool calls | searches | Pydantic AI |
+| iterations | model requests | Pydantic AI |
+
+The defaults are one row per agent in `backend/config.py` (`BUDGETS`). Override one with
+`BUDGET_<AGENT>="cost,tokens,tool_calls,iterations"` — for example
+`BUDGET_CRITIC="0.10,60000,3,6"`.
+
+Before every model request the agent is told what it has left:
 
 ```
-soft_depth = max_iterations × CELL_SOFT_CALLS_PER_ITERATION    # the cline
-hard_depth = soft_depth + CELL_HARD_HEADROOM                   # the wall
+BUDGET LEFT — 4 of 6 turns, 71,320 of 100,000 tokens, $0.62 of $1.00.
+2 of 3 searches left. Prefer a few well-chosen searches over exhaustive looping.
 ```
 
-Past the cline the agent is told, in the tool result itself, to stop searching and write
-its answer. The wall is `UsageLimits.tool_calls_limit`. A cell that hits it degrades to no
-result and the run continues — one greedy column no longer costs the others their work.
+The numbers are re-read on each request rather than written once, so they are current at
+the moment the agent decides whether to spend more. A research cell that blows a ceiling
+degrades to no result and the run continues — one greedy column no longer costs the others
+their work. `max_iterations`, the search-depth knob on a run, scales all four numbers
+together.
 
 ---
 
