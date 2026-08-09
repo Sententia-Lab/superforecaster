@@ -1,6 +1,8 @@
 # Superforecaster
 
-Forecasting agents that implement Tetlock's superforecasting methodology, in Pydantic AI.
+Make testable forecasts about the future.
+
+Built on PydanticAI and based on Philip Tetlock's Superforecasting methodology.
 
 You write a question in plain prose. The AI drafts it into a resolvable question, then a
 gated pipeline breaks it into sub-questions, counts a base rate for each reference
@@ -15,12 +17,13 @@ imply, gets sent back. See [`spec/superforecasting_methodology.md`](spec/superfo
 
 ## Run it
 
-You need [uv](https://docs.astral.sh/uv/), Node, and two keys:
+You need [uv](https://docs.astral.sh/uv/), Node, and three keys:
 
 | | | |
 |---|---|---|
 | **LLM** | [console.anthropic.com](https://console.anthropic.com/) | the model |
 | **Tavily** | [tavily.com](https://tavily.com) | web search — free tier is enough |
+| **Wikipedia** | [wikipedia.com](https://pypi.org/project/Wikipedia-API/) | general knowledge |
 
 ```bash
 make install
