@@ -36,7 +36,9 @@ def _run(**kwargs) -> dict:
     return db.create_gated_run(**{**defaults, **kwargs})
 
 
-def _step(run_id: str, stage: str, sub_question_id: str = "", lens_name: str = "") -> dict:
+def _step(
+    run_id: str, stage: str, sub_question_id: str = "", lens_name: str = ""
+) -> dict:
     for s in db.list_steps(run_id):
         if (
             s["stage"] == stage
@@ -360,9 +362,7 @@ pytestmark_asyncio = pytest.mark.asyncio
 @pytest.fixture
 async def client():
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://test"
-    ) as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
 
 

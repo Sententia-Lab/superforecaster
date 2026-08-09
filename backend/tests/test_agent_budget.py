@@ -19,8 +19,12 @@ from config import Budget
 from superforecaster.agents import attach_budget, spent_usd
 from superforecaster.deps import ForecastDeps
 
-RESEARCH = Budget("test_cell", cost_usd=1.00, tokens=100_000, tool_calls=3, iterations=6)
-NO_TOOLS = Budget("test_writer", cost_usd=1.00, tokens=100_000, tool_calls=0, iterations=4)
+RESEARCH = Budget(
+    "test_cell", cost_usd=1.00, tokens=100_000, tool_calls=3, iterations=6
+)
+NO_TOOLS = Budget(
+    "test_writer", cost_usd=1.00, tokens=100_000, tool_calls=0, iterations=4
+)
 
 
 def build(*, with_tool: bool = True) -> Agent:

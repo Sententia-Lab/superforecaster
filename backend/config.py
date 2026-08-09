@@ -267,24 +267,16 @@ BUDGETS: dict[str, Budget] = {
         # resolvable, has it resolved, what happened in the last two days, what did the
         # reasoning get wrong.
         Budget("critic", cost_usd=0.10, tokens=60_000, tool_calls=3, iterations=6),
-        Budget(
-            "resolution", cost_usd=0.10, tokens=60_000, tool_calls=4, iterations=7
-        ),
+        Budget("resolution", cost_usd=0.10, tokens=60_000, tool_calls=4, iterations=7),
         Budget("update", cost_usd=0.10, tokens=60_000, tool_calls=4, iterations=7),
-        Budget(
-            "postmortem", cost_usd=0.10, tokens=60_000, tool_calls=4, iterations=7
-        ),
+        Budget("postmortem", cost_usd=0.10, tokens=60_000, tool_calls=4, iterations=7),
         # No-tool steps. `tool_calls=0` is the point: these agents are built with no
         # tools, and a ceiling of zero makes that a fact the runtime enforces rather
         # than a property of how the agent happened to be constructed. The structured
         # answer is not counted — Pydantic AI does not charge the output tool.
-        Budget(
-            "decompose", cost_usd=0.15, tokens=80_000, tool_calls=0, iterations=4
-        ),
+        Budget("decompose", cost_usd=0.15, tokens=80_000, tool_calls=0, iterations=4),
         Budget("lenses", cost_usd=0.15, tokens=80_000, tool_calls=0, iterations=4),
-        Budget(
-            "reflect", cost_usd=0.20, tokens=100_000, tool_calls=0, iterations=4
-        ),
+        Budget("reflect", cost_usd=0.20, tokens=100_000, tool_calls=0, iterations=4),
         Budget(
             "synthesize",
             cost_usd=0.25,

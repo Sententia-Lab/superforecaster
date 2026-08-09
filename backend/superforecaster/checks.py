@@ -88,14 +88,12 @@ def implied_probability(
     Clamped to [0, 1]: a chain of adjustments can walk off either end, and a forecast is
     a probability regardless of what the arithmetic wanted to say.
     """
-    whole_question = sum(
-        signed_adjustment(a) for a in i.adjustments if not a.lens_name
-    )
+    whole_question = sum(signed_adjustment(a) for a in i.adjustments if not a.lens_name)
 
     if d is None or d.chain_rule == "custom":
-        return _clamp(o.aggregate_base_rate + sum(
-            signed_adjustment(a) for a in i.adjustments
-        ))
+        return _clamp(
+            o.aggregate_base_rate + sum(signed_adjustment(a) for a in i.adjustments)
+        )
 
     rates = [row["rate"] for row in chain_inputs(d, o, i)]
     combined = combine_sub_question_rates(rates, d.chain_rule)
@@ -568,9 +566,7 @@ def check_linkage(
     known = {s.id for s in d.sub_questions if s.id}
 
     referenced = {
-        cid
-        for holder in (*o.lenses, *i.adjustments)
-        for cid in holder.sub_question_ids
+        cid for holder in (*o.lenses, *i.adjustments) for cid in holder.sub_question_ids
     }
     unknown = sorted(referenced - known)
     if unknown:
@@ -971,17 +967,52 @@ def is_large_move(d: UpdateDecision, t: CheckThresholds | None = None) -> bool:
 
 
 FORECAST_CHECKS: tuple[tuple[str, int, str, Any], ...] = (
-    ("decomposition", 1, "P1 · P2 decomposition", lambda c: check_decomposition(c.d, c.t)),
-    ("linkage", 1, "P1 sub-question linkage", lambda c: check_linkage(c.f, c.d, c.o, c.i, c.t)),
-    ("base_rates", 4, "P4 base rates derived", lambda c: check_base_rate_derivation(c.o)),
+    (
+        "decomposition",
+        1,
+        "P1 · P2 decomposition",
+        lambda c: check_decomposition(c.d, c.t),
+    ),
+    (
+        "linkage",
+        1,
+        "P1 sub-question linkage",
+        lambda c: check_linkage(c.f, c.d, c.o, c.i, c.t),
+    ),
+    (
+        "base_rates",
+        4,
+        "P4 base rates derived",
+        lambda c: check_base_rate_derivation(c.o),
+    ),
     ("dragonfly", 7, "P7 dragonfly", lambda c: check_dragonfly(c.o, c.t)),
-    ("aggregation", 7, "P7 base-rate aggregation", lambda c: check_aggregation(c.o, c.d, c.t)),
+    (
+        "aggregation",
+        7,
+        "P7 base-rate aggregation",
+        lambda c: check_aggregation(c.o, c.d, c.t),
+    ),
     ("citations", 4, "P4 citations", lambda c: check_citations(c.o, c.i, c.seen)),
-    ("signal_vs_noise", 9, "P9 signal vs noise", lambda c: check_signal_vs_noise(c.i, c.t)),
+    (
+        "signal_vs_noise",
+        9,
+        "P9 signal vs noise",
+        lambda c: check_signal_vs_noise(c.i, c.t),
+    ),
     ("disconfirming", 14, "P14 disconfirming", lambda c: check_disconfirming(c.i, c.t)),
     ("bias_coverage", 15, "P15 bias coverage", lambda c: check_bias_coverage(c.i, c.t)),
-    ("derivation", 6, "P6 derivation", lambda c: check_derivation(c.f, c.o, c.i, c.d, c.t)),
-    ("calibration_hygiene", 16, "P16 calibration hygiene", lambda c: check_calibration_hygiene(c.f, c.o, c.t)),
+    (
+        "derivation",
+        6,
+        "P6 derivation",
+        lambda c: check_derivation(c.f, c.o, c.i, c.d, c.t),
+    ),
+    (
+        "calibration_hygiene",
+        16,
+        "P16 calibration hygiene",
+        lambda c: check_calibration_hygiene(c.f, c.o, c.t),
+    ),
 )
 """(slot name, principle, label, how to run it) in the order the checks run.
 

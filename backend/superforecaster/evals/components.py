@@ -83,7 +83,8 @@ def score_decompose(out: Any, expect: dict) -> ComponentScore:
     return _score(
         expect.get("id", ""),
         {
-            "enough_sub_questions": len(out.sub_questions) >= expect.get("min_sub_questions", 3),
+            "enough_sub_questions": len(out.sub_questions)
+            >= expect.get("min_sub_questions", 3),
             "has_researchable": any(
                 s.knowability == "researchable" for s in out.sub_questions
             ),
@@ -329,7 +330,9 @@ async def _score_inside_row(input, decomposition, outside, deps):
     adjustments = []
     steel_mans = {}
     for lens in outside.lenses:
-        sub_question = next((by_id[i] for i in lens.sub_question_ids if i in by_id), None)
+        sub_question = next(
+            (by_id[i] for i in lens.sub_question_ids if i in by_id), None
+        )
         if sub_question is None:
             continue
         cdeps = cell_deps(deps, sub_question.id or "", input.max_iterations)

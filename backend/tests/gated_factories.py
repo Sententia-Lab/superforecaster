@@ -80,9 +80,7 @@ def researched(name: str = "lens-a", sub_question_id: str = "sq1") -> Researched
                 hits=20,
                 n=100,
                 note="20 of 100",
-                source=GradedSource(
-                    source="dataset", confidence="high", note="direct"
-                ),
+                source=GradedSource(source="dataset", confidence="high", note="direct"),
             )
         ],
         sub_question_ids=[sub_question_id],
@@ -97,7 +95,9 @@ def base_rate_payload(
     )
 
 
-def inside_payload(name: str = "lens-a", sub_question_id: str = "sq1") -> InsideStepPayload:
+def inside_payload(
+    name: str = "lens-a", sub_question_id: str = "sq1"
+) -> InsideStepPayload:
     return InsideStepPayload(
         lens_name=name,
         adjustments=[

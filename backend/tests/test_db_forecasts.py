@@ -29,15 +29,9 @@ def _make_forecast(
         category="test",
         probability=probability,
         decompositions=[
-            SubPrediction(
-                question="Sub 1?", probability=0.5, rationale="r1"
-            ),
-            SubPrediction(
-                question="Sub 2?", probability=0.5, rationale="r2"
-            ),
-            SubPrediction(
-                question="Sub 3?", probability=0.5, rationale="r3"
-            ),
+            SubPrediction(question="Sub 1?", probability=0.5, rationale="r1"),
+            SubPrediction(question="Sub 2?", probability=0.5, rationale="r2"),
+            SubPrediction(question="Sub 3?", probability=0.5, rationale="r3"),
         ],
         research=ResearchSummary(
             historical_analogs=[
@@ -87,9 +81,7 @@ def test_add_update_appends_row():
     f = _make_forecast(probability=0.5)
     fid = db.save_forecast(f, resolution_source="x")
 
-    update = db.add_forecast_update(
-        fid, probability=0.6, reasoning="new evidence"
-    )
+    update = db.add_forecast_update(fid, probability=0.6, reasoning="new evidence")
     assert update.probability == pytest.approx(0.6)
     assert update.is_late is False
 
@@ -114,9 +106,7 @@ def test_late_flag_set_within_24h_of_resolution():
     f = _make_forecast(resolution_date=resolution)
     fid = db.save_forecast(f, resolution_source="x", submission_gap_days=0)
 
-    update = db.add_forecast_update(
-        fid, probability=0.6, reasoning="r"
-    )
+    update = db.add_forecast_update(fid, probability=0.6, reasoning="r")
     assert update.is_late is True
 
 

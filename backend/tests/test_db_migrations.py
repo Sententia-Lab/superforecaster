@@ -94,7 +94,9 @@ def test_migrating_keeps_the_rows(old_db):
     """The whole reason to migrate rather than tell the operator to delete the file."""
     db.init_db()
     conn = sqlite3.connect(old_db)
-    row = conn.execute("SELECT id, probability, reasoning FROM forecast_updates").fetchone()
+    row = conn.execute(
+        "SELECT id, probability, reasoning FROM forecast_updates"
+    ).fetchone()
     conn.close()
     assert row == ("u1", 0.4, "why")
 
@@ -131,14 +133,17 @@ def test_a_fresh_database_reaches_the_current_version(tmp_path, monkeypatch):
 
 def test_v3_adds_edited_at_to_an_upgraded_database(old_db):
     """The upgrade route: `run_steps` is built by the create block during this same
-    `init_db`, so migration 3's ALTER finds the column already there and must not raise."""
+    `init_db`, so migration 3's ALTER finds the column already there and must not raise.
+    """
     db.init_db()
 
     assert "edited_at" in columns(old_db, table="run_steps")
     assert version(old_db) == db.SCHEMA_VERSION
 
 
-def test_v3_adds_edited_at_to_a_database_that_already_had_run_steps(tmp_path, monkeypatch):
+def test_v3_adds_edited_at_to_a_database_that_already_had_run_steps(
+    tmp_path, monkeypatch
+):
     """The other route: a version-2 database whose `run_steps` predates the column, so
     the ALTER runs for real. This is what a deployed database actually looks like."""
     path = tmp_path / "v2.db"
@@ -268,7 +273,10 @@ def test_v4_leaves_prose_that_merely_starts_with_sc_alone():
     out = db._rename_sub_claims(payload)
 
     assert out["bias_checks"][0]["bias"] == "scope_insensitivity"
-    assert out["research"]["causal_forces"] == ["scarcity of chips", "schedule slippage"]
+    assert out["research"]["causal_forces"] == [
+        "scarcity of chips",
+        "schedule slippage",
+    ]
     assert out["note"] == "sc2 is mentioned in prose here"
     assert out["sub_question_ids"] == ["sq2"]
 

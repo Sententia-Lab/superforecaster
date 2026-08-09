@@ -58,5 +58,3 @@ async def require_admin(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="invalid bearer token"
         )
-
-

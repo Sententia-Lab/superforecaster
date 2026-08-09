@@ -32,7 +32,9 @@ def _run(**kwargs) -> dict:
     return db.create_gated_run(**{**defaults, **kwargs})
 
 
-def _step(run_id: str, stage: str, sub_question_id: str = "", lens_name: str = "") -> dict:
+def _step(
+    run_id: str, stage: str, sub_question_id: str = "", lens_name: str = ""
+) -> dict:
     for s in db.list_steps(run_id):
         if (
             s["stage"] == stage
@@ -172,7 +174,9 @@ async def test_cannot_run_a_cell_while_prior_stage_is_incomplete(stub_stages):
     db.insert_steps(run["id"], [("inside_view", "sq1", "lens-a")])
 
     with pytest.raises(machine.GateError, match="gate not satisfied"):
-        await machine.execute_step(_step(run["id"], "inside_view", "sq1", "lens-a")["id"])
+        await machine.execute_step(
+            _step(run["id"], "inside_view", "sq1", "lens-a")["id"]
+        )
 
 
 @pytest.mark.asyncio

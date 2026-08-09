@@ -96,6 +96,7 @@ is genuinely thin, say so in the evidence `note` and return fewer counted rows r
 than inventing a rate.
 """
 
+
 def build_base_rate_cell_agent(
     model: str | None = None,
 ) -> Agent[ForecastDeps, SubQuestionBaseRates]:
@@ -253,7 +254,9 @@ def merge_base_rates(
     for sub_question, result in zip(sub_questions, results):
         if not isinstance(result, SubQuestionBaseRates):
             continue
-        merged.append(result.lens.model_copy(update={"sub_question_ids": [sub_question.id]}))
+        merged.append(
+            result.lens.model_copy(update={"sub_question_ids": [sub_question.id]})
+        )
         if result.disagreement.strip():
             notes.append(f"{sub_question.id}: {result.disagreement.strip()}")
 

@@ -50,9 +50,7 @@ def synthesis_seams(monkeypatch):
 
 
 def _violation(name: str, principle: int = 4, blocking: bool = True) -> CheckViolation:
-    return CheckViolation(
-        principle=principle, name=name, detail="d", blocking=blocking
-    )
+    return CheckViolation(principle=principle, name=name, detail="d", blocking=blocking)
 
 
 async def _run_stage():

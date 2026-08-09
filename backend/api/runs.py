@@ -200,7 +200,9 @@ async def stream_step(
         def emit(type: str, payload: dict, sub_question: str | None = None) -> None:
             # Must stay synchronous and non-blocking — it is called from inside the
             # agent's event handler, where an await would stall token delivery.
-            queue.put_nowait({"type": type, "sub_question": sub_question, "payload": payload})
+            queue.put_nowait(
+                {"type": type, "sub_question": sub_question, "payload": payload}
+            )
 
         async def work() -> None:
             try:
@@ -217,9 +219,7 @@ async def stream_step(
                         "type": "result",
                         "payload": {
                             "step": {
-                                k: v
-                                for k, v in finished.items()
-                                if k != "payload_json"
+                                k: v for k, v in finished.items() if k != "payload_json"
                             }
                             | {"payload": payload},
                         },
