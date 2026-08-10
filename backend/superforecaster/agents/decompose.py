@@ -42,6 +42,23 @@ another more likely or they overlap. Not for merely being unsure. If you pick it
 
 Explain the chain in `chain_note` in prose whichever rule you picked.
 
+SAY WHICH SUB-QUESTIONS MOVE TOGETHER
+The rules above assume the sub-questions are independent. Often two are not: one force
+drives both, or the first happening makes the second more likely. Put those in
+`dependent_groups`. Name the members by 1-based position in the list you return —
+position 1 is the first sub-question. Do not use ids; you do not assign them.
+
+  shared_driver     one force moves both. Neither causes the other.
+  one_causes_other  the first happening makes the second more likely.
+
+A grouped conjunction lands above the plain product, and a grouped disjunction below the
+plain 1 - prod(1 - p), because correlated parts do not multiply.
+
+Each sub-question belongs to at most one group, and a group holds at least two members.
+Leave `dependent_groups` empty when the parts are independent, and empty when
+`chain_rule` is `custom`. Do not group two sub-questions merely because they concern the
+same company — say in `name` what the shared force or the causal path actually is.
+
 DO NOT SPLIT OUT SOMETHING THAT HAS ALREADY HAPPENED
 A sub-question whose outcome is already settled is not a forecast — it is a fact, and in a
 conjunction it contributes 1.0 while consuming a research slot that could have measured

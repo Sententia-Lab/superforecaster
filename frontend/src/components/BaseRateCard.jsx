@@ -57,7 +57,16 @@ function SourceLinks({ evidence, cellSources }) {
  * anything was measured. Everything below that panel is what this cell found. The
  * enumeration behind each fraction is long enough to bury the card, so it collapses.
  */
-export default function BaseRateCard({ step, index, lens, researched, active, busy, onStart }) {
+export default function BaseRateCard({
+  step,
+  index,
+  lens,
+  researched,
+  active,
+  error,
+  busy,
+  onStart,
+}) {
   const measured = researched?.lens;
   const complete = step.status === "complete" && measured;
 
@@ -116,6 +125,7 @@ export default function BaseRateCard({ step, index, lens, researched, active, bu
             label="Find base rate"
             busy={busy}
             onStart={onStart}
+            error={error}
           />
         )}
       </Accordion>

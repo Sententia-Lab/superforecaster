@@ -9,10 +9,19 @@ import { streamStep } from "../api.js";
  * server-side (ADR 46). State exposes what the active card renders: the step id,
  * the accumulated thought tail, the query line, and the source chips.
  *
- * `active` and `streaming` are separate on purpose. `active` survives a failure so the
- * error card stays on screen; `streaming` is true only while a request is in flight.
- * Buttons must key off `streaming` — keying them off `active` left every Run and Retry
- * button disabled after any failure, with a page reload as the only way out.
+ * `active`, `failure` and `streaming` are three separate things on purpose.
+ *
+ * `active` is work in flight and nothing else — it is what draws the spinner and the
+ * thought tail, so it has to end when the request does. It used to survive a failure so
+ * the message stayed on screen, and that made a failed step render the *running* view
+ * for ever: a spinner, no error text, and no Retry button, because the card only reaches
+ * `StepControls` when `active` is null.
+ *
+ * `failure` is where the message goes instead. It outlives the request, so the card can
+ * show what went wrong next to the button that retries it.
+ *
+ * `streaming` is the one buttons key off. Keying them off `active` left every Run and
+ * Retry button disabled after any failure, with a page reload as the only way out.
  *
  * `start` resolves to the run the stream produced, or null if the step failed — which is
  * what lets `useRunQueue` chain one step into the next without a refetch.
@@ -20,13 +29,16 @@ import { streamStep } from "../api.js";
 export function useStepStream({ onRun, onDone }) {
   const controllerRef = useRef(null);
   const [active, setActive] = useState(null);
+  const [failure, setFailure] = useState(null);
   const [streaming, setStreaming] = useState(false);
-  // active = { stepId, thoughts: string, query: string, sources: [], error: string }
+  // active  = { stepId, thoughts: string, query: string, sources: [] }
+  // failure = { stepId, message: string }
 
   const abort = useCallback(() => {
     controllerRef.current?.abort();
     controllerRef.current = null;
     setActive(null);
+    setFailure(null);
     setStreaming(false);
   }, []);
 
@@ -37,7 +49,11 @@ export function useStepStream({ onRun, onDone }) {
       controllerRef.current?.abort();
       const controller = new AbortController();
       controllerRef.current = controller;
-      setActive({ stepId, thoughts: "", query: "", sources: [], error: "" });
+      setActive({ stepId, thoughts: "", query: "", sources: [] });
+      // A new attempt clears the last one's message, including another step's: the
+      // failed step keeps its own error on its row, so nothing is lost by dropping it
+      // here, and two error banners for one run is one more than is true.
+      setFailure(null);
       setStreaming(true);
 
       const patch = (fn) =>
@@ -65,7 +81,7 @@ export function useStepStream({ onRun, onDone }) {
             } else if (frame.type === "exhausted") {
               patch((a) => ({ ...a, query: "search budget exhausted — wrapping up" }));
             } else if (frame.type === "error") {
-              patch((a) => ({ ...a, error: frame.payload.message }));
+              setFailure({ stepId, message: frame.payload.message });
             } else if (frame.type === "run") {
               latestRun = frame.payload;
               onRun?.(frame.payload);
@@ -73,15 +89,17 @@ export function useStepStream({ onRun, onDone }) {
           },
         });
       } catch (e) {
+        // The transport died rather than the step — the server may never have written
+        // an error onto the row, so this message is the only account of what happened.
         if (e.name !== "AbortError") {
-          patch((a) => ({ ...a, error: e.message }));
+          setFailure({ stepId, message: e.message });
         }
       } finally {
         // Only the still-current controller may clear state — a superseded stream
         // finishing late must not switch off the one that replaced it.
         if (controllerRef.current === controller) {
           controllerRef.current = null;
-          setActive((a) => (a && a.stepId === stepId && a.error ? a : null));
+          setActive(null);
           setStreaming(false);
           onDone?.();
         }
@@ -91,5 +109,5 @@ export function useStepStream({ onRun, onDone }) {
     [onRun, onDone],
   );
 
-  return { active, streaming, start, abort };
+  return { active, failure, streaming, start, abort };
 }

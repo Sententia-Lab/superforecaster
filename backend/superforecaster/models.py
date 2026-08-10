@@ -202,6 +202,44 @@ class ForecastInput(BaseModel):
 
 ChainRule = Literal["conjunction", "disjunction", "custom"]
 
+DependenceKind = Literal["none", "shared_driver", "one_causes_other"]
+
+DEPENDENCE: dict[str, float] = {
+    "none": 0.0,
+    "shared_driver": 0.35,
+    "one_causes_other": 0.50,
+}
+"""Kind of link -> dependence parameter: how far a group's joint probability sits from
+independence toward the Fréchet-Hoeffding upper bound. ADR 65.
+
+Two marginals never determine their joint — they leave one free number, and multiplying
+them picks one point in its range by assumption. This names that assumption.
+
+The three values are chosen priors, not measurements. Storing the kind rather than the
+number is what makes them fittable later: every forecast that used `shared_driver`
+contributes to one estimate.
+
+Here rather than in `config.CheckThresholds` because it is the meaning of the label, not
+an operator setting — `shared_driver` *is* 0.35. `checks.py` promises in its own docstring
+to hold no numeric literals, and this keeps that true.
+"""
+
+
+class DependentGroup(BaseModel):
+    """Sub-questions that do not move independently.
+
+    `members` are 1-based positions in `Decomposition.sub_questions`, not `sq` ids. The
+    decompose agent never sees ids — `with_ids` stamps them after the agent returns — and
+    an edit re-stamps them by position anyway, so position is the stable thing.
+    """
+
+    name: str = Field(description="What the members share, in a few words")
+    members: list[int] = Field(
+        min_length=2,
+        description="1-based positions in `sub_questions`, in the order listed",
+    )
+    kind: DependenceKind = "none"
+
 
 class Decomposition(BaseModel):
     """Output of decompose agent. P1.
@@ -229,9 +267,47 @@ class Decomposition(BaseModel):
     resume (ADR 28), the same reason `SubPrediction.knowability` defaults to `judgment`.
     """
 
+    dependent_groups: list[DependentGroup] = Field(
+        default_factory=list,
+        description="Sets of sub-questions that move together. Each set combines under "
+        "its own dependence parameter first; the set values and the ungrouped rates then "
+        "combine independently. Empty when every sub-question stands on its own.",
+    )
+    """Which sub-questions are not independent, and how strongly. P1.
+
+    Defaults to empty so a checkpoint written before this field existed still loads on
+    resume (ADR 28), the same reason `chain_rule` defaults to `custom`. Empty is a
+    dependence parameter of 0 everywhere, which is the arithmetic this had before.
+    """
+
     chain_note: str = Field(
         description="How the sub-questions combine into the whole question"
     )
+
+    @model_validator(mode="after")
+    def _groups_name_real_sub_questions(self) -> "Decomposition":
+        """A group has to be applicable, and the groups have to partition.
+
+        Raises rather than dropping. The decompose agent retries with the message
+        attached, and a hand edit gets a 422 naming the problem — both better than a
+        silently discarded field the reader still sees on screen.
+        """
+        if self.dependent_groups and self.chain_rule == "custom":
+            raise ValueError(
+                "a custom chain rule has no formula for dependence to move"
+            )
+        seen: set[int] = set()
+        for g in self.dependent_groups:
+            for m in g.members:
+                if not 1 <= m <= len(self.sub_questions):
+                    raise ValueError(
+                        f"group '{g.name}' names sub-question {m} of "
+                        f"{len(self.sub_questions)}"
+                    )
+                if m in seen:
+                    raise ValueError(f"sub-question {m} is in more than one group")
+                seen.add(m)
+        return self
 
 
 class Evidence(BaseModel):

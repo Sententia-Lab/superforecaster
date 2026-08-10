@@ -9,6 +9,7 @@ import BaseRateCard from "./BaseRateCard.jsx";
 import CellActivity from "./CellActivity.jsx";
 import ConfirmDialog from "./ConfirmDialog.jsx";
 import DecomposeEditor from "./DecomposeEditor.jsx";
+import DependentGroups from "./DependentGroups.jsx";
 import LensSetEditor from "./LensSetEditor.jsx";
 import LiveTail from "./LiveTail.jsx";
 import ModifierCard from "./ModifierCard.jsx";
@@ -173,6 +174,11 @@ export default function RunView({ runId, onChanged, onDeleted }) {
   const busy = stream.streaming;
   const activeFor = (step) =>
     stream.active?.stepId === step.id ? stream.active : null;
+  // The message from the attempt that just failed. `step.error` covers a step the server
+  // marked, but a transport failure never reaches the row, so this is the only account of
+  // what happened — and `StepControls` prefers it precisely because it is the newer one.
+  const failureFor = (step) =>
+    stream.failure?.stepId === step.id ? stream.failure.message : "";
   const start = (step) =>
     ({ deeper } = {}) =>
       stream.start(run.id, step.id, {
@@ -236,6 +242,7 @@ export default function RunView({ runId, onChanged, onDeleted }) {
                   lens,
                   researched: baseStep?.payload,
                   active: activeFor(cell),
+                  error: failureFor(cell),
                   busy,
                   onStart: start(cell),
                 };
@@ -289,6 +296,7 @@ export default function RunView({ runId, onChanged, onDeleted }) {
             label="Run synthesis"
             busy={busy}
             onStart={start(synthesisStep)}
+            error={failureFor(synthesisStep)}
           />
         </div>
       )}
@@ -398,6 +406,7 @@ export default function RunView({ runId, onChanged, onDeleted }) {
                 Chain rule: <b>{decomposition.chain_rule}</b> —{" "}
                 {decomposition.chain_note}
               </div>
+              <DependentGroups decomposition={decomposition} />
             </div>
           ) : (
             <div className="card">
@@ -411,6 +420,7 @@ export default function RunView({ runId, onChanged, onDeleted }) {
                 label="Run decomposition"
                 busy={busy}
                 onStart={start(decomposeStep)}
+                error={failureFor(decomposeStep)}
               />
             </div>
           ))}
@@ -502,6 +512,7 @@ export default function RunView({ runId, onChanged, onDeleted }) {
                     label="Find lenses"
                     busy={busy}
                     onStart={start(step)}
+                    error={failureFor(step)}
                   />
                 )}
               </div>

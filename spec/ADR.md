@@ -2053,3 +2053,111 @@ unreachable under that budget — a model that reached for it would have raised
 **What was lost.** A source the model is confident about but that does not publish what
 the criteria assume now reaches the reader as a filled field rather than an empty one. It
 is checkable in one click, and an empty field was never evidence of anything either.
+
+## ADR 65 — Dependence is a parameter, not a rule
+
+**Amends ADR 33.**
+
+ADR 33 made the anchor the chain the decomposition describes: a conjunction multiplies its
+sub-question rates. Multiplying assumes the sub-questions are independent, and that
+assumption was never written down or chosen — it arrived with the formula.
+
+**Two marginals do not determine their joint.** With `P(A) = 0.75` and `P(B) = 0.60`, fix
+the margins of the 2x2 table and exactly one cell is free. Non-negativity traps it:
+
+```
+      0.35                0.45                    0.60
+       |───────────────────|───────────────────────|
+  max(0, p₁+p₂−1)      p₁ × p₂                min(p₁, p₂)
+```
+
+These are the Fréchet-Hoeffding bounds. `p₁ × p₂` is one point in a 25-point range, picked
+by assumption. The marginals say nothing about where the truth sits.
+
+**Decision.** `Decomposition.dependent_groups` names sets of sub-questions that move
+together. Each set combines under a dependence parameter `w`:
+
+```
+joint = independent + w × (bound − independent)
+```
+
+This is the Fréchet family copula `a·M + (1−a−b)·Π + b·W` with `b = 0`. `bound` is
+`min(rates)` for a conjunction and `max(rates)` for a disjunction, so `w` raises a
+conjunction and lowers a disjunction. Both bounds are exact, not approximations: an
+overlap cannot exceed the smaller event, and a union cannot be smaller than the larger.
+The two arms are one construction — apply the copula to the complements and De Morgan
+turns either into the other.
+
+**The agent names a kind, never a number.** A model has no feel for the scale of `w` — a
+conditional moving 0.60 to 0.72 sounds modest and is 60% of the way to full dependence. It
+does have a feel for "does one of these cause the other".
+
+```python
+DEPENDENCE = {"none": 0.0, "shared_driver": 0.35, "one_causes_other": 0.50}
+```
+
+This is the beta-factor model from nuclear probabilistic risk assessment: one parameter,
+named cause classes, fitted from pooled outcome data.
+
+**The three values have no source.** They are chosen priors. Storing the kind rather than
+the number is what makes them fittable: every forecast that used `shared_driver`
+contributes to one estimate, and there will never be enough resolved forecasts to fit a
+parameter per forecast. Refit them against Brier scores; do not defend them as measured.
+
+**What it cannot express.** `w ∈ [0, 1]` spans independence to the upper bound only. The
+0.45 to 0.35 stretch — sub-questions where one being true makes the other less likely —
+has no representation. Groups are assumed independent of each other, and a group of three
+or more carries one `w` for the whole block rather than a parameter per pair. `a·M +
+(1−a)·Π` is a valid copula in any dimension, but it traces a one-parameter path through a
+space with more freedom than that.
+
+**Defaults to empty, so nothing moved.** A decomposition with no groups is `w = 0`
+everywhere, which is bit-identical to the arithmetic ADR 33 installed. Every existing test
+passed without an edit, which is the evidence.
+
+**Members are positions, not ids.** `with_ids` stamps `sq1..sqN` after the decompose agent
+returns, so the agent cannot name an id. An edit re-stamps by position anyway. A stale
+position is rejected by a validator; a stale id would validate clean and point at the
+wrong sub-question.
+
+## ADR 66 — A failed step shows its error, not a spinner
+
+**Amends ADR 46.**
+
+`useStepStream` held one object, `active`, and deliberately kept it after a failure "so the
+error card stays on screen". Every card renders the same three-way branch:
+
+```
+active ? <CellActivity/> : complete ? <the payload/> : <StepControls/>
+```
+
+`CellActivity` is the **running** view — an unconditional spinner, the last query line, the
+source chips — and it never rendered `active.error`. So a failed step kept a spinner
+turning over a stale search query, showed no message, and never reached `StepControls`,
+which is the only thing that draws Retry. The run-level banner said "retry the failed step
+below" and there was no button below. Reloading the page was the only way out, because a
+reload starts with no `active` and the step's own `error` row renders normally.
+
+Nothing was actually still running. `execute_step` catches the exception, calls
+`fail_step`, and the generator's `finally` closes the stream; the client's reader ends and
+`streaming` goes false. The spinner was the only thing that had not been told.
+
+**Decision.** `active` means work in flight and ends when the request does. The message
+moves to `failure = {stepId, message}`, which outlives the request and is passed to
+`StepControls` through its existing `error` prop.
+
+| state | means | consumed by |
+|---|---|---|
+| `active` | a stream is in flight for this step | `CellActivity`, `LiveTail` |
+| `failure` | the last attempt's message | `StepControls`, beside Retry |
+| `streaming` | any request in flight | every button's `disabled` |
+
+`failure` is kept separate from the step's own `error` column rather than folded into it,
+because a transport failure never reaches the row: the fetch throws, the server may never
+have written anything, and this is then the only account of what happened.
+`StepControls` prefers it over `step.error` for the same reason — it is the newer of the two.
+
+**Why the original shape was wrong, stated plainly.** One field carried two meanings, "a
+request is running" and "a request failed", and every consumer read only the first. The
+same conflation had already been fixed once for buttons — that is why `streaming` exists
+apart from `active` — and the render branch kept the bug the button fix had escaped.

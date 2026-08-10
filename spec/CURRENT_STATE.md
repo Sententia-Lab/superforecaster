@@ -297,7 +297,7 @@ FastAPI  stream_step ── preflight ──► generate()
 | `exhausted` | `outside_view.exhausted_notice` | "search budget exhausted — wrapping up". Payload `{id}` |
 | `result` | `work()` after `finish_step` | (not consumed — `run` supersedes it) |
 | `run` | `machine.detail(run_id)` | `setRun(payload)`, and `start` resolves to it — whole tree swap |
-| `error` | any exception, via `_failure_hint` | red banner on the card |
+| `error` | any exception, via `_failure_hint` | sets `failure = {stepId, message}`, which outlives the request — the card shows the message next to its Retry button |
 
 `api.streamStep` splits the byte stream on `/\r?\n\r?\n/` and flushes whatever is still
 buffered when the reader finishes. `sse_starlette` writes **CRLF**, so a split on `"\n\n"`
@@ -345,6 +345,14 @@ after measuring it; `run_inside_step` requires a measured `BaseRateStepPayload` 
 `checks.anchor_from` / `checks.implied_probability` — **arithmetic first, never the model** —
 then loops against `checks.run_forecast_checks` with one retry.
 
+`anchor_from` and `implied_probability` both reach `checks.combine_sub_question_rates(rates,
+chain_rule, dependent_groups)`, the only place the chain is applied. Sub-questions named by a
+`DependentGroup` combine first under `models.DEPENDENCE[kind]` — 0.0, 0.35 or 0.50 — which
+slides the group from independent toward `min(rates)` for a conjunction or `max(rates)` for a
+disjunction. The group values and the ungrouped rates then combine as independent. An empty
+`dependent_groups` is the plain product, which is what every run produces unless the decompose
+agent or a hand edit names a group (ADR 65).
+
 ### 3d. Back to the user
 
 Two paths, and the second is why the UI is always correct:
@@ -355,9 +363,11 @@ Two paths, and the second is why the UI is always correct:
    the sidebar. Even if the stream died mid-frame, the next paint is rebuilt from SQLite alone.
 
 `RunView` renders purely from `run.steps` — `stepFor(stage, subQuestion, lens)` finds the row,
-`step.payload` is the parsed stage output, and `derive.js` recomputes the displayed arithmetic
-(counted → adjusted → weighted → chain → implied) mirroring `checks.py`. There is no
-client-side accumulation of run state beyond the live tail of the one active card.
+`step.payload` is the parsed stage output, and `derive.js` recomputes the per-lens arithmetic
+(counted → adjusted → weighted) mirroring `checks.py`. It stops at `subQuestionRate`: the
+chain and the implied probability are read from the stored `payload.anchor` and
+`payload.implied`, never recomputed in JavaScript. There is no client-side accumulation of
+run state beyond the live tail of the one active card.
 
 **What the tree draws.** Every stage is a `<details>` (`StageSection`), open while the run is
 in flight and collapsed once synthesis completes — at which point section 5 renders *above*
@@ -416,7 +426,11 @@ PUT /runs/{run_id}/steps/{step_id}/payload   {edited payload}
        -> db.get_step / db.get_gated_run                 404, or 409 if run is not active
        -> machine.edit_blocker(step, steps) -> None | str            [409 when set]
        -> Decomposition | SubQuestionLensesEdit .model_validate(body)   [422 on reject]
+            Decomposition rejects a `dependent_groups` entry naming a position that does
+            not exist, a position in two groups, or any group under a `custom` chain rule
        -> agents.decompose.with_ids(payload)             decompose only: re-stamp sq1…sqN
+            `model_copy(update={"sub_questions": …})`, so `dependent_groups` survives —
+            it names members by position, which is what this re-stamps ids from
        -> db.edit_step_payload(step_id, payload_json)    [writes: run_steps.payload_json, edited_at]
        -> machine.reconcile(run_id)                      [writes: run_steps — deletes and inserts]
   -> machine.detail(run_id)
@@ -606,7 +620,7 @@ Where the functions named above live.
 | `stages.py` | `run_decompose_stage`, `run_lenses_stage`, `run_base_rate_step`, `run_inside_step`, `assemble_outside`, `run_synthesis_stage`, `run_all`, `normalize_weights` |
 | `db.py` | SQLite (WAL, FKs, migrations). Forecast fns + gated-run fns + `NotFoundError`/`StateError` |
 | `models.py` | every Pydantic model |
-| `checks.py` | the 16 principles as pure functions; `lens_rate`, `anchor_from`, `implied_probability`, `run_forecast_checks`, `blocking` |
+| `checks.py` | the 16 principles as pure functions; `lens_rate`, `anchor_from`, `implied_probability`, `combine_sub_question_rates`, `run_forecast_checks`, `blocking` |
 | `scoring.py` | `time_weighted_probability`, `brier_score`, `calibration` — pure |
 | `deps.py` | `ForecastDeps` — the `as_of`/`model` clamps, the column tag, the run's `Budget`, `sources_seen`, the `emit` sink |
 | `tools.py` | `search_web` (Tavily), `search_wikipedia` (optional bearer key), `as_of` backdating clamps |
@@ -639,11 +653,11 @@ Where the functions named above live.
 | `runQueue.js` | `STAGE_ORDER`, `nextRunnable`, `sectionRunnable` — mirrors `db.STAGE_ORDER` and the gate. Pure |
 | `derive.js` | mirrors `checks.py`: `lensRate`, `adjustedLensRate`, `subQuestionRate`, `signedAdjustment`, `claimSupport`; mirrors `machine`/`stages`: `editBlocker`, `normalizeWeights`, `weightSum` |
 | `hooks/useRuns.js` | the sidebar list |
-| `hooks/useStepStream.js` | one stream at a time; unmount aborts, abort cancels server-side. `start` resolves to the run the stream produced; `streaming` is separate from `active` |
+| `hooks/useStepStream.js` | one stream at a time; unmount aborts, abort cancels server-side. `start` resolves to the run the stream produced. Three separate states: `active` is work in flight and ends with the request, `failure` holds the last message and outlives it, `streaming` is what buttons disable on |
 | `hooks/useRunQueue.js` | Run All / Run Section: `drain`, `stop`. A browser loop, no server queue (ADR 55) |
 | `App.jsx` | shell + selection model (`new` \| run id); theme toggle; `/config`-driven chips |
-| `labels.js` | `subQuestionLabel`, `ordinal`, `firstSentence` — display labels computed from position, never stored (ADR 59) |
-| `components/` | `Sidebar`, `NewForecastView`, `BacklogView`, `RunView`, `RunHeader`, `FieldEditor`, `EditorField`, `StepControls`, `BaseRateCard`, `ModifierCard`, `LensOrigin`, `Accordion`, `Prose`, `KeyPanel`, `CellActivity`, `LiveTail`, `SynthesisSection`, `DecomposeEditor`, `LensSetEditor`, `ConfirmDialog` |
+| `labels.js` | `subQuestionLabel`, `ordinal`, `firstSentence` — display labels computed from position, never stored (ADR 59). Also `DEPENDENCE_KINDS` / `dependenceKind`, the label and one-line meaning of each dependence kind |
+| `components/` | `Sidebar`, `NewForecastView`, `BacklogView`, `RunView`, `RunHeader`, `FieldEditor`, `EditorField`, `StepControls`, `BaseRateCard`, `ModifierCard`, `LensOrigin`, `Accordion`, `Prose`, `KeyPanel`, `CellActivity`, `LiveTail`, `SynthesisSection`, `DecomposeEditor`, `DependentGroups`, `LensSetEditor`, `ConfirmDialog` |
 
 ---
 
@@ -660,6 +674,10 @@ Where the functions named above live.
 - **Editable review** — a decomposition or a lens set can be corrected while everything
   derived from it is still pending (§3g). One measured base rate locks every lens set,
   lens weights must sum to 1.00, and an edited payload carries an "edited" chip.
+- **Sub-questions that move together** — the decompose agent groups sub-questions that are
+  not independent and names the kind of link; the group combines under a dependence
+  parameter before the chain rule is applied (ADR 65). Editable per row in the decompose
+  editor. A decomposition with no groups produces the plain product, unchanged.
 - Retry of any failed step (optionally with `?max_iterations=` up to 50); cancel by
   closing the tab; restart sweep marks orphans honestly.
 - **A readable run tree** — every stage collapses, a finished run leads with its answer,
@@ -674,7 +692,7 @@ Where the functions named above live.
   calibration report.
 - Local mode: two exported keys and `serve`, no token, no `.env`, no build step for the
   API (UI needs `npm run build` once).
-- CI on push/PR; opt-in pre-push test gate. 338 backend tests pass with no network and no
+- CI on push/PR; opt-in pre-push test gate. 341 backend tests pass with no network and no
   API keys.
 - Nothing is hosted. `docker-compose.yml` runs the API with a named SQLite volume and the
   frontend built into the image; `.github/workflows/ci.yml` is the only automation.
