@@ -1,6 +1,6 @@
 import pytest
 
-from config import BUDGETS, get_budget, resolve_agent_model
+from config import BUDGETS, get_budget, get_model_settings, resolve_agent_model
 
 
 def test_resolve_agent_model_prefers_explicit_override(monkeypatch):
@@ -47,8 +47,36 @@ def test_three_of_the_four_reach_pydantic_ai():
     limits = get_budget("critic").limits()
 
     assert limits.request_limit == 6
-    assert limits.tool_calls_limit == 3
     assert limits.total_tokens_limit == 60_000
+
+
+def test_searches_run_one_at_a_time():
+    """A batched turn defeats the budget line. `attach_budget` reports what is left once
+    per model request, so four searches in one turn walk 8 -> 4 with no warning between,
+    and the agent passes every stop band without being shown one. A batch is also refused
+    whole, so an overshoot kills the cell before any of it runs."""
+    assert get_model_settings()["parallel_tool_calls"] is False
+
+
+def test_the_setting_is_one_pydantic_ai_actually_reads():
+    """Guards a silent no-op. A typo or an upstream rename leaves the key sitting in the
+    dict, ignored, and the agents quietly go back to batching."""
+    from pydantic_ai.settings import ModelSettings
+
+    assert "parallel_tool_calls" in ModelSettings.__annotations__
+
+
+def test_the_enforced_tool_ceiling_is_double_the_budgeted_one():
+    """`agents.withdraw_spent_tools` is what actually caps searching — it stops offering
+    the search tools once `tool_calls` is spent, which a model cannot argue with.
+
+    Pydantic AI's ceiling is a backstop, and it is doubled so that one over-eager batch
+    cannot kill a cell: a batch is refused *whole*, so a model asking for four searches
+    with two left would otherwise die a turn from writing up."""
+    b = get_budget("critic")
+
+    assert b.tool_calls == 3
+    assert b.limits().tool_calls_limit == 6
 
 
 def test_every_agent_has_a_budget():

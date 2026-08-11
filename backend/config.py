@@ -225,9 +225,24 @@ class Budget:
     """Model requests. One iteration is one round of "think, maybe call a tool"."""
 
     def limits(self) -> UsageLimits:
+        """The ceilings Pydantic AI enforces.
+
+        `tool_calls_limit` is deliberately **double** `tool_calls`, because it is no
+        longer what stops the searching — `agents.withdraw_spent_tools` is. That hook
+        stops offering the search tools the moment `tool_calls` is spent, which a model
+        cannot argue with, so the real cap is exact.
+
+        What this headroom absorbs is the last batch. A model that asks for four searches
+        in one turn with two left projects six against a ceiling of four, and Pydantic AI
+        refuses the **whole batch** before any of it runs — killing a cell that was one
+        turn from writing up. Doubling means an overshoot has to be larger than the entire
+        budget to be fatal, and withdrawal guarantees there is at most one of them.
+
+        So a run may exceed `tool_calls` by one over-eager turn and no more.
+        """
         return UsageLimits(
             request_limit=self.iterations,
-            tool_calls_limit=self.tool_calls,
+            tool_calls_limit=self.tool_calls * 2,
             total_tokens_limit=self.tokens,
         )
 
@@ -318,9 +333,30 @@ def get_model_settings() -> dict:
     """Model settings shared by every agent. `AGENT_MAX_TOKENS` overrides the ceiling.
 
     Read per call, matching the budget getters, so tests can monkeypatch the env var.
+
+    **`parallel_tool_calls=False` — one search per turn.** Pydantic AI's Anthropic model
+    turns this into the API's own `disable_parallel_tool_use`, so it is the provider that
+    enforces it, not a sentence in a prompt. Both model strings this project resolves —
+    `anthropic:…` and `gateway/anthropic:…` — are `AnthropicModel`, so both honour it.
+
+    Two things break when an agent batches its searches:
+
+    1. The budget countdown stops being actionable. `attach_budget` reports what is left
+       once per model request, so a turn that spends four searches walks 8 -> 4 with no
+       warning in between, and the agent can pass every stop band without seeing one.
+    2. A batch is refused **whole**. Four searches requested with two left kills the cell
+       outright, before any of the four runs.
+
+    Serial searching costs turns rather than tool calls, and the iteration ceilings have
+    room: `base_rate_cell` allows 11 requests for 8 searches, which is one request per
+    search plus two to open and close.
+
+    It is a no-op for the agents built without tools — Pydantic AI omits `tool_choice`
+    entirely when there are none.
     """
     return {
-        "max_tokens": int(os.getenv("AGENT_MAX_TOKENS", str(DEFAULT_AGENT_MAX_TOKENS)))
+        "max_tokens": int(os.getenv("AGENT_MAX_TOKENS", str(DEFAULT_AGENT_MAX_TOKENS))),
+        "parallel_tool_calls": False,
     }
 
 

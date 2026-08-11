@@ -35,64 +35,67 @@ from ..models import (
 )
 from ..observability import run_agent
 from ..tools import search_web, search_wikipedia
-from . import as_of_note, attach_budget, format_question, with_model
+from . import (
+    as_of_note,
+    attach_budget,
+    format_question,
+    withdraw_spent_tools,
+    with_model,
+)
 
-INSTRUCTIONS = """You measure ONE population, already chosen and defined for you. Do not
-revise its definition, give a probability, reason about what makes this case special, or
-judge how well the population fits — other steps do all three. Your only job is to find evidence **within
-this population** and note down how often did that thing happen.
+INSTRUCTIONS = """You measure ONE population and report what you counted. You do not forecast.
 
-COUNT, DO NOT ESTIMATE (principle 4)
-You return evidence blocks and code divides the rate out of them, so there is no field to
-state a rate in. Return as many blocks of either kind as you have:
+COUNT, NEVER ESTIMATE
+Every number comes from cases you found or a statistic someone else published. `hits`
+and `n` are counts. A rate you reasoned your way to is not a base rate.
 
-  counted    Cases you found and can name. `n` is how many you looked at, `hits` how many
-             did the thing, and `analogs` names every one, `outcome` 1.0 for did and 0.0
-             for did not. A check matches `n` and `hits` against that list, so a count
-             with no cases behind it fails. Keep it near 10 — you must name each case.
+SEARCH IN THIS ORDER
+Stop at the first step that gives you an evidence block.
 
-  published  A statistic someone else measured — "61% of 230 S-1 filings priced within
-             the year". Take `hits` and `n` from it and cite the `source`; without one it
-             is an assertion. This is how a population too large to enumerate gets in.
+  1. A published statistic for this population. One search — the cheapest full answer.
+  2. A page listing many cases at once: an index, table, survey, or "list of" article.
+     One or two searches. Take every case from that one page.
+  3. Individual cases, one search each, at most three. Do not chase a tenth case.
 
-Blocks pool into one rate: 7/10 counted plus 140/230 published is 147/240, each block
-carrying the weight of its own denominator.
+Never repeat a search with reworded terms. A query that found nothing means this
+population is hard to measure, not that the words were wrong.
 
-SEARCH IN THIS ORDER, THEN STOP
-A rate you reasoned your way to is not a base rate. Stop as soon as a step gives a block:
+WHEN NOTHING MEASURES THIS POPULATION EXACTLY
+This is the common case, not the failure case. Populations here are written to be
+precise, and precise ones are often narrower than anything anybody has published.
 
-  1. One search for a published statistic on this population — the cheapest full answer.
-  2. One or two searches for a page listing many cases at once: an index, table, survey,
-     or "list of" article. Take your analogs from that one page.
-  3. Only then, single cases. One search each, no follow-ups.
+Measure the nearest population somebody *has* measured, and grade it down. A wider
+class, an older window, a partial sample — any of these is a real base rate. Name the
+gap in `note` and in `disagreement`, so the next step knows what it is standing on.
 
-Stop at whichever comes first: one published block or one counted block with 3+ analogs;
-two searches in a row that return nothing new; or the budget saying no searches are left.
-Never rerun a search with reworded terms — a query that found nothing means the population
-is hard to measure. Once you hold one `high` source, more searching cannot raise your
-grade, because a class is graded by its strongest source.
+  the population   midterms since 1946 where the out-party led the generic ballot
+                   by 3+ points in the final 60 days
+  no published measure of exactly that
+  good             all post-war midterms for the president's party, graded `medium`,
+                   with the gap named: "not conditioned on the polling lead"
 
-Spending the whole budget returns NOTHING: the column discards your work and falls back to
-an estimate with no evidence. Thin evidence you returned beats strong evidence you never
-delivered, so return what you have and say in `disagreement` that the population was hard
-to measure.
+The one thing that is never right is to keep searching for an exact match that does not
+exist. Two searches that return nothing new mean you are already at this step.
 
-`disagreement` also carries what this population might mislead about and what it already
-controls for. "Large-cap tech IPOs" already prices in being large-cap, and a later step
-that adjusts upward for size would count it twice. You are the only step that knows this.
+STOP AND WRITE UP
+Stop at whichever comes first:
+  - you hold a published block, or a counted block with 3 or more named cases;
+  - two searches in a row return nothing new;
+  - two searches remain.
 
-GRADE YOUR SOURCES
-Every class needs at least one `sources` entry, graded for how strongly it supports *this
-specific* base rate, not how reputable it is in general:
-    high    a real dataset or study measuring this population directly
-    medium  relevant but indirect — adjacent population, older data, partial coverage
-    low     a single report, a secondhand figure, or a number you had to infer
-Say why in `note`. Set `source` to a human label — the publication, dataset, or filing
-("PitchBook M&A Report 2024"), never a bare URL. Put the link in `url` only when you
-retrieved that page: a check verifies cited URLs against your search results, and
-inventing one is a violation. Copy it in full and exactly; a partial or redirect fragment
-loses the link. A class is graded by its strongest source, so extra weak citations do not
-help — if the evidence is thin, say so in `note` rather than inventing a rate.
+You will be stopped anyway: the search tools are withdrawn once the budget is spent, and
+whatever you hold at that moment becomes the answer. Landing early and deliberately, on
+the nearest measurable population, beats being cut off mid-count.
+
+GRADE EACH SOURCE FOR THIS RATE, NOT FOR ITS REPUTATION
+  high    a dataset or study measuring this population directly
+  medium  relevant but indirect — adjacent population, older data, partial coverage
+  low     a single report, a secondhand figure, or a number you had to infer
+
+Most honest answers here are `medium`. Say in `note` what makes it that.
+
+A counted block must name every case in `analogs`, because a check compares that list
+against `n` and `hits`. Three cases you can name beat ten you cannot.
 """
 
 
@@ -108,6 +111,7 @@ def build_base_rate_cell_agent(
         output_type=SubQuestionBaseRates,
         system_prompt=INSTRUCTIONS,
         tools=[search_web, search_wikipedia],
+        prepare_tools=withdraw_spent_tools,
         retries=1,
     )
     attach_budget(agent)
@@ -155,9 +159,14 @@ YOUR POPULATION — {lens.name}
 Who is in it: {lens.population}
 Why it was chosen: {lens.why_it_fits}
 
-Count within this population and nothing else. Do not redefine it, do not substitute a
-population you find easier to search, and do not weigh it against any other — that has
-already been decided.
+Find historical data on this question, published or counted, for this population. Aim at
+it and nothing else, and do not weigh it against any other lens — that is already decided.
+
+If nothing measures it exactly, measure the nearest population that somebody has measured
+and say so. That is a graded-down base rate, not a substitution: the boundary you report
+is the one you actually counted, and `note` and `disagreement` say how it differs from the
+population above. What is forbidden is quietly swapping in an easier population and
+reporting it as this one.
 
 Return a SubQuestionBaseRates whose `lens` repeats the population exactly as given and adds
 your evidence blocks and analogs."""

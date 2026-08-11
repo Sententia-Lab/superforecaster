@@ -2161,3 +2161,272 @@ have written anything, and this is then the only account of what happened.
 request is running" and "a request failed", and every consumer read only the first. The
 same conflation had already been fixed once for buttons — that is why `streaming` exists
 apart from `active` — and the render branch kept the bug the button fix had escaped.
+
+## ADR 67 — A search plan has to fit the search budget
+
+**Extends ADR 62.**
+
+`base_rate_cell` runs on `tool_calls=8`. Its prompt told the agent to spend them like this:
+
+```
+1. One search for a published statistic.
+2. One or two searches for a page listing many cases.
+3. Only then, single cases. One search each, no follow-ups.
+...
+counted: Keep it near 10 — you must name each case.
+```
+
+Steps 1 and 2 cost up to three searches. Step 3 then asks for one search per case, and the
+output section asks for about ten cases. That is thirteen searches against a ceiling of
+eight, and the same prompt also claimed "this task should take 3-6 searches". When steps 1
+and 2 found nothing — which is exactly when a population is hard to measure — the prompt
+instructed a strategy that could not finish.
+
+It did not finish. `UsageLimitExceeded: the next tool call(s) would exceed the
+tool_calls_limit of 8 (tool_calls=9)`.
+
+**The cost of overrunning is total, not partial.** `UsageLimitExceeded` is raised before
+the tool runs, so nothing the cell gathered is returned; the column falls back to the
+decompose agent's working estimate. When every lens overruns, `whole_question_outside`
+raises and the whole run fails. A prompt that walks an agent into its ceiling does not
+degrade the answer — it deletes it.
+
+**Decision.** A prompt that spends a budget states a plan that fits inside it, with a
+reserve. The ladder is now `1 + 2 + 3 = 6` of 8, and the last stop condition is "two
+searches remain" rather than "the budget says no searches are left". The agent stops while
+it can still write up, instead of discovering the ceiling by hitting it.
+
+The prompt also now says which outcome is worst, because the agent cannot infer it:
+running out of budget loses everything, so thin evidence graded honestly always beats one
+more search.
+
+**What was removed, and why it was safe.** The prompt had grown to 842 tokens, most of it
+restating things the agent was already told:
+
+| Removed | Already stated by |
+|---|---|
+| the `counted` / `published` field walkthrough | `Evidence` field descriptions, in the output schema |
+| the `confidence` / `note` / `source` / `url` walkthrough | `GradedSource` field descriptions |
+| "the budget says no searches are left" | `agents.attach_budget`, re-injected every iteration with live numbers |
+| "do not revise the population, do not substitute an easier one" | the `run_research_lens` user prompt, verbatim |
+
+Pydantic AI sends the output schema with every request, so a prompt that paraphrases its
+own schema pays for the same instruction twice and gives the agent two wordings to
+reconcile. 382 tokens now, and the one rule that matters — count, never estimate — is the
+first line rather than the third bullet of a constraints list.
+
+## ADR 68 — The order to stop arrives while a search is still legal
+
+**Amends ADR 62. Extends ADR 67.**
+
+`attach_budget` reported searches in two bands: while any remained, "N of 8 searches left.
+Prefer a few well-chosen searches over exhaustive looping"; at zero, "No searches left.
+Run no further searches — return your structured answer now."
+
+The instruction reaches the model. That was verified rather than assumed: on the real
+`base_rate_cell` agent it arrives as `instructions` beside the system prompt and counts
+down request by request. The mechanism was never the problem.
+
+The problem is *when* the second band arrives. Driving a greedy agent into a ceiling of
+three showed the whole sequence:
+
+| request | searches left | what it was told |
+|---|---|---|
+| 1 | 3 | prefer a few well-chosen searches |
+| 2 | 2 | prefer a few well-chosen searches |
+| 3 | 1 | prefer a few well-chosen searches |
+| 4 | 0 | **run no further searches, answer now** |
+| — | — | `UsageLimitExceeded: tool_calls=4 > 3` |
+
+Three turns of advice with no deadline, then one turn of order — delivered only once the
+budget is already spent. **The agent gets exactly one chance to comply, and the cost of
+missing it is total**: `tool_calls_limit` refuses the call before the tool runs, so
+nothing the cell gathered is returned and its column falls back to a pre-research guess
+(ADR 67). A warning at the cliff edge is not a warning.
+
+It also explains why raising the ceiling does not help. A retry at double depth moved the
+single warning from turn 9 to turn 17 and failed the same way. More budget buys more
+searching, not convergence, because nothing asks the agent to land until it is out of
+runway.
+
+**Decision.** Three bands, with `SEARCH_RESERVE = 2`:
+
+| searches left | the agent is told |
+|---|---|
+| more than the reserve | how many remain, and to prefer a few well-chosen ones |
+| 1 to the reserve | **stop searching now and write up what you have** |
+| 0 | run no further searches and return the answer |
+
+The middle band is the change. The agent is ordered to land while landing is still an
+action it can take.
+
+Two is the same reserve the `outside_view` search ladder already keeps (ADR 67), so the
+prompt and the runtime now agree instead of the prompt reserving two while the budget line
+said "prefer a few". Fixed rather than a share of the budget, because the ladder is fixed:
+a deeper retry buys more attempts at the same plan, not a longer plan.
+
+**Every band still names searching, never tools.** ADR 62's rule is unchanged and now has
+a test: the structured answer is itself a tool call, so an instruction against tool calls
+as a category forbids the only act that ends the run.
+
+**Why this survived.** `test_agent_budget.py` covered the countdown, the no-tool agent, the
+absent budget and the cost ceiling — every band except the last, and none of them under an
+enforced ceiling. A stop that only fires when it is too late passed all of them. The
+endgame is now driven directly: a model that always searches, the budget's own `limits()`,
+and an assertion that the order to stop precedes the point of no return.
+
+## ADR 69 — The search tools are withdrawn, not discouraged
+
+**Supersedes the approach in ADR 68. Extends ADR 62.**
+
+ADR 67 rewrote the search prompt so its plan fits the budget. ADR 68 made the budget line
+escalate, so the order to stop arrives while a search is still legal. Both shipped. The
+next run failed identically — `tool_calls_limit of 8 (tool_calls=9)`, eight minutes after
+the escalation landed.
+
+Asking does not work, and two experiments say why.
+
+**A model that is warned can ignore the warning.** Driven one search per turn into a
+ceiling of eight, the agent is told `Only 2 of 8 searches left. Stop searching now`, then
+`Only 1 of 8`, then `No searches left. Run no further searches`. It searches anyway. Three
+warnings, correctly delivered, and `tool_calls=9`.
+
+**A model that batches is never warned at all.** Four searches per turn walks
+`8 left -> 4 left -> spent`, skipping both stop bands. It cannot obey an instruction it
+was never shown.
+
+Either way the cost is the whole cell: `UsageLimitExceeded` is raised *before* the tool
+runs, so nothing gathered is returned and the column falls back to a pre-research guess.
+
+**Decision.** `agents.withdraw_spent_tools`, passed as `prepare_tools` to every agent
+built with search tools, stops offering them once `budget.tool_calls` is spent. Pydantic
+AI re-prepares the toolset before every model request, so this is re-evaluated wherever the
+agent could spend another call.
+
+A model cannot call a tool it is not offered. The cap stops being a request and becomes a
+fact.
+
+**This is safe because the output tool is exempt from `tool_calls_limit`** — verified, not
+assumed: an agent that spends its entire tool budget can still deliver its structured
+answer. That is the same fact `attach_budget`'s last band already relied on when it says
+returning the answer is the only thing left to do.
+
+**`limits()` now allows double `tool_calls`.** Withdrawal is the real cap, so Pydantic AI's
+ceiling is a backstop — and it has to sit above the budget, because a batch is refused
+*whole*. A model asking for four searches with two left projects six against a ceiling of
+four and dies one turn from writing up, having broken no rule it could have been warned
+about. Doubling means an overshoot must exceed the entire budget to be fatal, and
+withdrawal guarantees there is at most one of them. A run may exceed `tool_calls` by one
+over-eager turn and no more.
+
+**What is kept from ADR 68.** The bands stay. They are what makes the agent *choose* to
+land early with a usable write-up rather than being cut off mid-thought at the ceiling.
+Withdrawal is the floor under that, not a replacement for it.
+
+**What is still not solved.** An agent that lands only because its tools vanished writes up
+from whatever it happened to have. That is strictly better than the nothing it returned
+before, and worse than a plan that finished. The prompt ladder (ADR 67) is what is supposed
+to make the difference; this ADR only guarantees the run survives to use it.
+
+## ADR 70 — One search per turn, enforced by the provider
+
+**Completes ADR 69.**
+
+ADR 69 stops offering the search tools once the budget is spent, which caps a runaway
+agent. It does not stop a *batched* one from wasting the budget in two turns, and batching
+breaks the mechanism the other ceilings rest on.
+
+`attach_budget` reports what is left once per model request. A turn that spends four
+searches walks `8 left -> 4 left` with nothing in between, so the agent can pass every stop
+band without being shown one. Pydantic AI also refuses a batch **whole**: four searches
+requested with two remaining kills the cell before any of the four runs.
+
+**Decision.** `get_model_settings()` sets `parallel_tool_calls=False` for every agent.
+Pydantic AI's `AnthropicModel` maps it to the API's own `disable_parallel_tool_use`, so the
+provider enforces it. Verified rather than assumed — the flag reaches the wire:
+
+```
+settings    -> {'max_tokens': 16384, 'parallel_tool_calls': False}
+tool_choice -> {'type': 'auto', 'disable_parallel_tool_use': True}
+```
+
+Both model strings this project resolves are `AnthropicModel`: `anthropic:…` directly, and
+`gateway/anthropic:…` through the Pydantic AI Gateway. A provider that ignores the setting
+would silently reopen this, which is why a test asserts the key is one `ModelSettings`
+actually declares — a rename upstream leaves it sitting in the dict, ignored.
+
+**It costs turns, not tool calls.** Eight sequential searches need eight model requests
+where four batched pairs needed four. The iteration ceilings already have the room:
+`base_rate_cell` allows 11 requests for 8 searches, one per search plus two to open and
+close.
+
+**No-op for the agents without tools.** Pydantic AI omits `tool_choice` entirely when there
+are no tools, so decompose, lenses, reflect, synthesize and draft are unaffected.
+
+**The prompt line is gone.** `outside_view.INSTRUCTIONS` told the agent "never issue
+searches in parallel". It is now impossible rather than discouraged, and ADR 67's rule
+applies: a prompt does not pay tokens to repeat what the runtime enforces.
+
+**What is still unproven.** No trace has ever confirmed these agents batch. The `tool_calls=9`
+in every failure is consistent with batching *and* with plain sequential overrun, and the
+Logfire MCP was not reachable to settle it. This change is cheap, it makes the budget
+countdown honest whichever is true, and it removes one of the two mechanisms that can
+defeat ADR 68's bands. It is not evidence-led, and that is worth knowing when reading it.
+
+## ADR 71 — A population nobody has measured is not a lens
+
+**Corrects ADR 67. Completes ADR 69.**
+
+ADR 69 stopped the base-rate cells dying. It did not make them converge. Every cell now
+runs to the end of its budget and is landed by having its tools withdrawn, and the
+write-ups got worse.
+
+Both effects have one cause, and part of it was introduced by ADR 67.
+
+**The agent had no sanctioned way to fall short.** `run_research_lens` said "count within
+this population and nothing else … do not substitute a population you find easier to
+search". ADR 67 then deleted the confidence rubric from the prompt, on the stated grounds
+that `GradedSource`'s field descriptions carried it. They do not. The schema says only
+*that* a grade is required — `"How strongly THIS source supports THIS claim"`, enum
+`low|medium|high`. What was deleted is the line that made a near miss legitimate:
+
+```
+medium  relevant but indirect — adjacent population, older data, partial coverage
+```
+
+So the agent was told to measure exactly this population, forbidden to measure anything
+else, and left with no way to record having measured something close. The only remaining
+move is to search again. It searches until it is stopped.
+
+**The populations are often unmeasurable by construction.** `agents.lenses` chooses them
+blind, with no tools (ADR 40), and is told to write the boundary and not the vibe.
+Precision is the only pressure on it, so it produces things like *"midterms since 1946
+where the out-party led the generic ballot by 3+ points in the final 60 days, measured
+against net seat change"* — checkable, and measured by nothing anyone has published. The
+cell then fails step 1 and step 2 of its ladder for a reason no amount of searching fixes.
+
+Precision and findability pull against each other and nothing in the pipeline was holding
+the second one.
+
+**Decision, in three parts.**
+
+1. The confidence rubric returns to `outside_view.INSTRUCTIONS`, including the `medium`
+   line. It is guidance the schema does not carry, and ADR 67 was wrong to cut it.
+2. The base-rate prompt gains an explicit exit: when nothing measures the population
+   exactly — *the common case, not the failure case* — measure the nearest population
+   somebody has measured, grade it down, and name the gap in `note` and `disagreement`.
+   The user prompt now distinguishes that from what it still forbids, which is quietly
+   swapping in an easier population and reporting it as this one.
+3. The lens prompt gains a countability test: before naming a population, ask whether a
+   dataset, study, index or "list of" article would plausibly cover it, and drop
+   conditions until one would. What was given up goes in `why_it_fits`.
+
+**On withdrawal.** The prompt now tells the agent the tools will be taken away and that
+whatever it holds at that moment becomes the answer. A deadline an agent knows about is a
+deadline it can plan against; ADR 69's withdrawal was invisible to it until it happened.
+
+**What this admits.** ADR 67 traded prompt size for the claim that the schema said the
+same thing. For four of the five things cut that was true. For the confidence rubric it
+was not, and the cost was not a smaller prompt but a worse one — the agent lost its only
+honest way to stop short. Checking what a schema actually emits, rather than what its
+field descriptions look like in the source, is the cheap step that was skipped.
