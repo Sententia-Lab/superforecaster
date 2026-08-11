@@ -12,6 +12,7 @@ dependencies = [
     "pre-commit>=4.6.1",
     "pydantic>=2.10.0",
     "pydantic-ai>=0.4.0",
+    "pydantic-evals>=1.87.0",
     "python-dotenv>=1.0.0",
     "python-multipart>=0.0.20",
     "sse-starlette>=3.3.4",

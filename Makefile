@@ -1,4 +1,4 @@
-.PHONY: help install dev backend frontend serve build test forecast smoke config \
+.PHONY: help install dev backend frontend serve build test eval forecast smoke config \
         diagram refresh resolve cli docker docker-dev docker-down clean
 
 .DEFAULT_GOAL := help
@@ -38,6 +38,26 @@ build: ## Build the frontend into frontend/dist
 
 test: ## The backend suite — no network, no API keys
 	$(UV) pytest
+
+# ---------- evals ----------
+
+# The eleven agent names, so `make eval decompose` can name one as a second goal. Each
+# is a do-nothing target: without them make would try to build `decompose` and fail.
+# Listing them rather than a catch-all `%:` rule keeps a typo'd target an error.
+AGENTS := decompose lenses outside_view inside_view reflect synthesize critic draft \
+          resolution update postmortem
+
+EVAL_AGENT := $(filter $(AGENTS),$(MAKECMDGOALS))
+
+eval: ## Score one agent against its eval cases — make eval decompose [ARGS="--model ..."]
+	@test -n "$(EVAL_AGENT)" || { echo 'usage: make eval <agent>, e.g. make eval decompose'; exit 2; }
+	@test -f backend/superforecaster/evals/$(EVAL_AGENT)_eval.py \
+	  || { echo 'no eval for $(EVAL_AGENT) yet — only decompose has one'; exit 2; }
+	$(UV) python -m superforecaster.evals.$(EVAL_AGENT)_eval $(ARGS)
+
+.PHONY: $(AGENTS)
+$(AGENTS):
+	@:
 
 # ---------- the CLI ----------
 
