@@ -52,7 +52,7 @@ EVAL_AGENT := $(filter $(AGENTS),$(MAKECMDGOALS))
 eval: ## Score one agent against its eval cases — make eval decompose [ARGS="--model ..."]
 	@test -n "$(EVAL_AGENT)" || { echo 'usage: make eval <agent>, e.g. make eval decompose'; exit 2; }
 	@test -f backend/app/evals/$(EVAL_AGENT)_eval.py \
-	  || { echo 'no eval for $(EVAL_AGENT) yet — only decompose has one'; exit 2; }
+	  || { echo 'no eval for $(EVAL_AGENT) yet — only decompose and critic have one'; exit 2; }
 	$(UV) python -m app.evals.$(EVAL_AGENT)_eval $(ARGS)
 
 .PHONY: $(AGENTS)

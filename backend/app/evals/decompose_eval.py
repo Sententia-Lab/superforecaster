@@ -198,7 +198,12 @@ def build_dataset(judge_model: str) -> Dataset:
     return Dataset(
         name="decompose",
         cases=CASES,
-        evaluators=[Structure(), MentionsTerms(), ChainRuleIs(), judge(judge_model)],
+        evaluators=[
+            Structure(),
+            MentionsTerms(),
+            ChainRuleIs(),
+            judge(judge_model),
+        ],
     )
 
 

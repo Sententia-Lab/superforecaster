@@ -67,7 +67,8 @@ deeper retry buys more attempts at the same plan, not a longer one.
 async def withdraw_spent_tools(ctx: RunContext[ForecastDeps], tool_defs: list) -> list:
     """Stop offering the search tools once the search budget is spent.
 
-    Pass as `prepare_tools=` to any agent built with tools. Pydantic AI re-prepares the
+    Pass as `capabilities=[Hooks(prepare_tools=...)]` to any agent built with tools.
+    Pydantic AI re-prepares the
     toolset before every model request, so this is re-evaluated at each point the agent
     could spend another call.
 

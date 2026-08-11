@@ -2568,6 +2568,9 @@ web server, importing by string the layer that imports it.
 - **Dependency ranges got a ceiling.** Installing the wheel into a clean venv resolved
   pydantic-ai 2.x against a `>=0.4.0` floor, where `Graph()` no longer takes
   `run_end_type`. The lockfile had hidden this from everyone working in a checkout.
+  *(Superseded by spec 12: the migration to 2.x happened, and the range is now
+  `>=2.27.1,<3`. The lesson stands — the ceiling is what turned a silent break into a
+  decision.)*
 
 **Cost.** `python -m superforecaster` no longer exists; `[project.scripts]` provides the
 `superforecaster` command instead. Verbose CLI output is now Logfire's console sink

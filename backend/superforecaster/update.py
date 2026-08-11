@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from pydantic_graph import BaseNode, End, Graph, GraphRunContext
+from pydantic_graph import BaseNode, End, GraphBuilder, GraphRunContext
 
 from . import checks
 from .agents.resolution import run_resolution_check
@@ -165,11 +165,32 @@ class GuardUpdate(BaseNode[UpdateState, ForecastDeps, UpdateOutcome]):
         )
 
 
-update_graph = Graph(
-    nodes=[CheckResolved, ApplyBayes, GuardUpdate, VerifyLargeMove],
-    state_type=UpdateState,
-    run_end_type=UpdateOutcome,
-)
+def _build_graph():
+    """Assemble the four nodes into a graph.
+
+    The edges are not declared here. Each node's `run` return type states which nodes
+    may follow it, and `builder.node` reads that hint — so `GuardUpdate -> VerifyLargeMove`
+    exists because `GuardUpdate.run` returns `VerifyLargeMove | End[UpdateOutcome]`, and
+    nowhere else. The only edge written by hand is the one into the first node.
+    """
+    builder = GraphBuilder(
+        name="update",
+        state_type=UpdateState,
+        deps_type=ForecastDeps,
+        input_type=CheckResolved,
+        output_type=UpdateOutcome,
+    )
+    builder.add(
+        builder.edge_from(builder.start_node).to(CheckResolved),
+        builder.node(CheckResolved),
+        builder.node(ApplyBayes),
+        builder.node(GuardUpdate),
+        builder.node(VerifyLargeMove),
+    )
+    return builder.build()
+
+
+update_graph = _build_graph()
 
 
 async def run_update_cycle(
@@ -180,12 +201,13 @@ async def run_update_cycle(
     Reads nothing and writes nothing. The caller supplies the record and decides what
     to do with the outcome.
     """
-    result = await update_graph.run(
-        CheckResolved(), state=UpdateState(record=record), deps=deps or ForecastDeps()
+    return await update_graph.run(
+        inputs=CheckResolved(),
+        state=UpdateState(record=record),
+        deps=deps or ForecastDeps(),
     )
-    return result.output
 
 
 def update_mermaid() -> str:
     """The real graph as mermaid."""
-    return update_graph.mermaid_code(start_node=CheckResolved)
+    return update_graph.render()

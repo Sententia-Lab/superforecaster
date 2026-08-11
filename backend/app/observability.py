@@ -101,7 +101,11 @@ def configure_logfire(*, verbose: bool = False) -> None:
     # tool calls and model messages, and with the console on and no token it is the only
     # thing that does — `runner` builds its event handler for a UI subscriber, not for
     # tracing, so a verbose CLI run with no token would otherwise report nothing.
-    logfire.instrument_pydantic_ai(include_content=True, version=3)
+    # `include_content` is what puts tool arguments on the span, which is what
+    # `pydantic_evals.evaluators.ArgumentCorrectness` reads. Versions 2, 3, and 4 are
+    # deprecated; 5 names a tool span `execute_tool {name}` rather than `running tool`,
+    # and the agentic evaluators read both shapes.
+    logfire.instrument_pydantic_ai(include_content=True, version=5)
 
     _cloud_tracing_active = tracing
     _console_active = bool(kwargs["console"])
