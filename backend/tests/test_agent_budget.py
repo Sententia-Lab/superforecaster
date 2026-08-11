@@ -23,7 +23,7 @@ from pydantic_ai.usage import RunUsage, UsageLimits
 
 from pydantic import BaseModel
 
-from config import Budget
+from superforecaster.config import Budget
 from superforecaster.agents import (
     SEARCH_RESERVE,
     attach_budget,

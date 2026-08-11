@@ -25,7 +25,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.tools import RunContext
 
-from config import Budget, get_agent_timeout, get_settings
+from .config import Budget, get_agent_timeout, get_settings
 
 from .errors import AgentTimeout
 

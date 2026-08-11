@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 import httpx
-from config import get_settings
+from .config import get_settings
 from pydantic_ai import RunContext
 
 from .deps import ForecastDeps

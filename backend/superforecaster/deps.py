@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
 
-from config import Budget
+from .config import Budget
 
 from .models import SourceRef
 

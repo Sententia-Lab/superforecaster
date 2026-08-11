@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-import config
+from superforecaster import config
 from superforecaster.agents.draft import build_draft_agent
 from superforecaster.models import DraftedQuestion
 

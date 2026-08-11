@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from config import get_check_thresholds
+from ..config import get_check_thresholds
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from .. import checks, db

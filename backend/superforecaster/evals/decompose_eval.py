@@ -26,7 +26,7 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from config import resolve_agent_model
+from ..config import resolve_agent_model
 from pydantic_evals import Case, Dataset
 from pydantic_evals.evaluators import Evaluator, EvaluatorContext, LLMJudge
 from pydantic_evals.evaluators.common import OutputConfig

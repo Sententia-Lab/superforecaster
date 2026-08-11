@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from config import get_check_thresholds
+from superforecaster.config import get_check_thresholds
 from superforecaster import checks
 from superforecaster.models import (
     ALL_BIASES,

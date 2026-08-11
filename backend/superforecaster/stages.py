@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
-from config import get_check_thresholds
+from .config import get_check_thresholds
 
 from . import checks
 from .agents.decompose import run_decompose

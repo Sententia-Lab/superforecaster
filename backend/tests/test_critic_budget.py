@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 from pydantic_ai.exceptions import UsageLimitExceeded
 
-import config
+from superforecaster import config
 from superforecaster.agents import critic
 from superforecaster.models import CriteriaCritique
 

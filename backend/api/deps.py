@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import Header, HTTPException, Request, status
 
-from config import get_settings
+from app.config import get_app_settings
 
 _PROXY_HEADERS = ("x-forwarded-for", "x-real-ip", "x-forwarded-host", "forwarded")
 
@@ -24,7 +24,7 @@ def is_local_mode(request: Request) -> bool:
     have had its origin rewritten by something upstream, and a reverse proxy in front of
     this is exactly the shape of a real deployment, so those still need the key.
     """
-    if get_settings().admin_api_key:
+    if get_app_settings().admin_api_key:
         return False
     if any(h in request.headers for h in _PROXY_HEADERS):
         return False
@@ -38,7 +38,7 @@ async def require_admin(
 
     Skipped entirely in local mode — see `is_local_mode`.
     """
-    expected = get_settings().admin_api_key
+    expected = get_app_settings().admin_api_key
     if not expected:
         if is_local_mode(request):
             return

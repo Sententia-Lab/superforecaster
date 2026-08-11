@@ -22,7 +22,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-import config  # noqa: F401 — loads backend/.env
+from app.config import load_env
 
 from . import db
 from .agents.critic import run_critique
@@ -342,7 +342,9 @@ def _cmd_config(args: argparse.Namespace) -> int:
     """
     import os
 
-    from config import ENV_FILE, origin, resolve_agent_model
+    from app.config import ENV_FILE, origin
+
+    from .config import resolve_agent_model
 
     print(
         f"\n.env file   {ENV_FILE}  ({'present' if ENV_FILE.exists() else 'ABSENT'})\n"
@@ -583,7 +585,8 @@ def serve(
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Kept as a function so `python -m superforecaster` and the tests share an entry."""
+    """Kept as a function so the console script and the tests share an entry."""
+    load_env()
     try:
         app(args=argv, standalone_mode=False)
     except typer.Exit as exc:

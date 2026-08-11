@@ -16,12 +16,22 @@ from superforecaster import db
 
 @pytest.fixture(autouse=True)
 def _isolated_db(tmp_path, monkeypatch):
-    """Point each test at its own temporary SQLite file and checkpoint directory."""
+    """Point each test at its own temporary SQLite file."""
     db_file = tmp_path / "test.db"
     monkeypatch.setenv("DATABASE_PATH", str(db_file))
-    monkeypatch.setenv("RUN_CHECKPOINT_DIR", str(tmp_path / "checkpoints"))
     db.init_db()
     yield db_file
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _quiet_unconfigured_logfire():
+    """Core emits spans but never configures Logfire — that is the library contract.
+
+    Nothing configures it under pytest either, so every span would print
+    `LogfireNotConfiguredWarning`. Suppressed here rather than in `pyproject.toml`,
+    because in production the warning is a real signal that tracing is off.
+    """
+    os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
 
 
 @pytest.fixture(autouse=True)

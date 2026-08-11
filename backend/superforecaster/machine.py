@@ -17,7 +17,7 @@ import json
 from typing import Callable
 
 import logfire
-from config import get_stage_timeout
+from .config import get_stage_timeout
 
 from . import db, stages
 from .agents.decompose import with_ids

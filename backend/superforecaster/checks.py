@@ -22,7 +22,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from config import CheckThresholds, get_check_thresholds
+from .config import CheckThresholds, get_check_thresholds
 
 from .models import (
     ALL_BIASES,

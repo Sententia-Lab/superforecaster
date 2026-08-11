@@ -41,7 +41,7 @@ def _convert_timestamp(value: bytes) -> datetime:
 sqlite3.register_adapter(datetime, _adapt_datetime)
 sqlite3.register_converter("TIMESTAMP", _convert_timestamp)
 
-from config import get_settings
+from app.config import get_app_settings
 
 from . import scoring
 from .models import (
@@ -69,7 +69,7 @@ class StateError(Exception):
 
 
 def _db_path() -> str:
-    return get_settings().database_path
+    return get_app_settings().database_path
 
 
 @contextmanager

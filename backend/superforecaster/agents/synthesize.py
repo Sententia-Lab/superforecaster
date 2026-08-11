@@ -10,7 +10,7 @@ is a correction rather than a re-roll.
 
 from __future__ import annotations
 
-from config import (
+from ..config import (
     CheckThresholds,
     get_budget,
     get_check_thresholds,

@@ -12,14 +12,14 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import config  # noqa: F401 — loads backend/.env
-from config import (
+from app.config import get_app_settings, load_env, origin, set_runtime_key
+from superforecaster.config import (
     active_llm_key_name,
     get_settings,
-    origin,
     resolve_agent_model,
-    set_runtime_key,
 )
+
+load_env()
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -43,6 +43,7 @@ def _preflight() -> list[str]:
     once at startup costs four lines and turns "why is this bad" into something visible.
     """
     s = get_settings()
+    app_s = get_app_settings()
     lines = []
 
     try:
@@ -58,10 +59,10 @@ def _preflight() -> list[str]:
     )
     lines.append(
         "  admin auth    ADMIN_API_KEY"
-        if s.admin_api_key
+        if app_s.admin_api_key
         else "  admin auth    local mode — unauthenticated requests from localhost only"
     )
-    lines.append(f"  database      {s.database_path}")
+    lines.append(f"  database      {app_s.database_path}")
     return lines
 
 
@@ -182,6 +183,6 @@ app.include_router(runs_router)
 
 # The static frontend. Mounted last and at "/" so it cannot shadow an API prefix —
 # a mount at the root matches everything the routers above declined.
-_frontend = Path(get_settings().frontend_dir)
+_frontend = Path(get_app_settings().frontend_dir)
 if _frontend.is_dir():
     app.mount("/", StaticFiles(directory=_frontend, html=True), name="frontend")

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from config import resolve_agent_model
+from superforecaster.config import resolve_agent_model
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from superforecaster.agents.critic import run_critique
