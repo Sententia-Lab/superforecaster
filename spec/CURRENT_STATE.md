@@ -632,6 +632,7 @@ Where the functions named above live.
 | `graphs/update.py` | the only graph: `CheckResolved → ApplyBayes → VerifyLargeMove → GuardUpdate`, `run_update_graph` |
 | `agents/` | eleven agents, one module each: `decompose`, `lenses`, `outside_view`, `inside_view`, `reflect`, `synthesize`, `critic`, `draft`, `resolution`, `update`, `postmortem`. `__init__.py` holds `attach_budget` — the per-iteration budget instruction, in three bands so the order to stop arrives while a search is still legal (ADR 68) — `withdraw_spent_tools`, which stops offering the search tools once the budget is spent (ADR 69), plus `SEARCH_RESERVE` and `spent_usd` |
 | `evals/components.py` | per-agent eval harness (`run_component`, `SCORERS`) |
+| `evals/decompose_eval.py` | pydantic-evals dataset for the decompose agent: three mechanical evaluators plus an `LLMJudge` scoring against `RUBRIC`. `--model`, `--judge-model`, `--budget` flags. Run as a script, not under pytest — it calls the real model |
 | `__main__.py` | typer CLI: `forecast`, `refresh`, `resolve`, `critique`, `postmortem`, `models`, `diagram`, `test`, `config`, `serve` |
 
 **Backend — `backend/api/`**

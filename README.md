@@ -118,7 +118,20 @@ back-to-back with no gates.
 | `make serve` | builds the frontend, then serves the whole app as one process on :8000 |
 | `make build` | the frontend into `frontend/dist` |
 | `make test` | the backend suite — no network, no API keys |
+| `make eval decompose` | score one agent against its eval cases — real model, real money |
 | `make clean` | build output, `node_modules`, and the venv |
+
+`make eval` runs one agent on a fixed set of questions and reports both mechanical
+assertions and a score from a judging model. Only `decompose` has cases so far. Pass
+flags through `ARGS`:
+
+```bash
+make eval decompose ARGS="--model gateway/anthropic:claude-haiku-4-5 --budget 0.05,40000,0,3"
+```
+
+`--model` swaps the model under test, `--budget` overrides what one run may spend
+(`COST,TOKENS,TOOL_CALLS,ITERATIONS`), and `--judge-model` swaps the grader. The grader
+does **not** follow `--model`: a model asked to grade its own work passes itself.
 
 The CLI runs the same stages without the browser:
 
