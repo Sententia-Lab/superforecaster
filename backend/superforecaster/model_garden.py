@@ -23,7 +23,7 @@ import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from config import get_model_garden_margin_days, get_settings
+from .config import get_model_garden_margin_days, get_settings
 
 from .models import ModelEntry
 

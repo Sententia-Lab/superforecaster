@@ -20,8 +20,9 @@ from pydantic import ValidationError
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from sse_starlette.sse import EventSourceResponse
 
-from superforecaster import db, machine
+from app import db, machine, stream
 from superforecaster.errors import AgentTimeout, StageTimeout
+from superforecaster.events import AgentEvent
 from superforecaster.models import (
     MAX_SEARCH_DEPTH,
     CreateGatedRunRequest,
@@ -197,12 +198,10 @@ async def stream_step(
     async def generate():
         queue: asyncio.Queue = asyncio.Queue()
 
-        def emit(type: str, payload: dict, sub_question: str | None = None) -> None:
+        def emit(event: AgentEvent, sub_question: str | None = None) -> None:
             # Must stay synchronous and non-blocking — it is called from inside the
             # agent's event handler, where an await would stall token delivery.
-            queue.put_nowait(
-                {"type": type, "sub_question": sub_question, "payload": payload}
-            )
+            queue.put_nowait(stream.frame(event, sub_question))
 
         async def work() -> None:
             try:

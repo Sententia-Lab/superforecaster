@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from superforecaster import db
+from app import db
 from superforecaster.models import CalibrationReport
 
 router = APIRouter(tags=["calibration"])

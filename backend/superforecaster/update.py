@@ -1,4 +1,4 @@
-"""The daily update graph — four nodes, one verification loop.
+"""The daily update cycle — four nodes, one verification loop, and no storage.
 
     CheckResolved --resolved--> End(flagged)
          |
@@ -16,22 +16,45 @@ Two things this expresses that the previous two-`for`-loop version could not:
   moved, because the node that would move it is unreachable.
 - **A big jump routes through verification** rather than being capped. Decisive events
   are real; the response to one is to corroborate it, not to forbid the move.
+
+The nodes used to write to SQLite as they ran — `mark_refreshed` inside `CheckResolved`,
+`add_forecast_update` inside `GuardUpdate` — and `run_update_graph` looked the record up
+itself, so "forecast not found" was a storage answer coming back as a forecasting
+outcome. Now the cycle takes a record and returns an `UpdateOutcome` describing what
+should happen. `app.update` is the caller that owns the database and performs the write.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from config import get_check_thresholds
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
-from .. import checks, db
-from ..agents.resolution import run_resolution_check
-from ..agents.update import run_update
-from ..models import UpdateOutcome
-from .state import ForecastDeps, UpdateState
+from . import checks
+from .agents.resolution import run_resolution_check
+from .agents.update import run_update
+from .config import get_check_thresholds
+from .deps import ForecastDeps
+from .models import (
+    CheckViolation,
+    ForecastRecord,
+    ResolutionCheckResult,
+    UpdateDecision,
+    UpdateOutcome,
+)
 
 MAX_VERIFY_ATTEMPTS = 1
+
+
+@dataclass
+class UpdateState:
+    """Mutated as the update cycle walks."""
+
+    record: ForecastRecord
+    resolution: ResolutionCheckResult | None = None
+    decision: UpdateDecision | None = None
+    violations: list[CheckViolation] = field(default_factory=list)
+    verify_attempts: int = 0
 
 
 @dataclass
@@ -43,7 +66,6 @@ class CheckResolved(BaseNode[UpdateState, ForecastDeps, UpdateOutcome]):
     ) -> ApplyBayes | End[UpdateOutcome]:
         result = await run_resolution_check(ctx.state.record, ctx.deps)
         ctx.state.resolution = result
-        db.mark_refreshed(ctx.state.record.id, flagged=result.appears_resolved)
 
         if result.appears_resolved:
             return End(
@@ -132,17 +154,13 @@ class GuardUpdate(BaseNode[UpdateState, ForecastDeps, UpdateOutcome]):
                 )
             )
 
-        db.add_forecast_update(
-            forecast_id=ctx.state.record.id,
-            probability=decision.posterior,
-            reasoning=decision.reasoning,
-        )
         return End(
             UpdateOutcome(
                 updated=True,
                 new_probability=decision.posterior,
                 violations=ctx.state.violations,
                 reason=f"probability moved {decision.prior:.3f} -> {decision.posterior:.3f}",
+                reasoning=decision.reasoning,
             )
         )
 
@@ -154,20 +172,17 @@ update_graph = Graph(
 )
 
 
-async def run_update_graph(forecast_id: str, *, verbose: bool = False) -> UpdateOutcome:
-    """Run the daily cycle on one forecast. Replaces refresh_forecast + check_resolution.
+async def run_update_cycle(
+    record: ForecastRecord, deps: ForecastDeps | None = None
+) -> UpdateOutcome:
+    """Check one forecast for resolution, then update it against new evidence.
 
-    Callable from cron, the API, or the CLI — the trigger is not the graph's business.
+    Reads nothing and writes nothing. The caller supplies the record and decides what
+    to do with the outcome.
     """
-    record = db.get_forecast(forecast_id)
-    if record is None:
-        return UpdateOutcome(reason="forecast not found")
-    if record.outcome is not None or record.is_ambiguous:
-        return UpdateOutcome(reason="forecast already resolved")
-
-    deps = ForecastDeps(verbose=verbose)
-    state = UpdateState(record=record)
-    result = await update_graph.run(CheckResolved(), state=state, deps=deps)
+    result = await update_graph.run(
+        CheckResolved(), state=UpdateState(record=record), deps=deps or ForecastDeps()
+    )
     return result.output
 
 

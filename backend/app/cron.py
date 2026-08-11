@@ -13,11 +13,11 @@ import logfire
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from config import get_settings
+from .config import get_app_settings
 
 from . import db
-from .models import RefreshSummary
-from .graphs import run_update_graph
+from superforecaster.models import RefreshSummary
+from .update import run_update_graph
 
 
 async def run_daily_refresh() -> RefreshSummary:
@@ -63,7 +63,7 @@ def start_scheduler() -> AsyncIOScheduler:
     if _scheduler is not None and _scheduler.running:
         return _scheduler
 
-    settings = get_settings()
+    settings = get_app_settings()
     refresh_cron = settings.refresh_cron_schedule
 
     scheduler = AsyncIOScheduler(timezone="UTC")

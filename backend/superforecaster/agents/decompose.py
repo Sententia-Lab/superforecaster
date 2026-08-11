@@ -6,12 +6,12 @@ judgment-required so effort goes where a base rate actually exists.
 
 from __future__ import annotations
 
-from config import get_budget, get_model_settings, resolve_agent_model
+from ..config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
 from ..models import Decomposition, ForecastInput
-from ..observability import run_agent
+from ..runner import run_agent
 from . import as_of_note, format_question, with_model
 
 INSTRUCTIONS = """You break forecasting questions into tractable pieces. You do not
@@ -123,7 +123,6 @@ Return a Decomposition."""
             bound,
             prompt,
             deps=deps,
-            verbose=deps.verbose,
             # No tools, so the ceiling is zero rather than whatever the process-wide
             # default happens to be. An agent that cannot search should not be holding a
             # search budget it could spend on a tool it does not have.

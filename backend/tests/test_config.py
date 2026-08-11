@@ -1,6 +1,11 @@
 import pytest
 
-from config import BUDGETS, get_budget, get_model_settings, resolve_agent_model
+from superforecaster.config import (
+    BUDGETS,
+    get_budget,
+    get_model_settings,
+    resolve_agent_model,
+)
 
 
 def test_resolve_agent_model_prefers_explicit_override(monkeypatch):
@@ -197,7 +202,7 @@ def test_every_agent_constructor_sets_model_settings():
 
 
 def test_model_settings_ceiling_is_configurable(monkeypatch):
-    from config import get_model_settings
+    from superforecaster.config import get_model_settings
 
     assert get_model_settings()["max_tokens"] == 16384
     monkeypatch.setenv("AGENT_MAX_TOKENS", "32000")

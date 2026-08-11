@@ -10,7 +10,7 @@ is a correction rather than a re-roll.
 
 from __future__ import annotations
 
-from config import (
+from ..config import (
     CheckThresholds,
     get_budget,
     get_check_thresholds,
@@ -29,7 +29,7 @@ from ..models import (
     InsideView,
     OutsideView,
 )
-from ..observability import run_agent
+from ..runner import run_agent
 from . import as_of_note, format_question, with_model
 
 INSTRUCTIONS = """You produce the final Forecast from work already done. You have no
@@ -185,7 +185,6 @@ exactly. Carry the sub-questions into `decompositions`."""
             bound,
             prompt,
             deps=deps,
-            verbose=deps.verbose,
             budget=get_budget(agent.name),
             run_name="synthesize",
         )

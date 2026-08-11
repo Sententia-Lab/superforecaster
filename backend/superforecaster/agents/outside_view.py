@@ -10,14 +10,14 @@ it is what `check_base_rate_derivation` audits.
 
 One agent per *lens*, not per sub-question: with three lenses on five sub-questions the
 research fans out fifteen ways. The fan-out itself is a `.map()` edge in
-`graphs.forecast`, so this module knows nothing about how many cells run or when.
+`stages`, so this module knows nothing about how many cells run or when.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
 
-from config import get_budget, get_model_settings, resolve_agent_model
+from ..config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import UsageLimitExceeded
 
@@ -25,7 +25,6 @@ from .. import checks
 from ..deps import ForecastDeps
 from ..models import (
     Decomposition,
-    Evidence,
     ForecastInput,
     Lens,
     OutsideView,
@@ -33,7 +32,8 @@ from ..models import (
     SubQuestionBaseRates,
     SubPrediction,
 )
-from ..observability import run_agent
+from ..events import Exhausted
+from ..runner import run_agent
 from ..tools import search_web, search_wikipedia
 from . import (
     as_of_note,
@@ -122,7 +122,7 @@ def get_base_rate_cell_agent() -> Agent[ForecastDeps, SubQuestionBaseRates]:
 def cell_deps(deps: ForecastDeps, sub_question_id: str) -> ForecastDeps:
     """A deps copy bound to one column, with its own source list.
 
-    The private `sources_seen` is not a style choice: `observability` detects new sources
+    The private `sources_seen` is not a style choice: `runner` detects new sources
     by remembering how long that list was and slicing off the tail, and two cells
     appending to one list makes that index hand each cell the other's sources. The parent
     extends from these after the barrier.
@@ -165,7 +165,6 @@ your evidence blocks and analogs."""
             bound,
             prompt,
             deps=deps,
-            verbose=deps.verbose,
             budget=get_budget("base_rate_cell", max_iterations=input.max_iterations),
             run_name=f"base rates · {sub_question.id} · {lens.name}",
         )
@@ -184,7 +183,7 @@ def exhausted_notice(deps: ForecastDeps) -> None:
     """
     if deps.emit is None:
         return
-    deps.emit("exhausted", {"id": deps.sub_question}, deps.sub_question)
+    deps.emit(Exhausted(), deps.sub_question)
 
 
 async def _whole_question_cell(

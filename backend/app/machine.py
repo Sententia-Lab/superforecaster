@@ -17,13 +17,16 @@ import json
 from typing import Callable
 
 import logfire
-from config import get_stage_timeout
+from superforecaster.config import get_stage_timeout
 
-from . import db, stages
-from .agents.decompose import with_ids
-from .deps import ForecastDeps
-from .errors import AgentTimeout, StageTimeout
-from .models import (
+from . import db
+from superforecaster import stages
+from superforecaster.stages import STAGE_ORDER
+from superforecaster.agents.decompose import with_ids
+from superforecaster.deps import ForecastDeps
+from superforecaster.events import Sink
+from superforecaster.errors import AgentTimeout, StageTimeout
+from superforecaster.models import (
     BaseRateStepPayload,
     Decomposition,
     ForecastInput,
@@ -229,7 +232,7 @@ def edit_payload(run_id: str, step_id: str, body: dict) -> dict:
 
 def gate_offender(step: dict, steps: list[dict]) -> str | None:
     """Every step in every earlier stage must be complete. Returns the offender."""
-    order = {stage: i for i, stage in enumerate(db.STAGE_ORDER)}
+    order = {stage: i for i, stage in enumerate(STAGE_ORDER)}
     mine = order[step["stage"]]
     for s in steps:
         if order[s["stage"]] < mine and s["status"] != "complete":
@@ -241,7 +244,7 @@ async def execute_step(
     step_id: str,
     *,
     max_iterations: int | None = None,
-    emit: Callable[[str, dict, str | None], None] | None = None,
+    emit: Sink | None = None,
 ) -> dict:
     """Claim and run one gated step; persist whatever happens to it.
 

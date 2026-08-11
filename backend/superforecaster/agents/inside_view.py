@@ -14,14 +14,14 @@ already control for the feature, and under-count against the ones that do not.
 That is also why the cell is told what its population already accounts for — the research
 step recorded it, and it is the single most useful thing to know before adjusting.
 
-The fan-out is a `.map()` edge in `graphs.forecast`; this module supplies one cell. P14
+The fan-out is handled by `stages`; this module supplies one cell. P14
 and P15 belong to `reflect`, its own step after the barrier — see that module for why
 they cannot be asked of one lens.
 """
 
 from __future__ import annotations
 
-from config import get_budget, get_model_settings, resolve_agent_model
+from ..config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import UsageLimitExceeded
 
@@ -35,7 +35,7 @@ from ..models import (
     SubQuestionAdjustments,
     SubPrediction,
 )
-from ..observability import run_agent
+from ..runner import run_agent
 from ..tools import find_disconfirming_evidence, search_web, search_wikipedia
 from . import (
     as_of_note,
@@ -195,7 +195,6 @@ rate for THIS population, not for the question — each with a flip test. Say in
             bound,
             prompt,
             deps=deps,
-            verbose=deps.verbose,
             budget=get_budget(agent.name, max_iterations=input.max_iterations),
             run_name=f"inside view · {sub_question.id} · {lens.name}",
         )

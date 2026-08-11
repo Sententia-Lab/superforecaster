@@ -622,13 +622,20 @@ class UpdateDecision(BaseModel):
 
 
 class UpdateOutcome(BaseModel):
-    """Final output of UpdateGraph."""
+    """Final output of the update cycle, and everything a caller needs to persist it.
+
+    The cycle itself writes nothing — it returns this, and whoever owns the storage
+    decides what to do with it. `reason` says what the cycle concluded; `reasoning`
+    carries the agent's own argument for the move, which is what gets recorded against
+    the forecast when `updated` is true.
+    """
 
     flagged_resolved: bool = False
     updated: bool = False
     new_probability: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     violations: list[CheckViolation] = Field(default_factory=list)
     reason: str = ""
+    reasoning: str = ""
 
 
 # ---------- Resolution agent ----------

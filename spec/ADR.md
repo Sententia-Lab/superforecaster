@@ -337,14 +337,21 @@ distinction this ADR actually cares about.
 
 ## ADR 14 — Every threshold is configuration
 
-**Status:** Accepted (v4, spec3)
+**Status:** Accepted (v4, spec3; amended by ADR 73)
 
-**Decision.** Every tunable number in `checks.py` lives in `config.CheckThresholds`,
-overridable by a `CHECK_*` environment variable. No numeric literals in `checks.py`.
+**Decision.** Every tunable number in `checks.py` lives in
+`superforecaster.config.CheckThresholds`, overridable by a `CHECK_*` environment
+variable. No numeric literals in `checks.py`.
 
 **Rationale.** These thresholds are guesses until a backtest says otherwise. A hardcoded `0.20`
 is a guess nobody can revise without editing code; a config value is a guess anyone can tune
 from a scorecard.
+
+**Amendment (ADR 73).** The dataclass moved from `backend/config.py` into the package.
+The decision is unchanged — a threshold is still configuration, still env-overridable —
+but `CheckThresholds` is a domain type, and defining it outside the package meant core
+could not be imported without a module the wheel did not ship. Deployment settings went
+the other way, into `app.config`.
 
 ---
 
@@ -492,22 +499,26 @@ the single largest gap, and it should not be obscured by how much scaffolding ex
 
 ---
 
-## ADR 22 — Flat modules, except agents / graphs / evals
+## ADR 22 — Flat modules, except agents
 
-**Status:** Accepted (v3, amended v4)
+**Status:** Accepted (v3, amended v4; amended by ADR 73)
 
-**Decision.** `backend/` and `frontend/` split at the top level. Within the Python package,
-modules are files rather than nested packages — with three exceptions: `agents/`, `graphs/`,
-and `evals/`.
+**Decision.** `backend/` and `frontend/` split at the top level. Within a Python package,
+modules are files rather than nested packages — with one exception, `agents/`.
 
-**Rationale.** The original rule was strictly flat. Eight agents as eight flat files would bury
-the shared modules beside them, and the agents/graphs split *is* the architecture — orchestration
-in one directory, agents in another, each ignorant of the other. `evals/` follows because it
-carries data files alongside code.
+**Rationale.** The original rule was strictly flat. Eleven agents as eleven flat files
+would bury the shared modules beside them, and the agents are the one group large enough
+to earn a directory.
 
-**Related.** `ForecastDeps` lives in its own `deps.py` rather than in `graphs/state.py`, because
-`tools` needs it and `graphs` imports `agents` imports `tools` — defining it beside the graph
-state would be a circular import.
+**Amendment (ADR 73).** Two of the three exceptions are gone. `graphs/` held the update
+graph and a state dataclass after the forecast pipeline left under ADR 45; it collapsed
+into `superforecaster/update.py` — a package for one module is a directory pretending to
+be an architecture. `evals/` moved to `app/evals/`, where it keeps its directory because
+it still carries data files alongside code.
+
+**Related.** `ForecastDeps` lives in its own `deps.py` rather than beside the update
+state, because `tools` needs it and `update` imports `agents` imports `tools` — defining
+it beside the state would be a circular import.
 
 ---
 
@@ -2502,3 +2513,67 @@ actually belong to the population it was told to measure. That is a judgment, no
 arithmetic, and no check in the registry can make it — `population` is overwritten
 unconditionally, so comparing stored against chosen would be trivially true. The guard is
 that the cell has no sanctioned reason to wander, not that wandering is detected.
+
+---
+
+## ADR 73 — `superforecaster` is a library; `app` is what runs it
+
+**Status:** Accepted (2026-08-11)
+
+**Decision.** `backend/` holds three packages, and imports run one way only:
+
+```
+api  ->  app  ->  superforecaster
+```
+
+| Package | Holds |
+|---|---|
+| `superforecaster` | the methodology: models, checks, scoring, the agents, the stages, the update cycle, the runner, and its own config |
+| `app` | storage, the gated-run machine, the scheduler, the CLI, the evals, `.env` loading, Logfire configuration, the SSE wire format |
+| `api` | FastAPI routes |
+
+`tests/test_layering.py` enforces it. Core may not import `app`, `api`, `sqlite3`,
+`typer`, `click`, `fastapi`, `starlette`, `sse_starlette`, `uvicorn`, `apscheduler`, or
+`dotenv`, and importing it must open no socket and configure no Logfire.
+
+**Rationale.** The package could not be installed. `superforecaster/__init__.py` did
+`import config` — a module at `backend/` root that `[tool.hatch.build.targets.wheel]`
+never shipped — so `pip install` followed by `import superforecaster` raised
+`ImportError`. It worked in this repo only because pytest set `pythonpath = ["."]`. The
+same `__init__` then called `configure_logfire()`, which could block five seconds on an
+HTTP token probe before the first line of anyone's program.
+
+Underneath those two bugs was one cause: no line said what belonged in the package. So it
+accumulated a SQLite schema with migrations, a state machine that was a transaction script
+over it, an APScheduler singleton whose lifecycle FastAPI owned, and a 598-line typer CLI
+whose `serve` command ran `uvicorn.run("api.main:app")` — the domain package starting the
+web server, importing by string the layer that imports it.
+
+**What the split forced, beyond moving files.**
+
+- **The update graph stopped writing.** Its nodes called `db.mark_refreshed` and
+  `db.add_forecast_update` as they ran, and `run_update_graph` looked the record up
+  itself — so "forecast not found" was a storage answer arriving as a forecasting outcome.
+  `superforecaster.update.run_update_cycle` now takes a record and returns an
+  `UpdateOutcome` carrying what should be written; `app.update` owns the database.
+- **`STAGE_ORDER` moved to `stages.py`.** The pipeline's shape was exported from the
+  persistence module and read back by the state machine.
+- **`run_agent` stopped configuring.** A library instruments — it opens spans and writes
+  logs, which cost nothing when unconfigured. Whether traces leave the process is the
+  application's decision, made once per entry point.
+- **Events became types.** `deps.emit` took `(str, dict, str | None)`, so the browser's
+  payload schema — including a hardcoded `credibility: None` — lived inside the tracing
+  module. Core now emits `events.Query | Source | Thought | Exhausted` and `app.stream`
+  owns the wire format.
+- **Dependency ranges got a ceiling.** Installing the wheel into a clean venv resolved
+  pydantic-ai 2.x against a `>=0.4.0` floor, where `Graph()` no longer takes
+  `run_end_type`. The lockfile had hidden this from everyone working in a checkout.
+
+**Cost.** `python -m superforecaster` no longer exists; `[project.scripts]` provides the
+`superforecaster` command instead. Verbose CLI output is now Logfire's console sink
+rather than a second set of `[agent] …` prints of the same information.
+
+**What this does not claim.** `app` is not a second architecture. It is the residue —
+everything that is true of *this* deployment rather than of forecasting. A consumer who
+imports `superforecaster` gets the methodology and brings their own storage, process, and
+interface.

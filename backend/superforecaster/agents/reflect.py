@@ -22,7 +22,7 @@ so the wording that produced today's outputs is preserved.
 
 from __future__ import annotations
 
-from config import get_budget, get_model_settings, resolve_agent_model
+from ..config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
@@ -33,7 +33,7 @@ from ..models import (
     OutsideView,
     Reflection,
 )
-from ..observability import run_agent
+from ..runner import run_agent
 from . import as_of_note, format_question, with_model
 
 INSTRUCTIONS = """You review a forecast that has already been researched, and supply the
@@ -131,7 +131,6 @@ question, plus all five bias checks."""
             bound,
             prompt,
             deps=deps,
-            verbose=deps.verbose,
             budget=get_budget(agent.name),
             run_name="reflect",
         )

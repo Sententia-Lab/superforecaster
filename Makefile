@@ -4,7 +4,7 @@
 .DEFAULT_GOAL := help
 
 UV := cd backend && uv run
-CLI := $(UV) python -m superforecaster
+CLI := $(UV) superforecaster
 
 help: ## List every target
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -51,9 +51,9 @@ EVAL_AGENT := $(filter $(AGENTS),$(MAKECMDGOALS))
 
 eval: ## Score one agent against its eval cases — make eval decompose [ARGS="--model ..."]
 	@test -n "$(EVAL_AGENT)" || { echo 'usage: make eval <agent>, e.g. make eval decompose'; exit 2; }
-	@test -f backend/superforecaster/evals/$(EVAL_AGENT)_eval.py \
+	@test -f backend/app/evals/$(EVAL_AGENT)_eval.py \
 	  || { echo 'no eval for $(EVAL_AGENT) yet — only decompose has one'; exit 2; }
-	$(UV) python -m superforecaster.evals.$(EVAL_AGENT)_eval $(ARGS)
+	$(UV) python -m app.evals.$(EVAL_AGENT)_eval $(ARGS)
 
 .PHONY: $(AGENTS)
 $(AGENTS):

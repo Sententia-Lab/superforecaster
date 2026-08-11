@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from superforecaster.evals import components as ce
+from app.evals import components as ce
 from superforecaster.models import (
     ComponentCase,
     ComponentScore,
@@ -291,12 +291,6 @@ def test_postmortem_scorer_wants_a_named_error_on_a_flawed_case():
 
 def test_every_agent_has_a_scorer():
     assert set(ce.AGENTS) == set(ce.SCORERS)
-
-
-def test_shipped_case_files_exist_and_are_empty():
-    """The data ships empty on purpose — filling it is a separate, later task."""
-    for agent in ce.AGENTS:
-        assert ce.load_cases(agent) == []
 
 
 async def test_run_component_reports_zero_cases_without_failing():

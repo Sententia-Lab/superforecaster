@@ -34,7 +34,7 @@ def _set_admin_key(monkeypatch):
 
 @asynccontextmanager
 async def _noop_lifespan(app):
-    from superforecaster import db
+    from app import db
 
     db.init_db()
     yield

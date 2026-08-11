@@ -9,7 +9,8 @@ import asyncio
 
 import pytest
 
-from superforecaster import db, machine, stages
+from app import db, machine
+from superforecaster import stages
 from superforecaster.errors import StageTimeout
 
 from .gated_factories import (

@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
-from config import get_check_thresholds
+from .config import get_check_thresholds
 
 from . import checks
 from .agents.decompose import run_decompose
@@ -55,6 +55,20 @@ from .models import (
     SubPrediction,
     SynthesisStepPayload,
 )
+
+STAGE_ORDER: tuple[str, ...] = (
+    "decompose",
+    "lenses",
+    "base_rates",
+    "inside_view",
+    "synthesis",
+)
+"""The five gated stages, in the order a caller advances through them.
+
+The order the functions below must run in, so it belongs beside them. It used to live
+in the persistence module, which meant the state machine read the pipeline's shape back
+out of the database layer that only stored it.
+"""
 
 MAX_SYNTHESIS_ATTEMPTS = 2
 
@@ -318,7 +332,6 @@ async def run_all(
     *,
     as_of: datetime | None = None,
     model: str | None = None,
-    verbose: bool = False,
     emit=None,
 ) -> tuple[Forecast, list[CheckViolation]]:
     """Run every stage back-to-back with no gates. The CLI and eval entry point.
@@ -330,7 +343,7 @@ async def run_all(
     Returns the forecast plus any violations that survived the retry, so a caller can
     tell a clean forecast from one that never satisfied its own methodology.
     """
-    deps = ForecastDeps(as_of=as_of, model=model, verbose=verbose, emit=emit)
+    deps = ForecastDeps(as_of=as_of, model=model, emit=emit)
 
     decomposition = await run_decompose_stage(input, deps)
     researchable = [

@@ -13,12 +13,12 @@ at the time (noise). Only the first kind should change how the agent forecasts.
 
 from __future__ import annotations
 
-from config import get_budget, get_model_settings, resolve_agent_model
+from ..config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
 from ..models import ForecastRecord, PostMortem
-from ..observability import run_agent
+from ..runner import run_agent
 from ..tools import search_web
 from . import with_model
 
@@ -150,7 +150,6 @@ Return a PostMortem."""
             bound,
             prompt,
             deps=deps,
-            verbose=deps.verbose,
             budget=get_budget(agent.name),
             run_name="post-mortem",
         )

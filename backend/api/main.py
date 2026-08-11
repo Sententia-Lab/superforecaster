@@ -12,20 +12,20 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import config  # noqa: F401 — loads backend/.env
-from config import (
+from app.config import get_app_settings, load_env, origin, set_runtime_key
+from app.observability import configure_logfire
+from superforecaster.config import (
     active_llm_key_name,
     get_settings,
-    origin,
     resolve_agent_model,
-    set_runtime_key,
 )
+
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from superforecaster import cron, db
+from app import cron, db
 
 from .admin import router as admin_router
 from .deps import is_local_mode, require_admin
@@ -33,6 +33,10 @@ from .calibration import router as calibration_router
 from .forecasts import router as forecasts_router
 from .questions import router as questions_router
 from .runs import router as runs_router
+
+# Before anything reads a setting. The core library no longer loads `.env` on import —
+# it is a library — so the process that wants a `.env` says so, and this is that line.
+load_env()
 
 
 def _preflight() -> list[str]:
@@ -43,6 +47,7 @@ def _preflight() -> list[str]:
     once at startup costs four lines and turns "why is this bad" into something visible.
     """
     s = get_settings()
+    app_s = get_app_settings()
     lines = []
 
     try:
@@ -58,15 +63,17 @@ def _preflight() -> list[str]:
     )
     lines.append(
         "  admin auth    ADMIN_API_KEY"
-        if s.admin_api_key
+        if app_s.admin_api_key
         else "  admin auth    local mode — unauthenticated requests from localhost only"
     )
-    lines.append(f"  database      {s.database_path}")
+    lines.append(f"  database      {app_s.database_path}")
     return lines
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Core emits spans but never configures Logfire. This process decides where they go.
+    configure_logfire()
     db.init_db()
     cron.start_scheduler()
     print("\nSuperforecaster", flush=True)
@@ -182,6 +189,6 @@ app.include_router(runs_router)
 
 # The static frontend. Mounted last and at "/" so it cannot shadow an API prefix —
 # a mount at the root matches everything the routers above declined.
-_frontend = Path(get_settings().frontend_dir)
+_frontend = Path(get_app_settings().frontend_dir)
 if _frontend.is_dir():
     app.mount("/", StaticFiles(directory=_frontend, html=True), name="frontend")

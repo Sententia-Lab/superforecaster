@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from superforecaster import cron
+from app import cron
 from superforecaster.models import RefreshSummary
 
 from .deps import require_admin

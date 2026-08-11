@@ -17,12 +17,12 @@ critic, which does search, is what verifies the name behind "Check resolvable".
 
 from __future__ import annotations
 
-from config import get_budget, get_model_settings, resolve_agent_model
+from ..config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
 from ..models import DraftedQuestion
-from ..observability import run_agent
+from ..runner import run_agent
 from . import with_model
 
 INSTRUCTIONS = """You convert one block of freeform text into a structured forecasting
@@ -110,7 +110,6 @@ Return a DraftedQuestion."""
             bound,
             prompt,
             deps=deps,
-            verbose=deps.verbose,
             budget=get_budget(agent.name),
             run_name="draft question",
         )

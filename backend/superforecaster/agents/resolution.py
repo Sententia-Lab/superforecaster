@@ -12,12 +12,12 @@ Prompt text ported from the previous `superforecaster/resolution.py`.
 
 from __future__ import annotations
 
-from config import get_budget, get_model_settings, resolve_agent_model
+from ..config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
 from ..models import ForecastRecord, ResolutionCheckResult
-from ..observability import run_agent
+from ..runner import run_agent
 from ..tools import search_web, search_wikipedia
 from . import with_model
 
@@ -103,7 +103,6 @@ Return a ResolutionCheckResult."""
             bound,
             prompt,
             deps=deps,
-            verbose=deps.verbose,
             budget=get_budget(agent.name),
             run_name="resolution check",
         )

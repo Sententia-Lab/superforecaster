@@ -11,12 +11,12 @@ graph routes back through `VerifyLargeMove`.
 
 from __future__ import annotations
 
-from config import get_budget, get_model_settings, get_settings, resolve_agent_model
+from ..config import get_budget, get_model_settings, get_settings, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
 from ..models import ForecastRecord, UpdateDecision
-from ..observability import run_agent
+from ..runner import run_agent
 from ..tools import find_disconfirming_evidence, search_web
 from . import with_model
 
@@ -170,7 +170,6 @@ posterior={prior:.3f} with an empty evidence list."""
             bound,
             prompt,
             deps=deps,
-            verbose=deps.verbose,
             budget=get_budget(agent.name),
             run_name=run_name,
         )

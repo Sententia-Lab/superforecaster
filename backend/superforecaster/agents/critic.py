@@ -13,14 +13,14 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from config import get_budget, get_model_settings, resolve_agent_model
+from ..config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import UsageLimitExceeded
 
 from ..deps import ForecastDeps
 from ..errors import AgentTimeout
 from ..models import CriteriaCritique
-from ..observability import run_agent
+from ..runner import run_agent
 from ..tools import search_web
 from . import attach_budget, withdraw_spent_tools, with_model
 
@@ -143,7 +143,6 @@ Return a CriteriaCritique."""
                 bound,
                 prompt,
                 deps=deps,
-                verbose=deps.verbose,
                 budget=get_budget(agent.name),
                 run_name="criteria critique",
             )

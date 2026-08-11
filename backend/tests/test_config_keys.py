@@ -10,8 +10,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
-import config
 from api.main import app
+from app import config as app_config
+from superforecaster import config as core_config
 
 
 @pytest.fixture
@@ -24,10 +25,10 @@ async def client():
 @pytest.fixture(autouse=True)
 def _clean_runtime_keys():
     """`_RUNTIME_SET` is module state, so a test that sets a key must not leak it."""
-    before = set(config._RUNTIME_SET)
+    before = set(app_config._RUNTIME_SET)
     yield
-    config._RUNTIME_SET.clear()
-    config._RUNTIME_SET.update(before)
+    app_config._RUNTIME_SET.clear()
+    app_config._RUNTIME_SET.update(before)
 
 
 # ---------- set_runtime_key ----------
@@ -36,26 +37,26 @@ def _clean_runtime_keys():
 def test_set_runtime_key_writes_an_allowlisted_name(monkeypatch):
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
 
-    config.set_runtime_key("TAVILY_API_KEY", "tvly-abc")
+    app_config.set_runtime_key("TAVILY_API_KEY", "tvly-abc")
 
-    assert config.get_settings().tavily_api_key == "tvly-abc"
+    assert core_config.get_settings().tavily_api_key == "tvly-abc"
 
 
 def test_set_runtime_key_refuses_anything_else(monkeypatch):
     """Without the allowlist this endpoint repoints the database, which is not a key."""
     with pytest.raises(ValueError):
-        config.set_runtime_key("DATABASE_PATH", "/tmp/somewhere-else.db")
+        app_config.set_runtime_key("DATABASE_PATH", "/tmp/somewhere-else.db")
 
     with pytest.raises(ValueError):
-        config.set_runtime_key("FRONTEND_DIR", "/tmp/anything")
+        app_config.set_runtime_key("FRONTEND_DIR", "/tmp/anything")
 
 
 def test_an_empty_value_clears_the_key(monkeypatch):
     monkeypatch.setenv("TAVILY_API_KEY", "tvly-abc")
-    config.set_runtime_key("TAVILY_API_KEY", "")
+    app_config.set_runtime_key("TAVILY_API_KEY", "")
 
-    assert config.get_settings().tavily_api_key is None
-    assert config.origin("TAVILY_API_KEY") == "unset"
+    assert core_config.get_settings().tavily_api_key is None
+    assert app_config.origin("TAVILY_API_KEY") == "unset"
 
 
 # ---------- origin ----------
@@ -65,19 +66,19 @@ def test_origin_says_session_for_a_runtime_key(monkeypatch):
     """A runtime key used to report `.env` — a lie about provenance in the one place a
     reader goes to check provenance."""
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-    config.set_runtime_key("TAVILY_API_KEY", "tvly-abc")
+    app_config.set_runtime_key("TAVILY_API_KEY", "tvly-abc")
 
-    assert config.origin("TAVILY_API_KEY") == "session"
+    assert app_config.origin("TAVILY_API_KEY") == "session"
 
 
 def test_origin_says_environment_for_a_preset_variable():
     """`ANTHROPIC_API_KEY` is exported by conftest before `config` snapshots it."""
-    assert config.origin("ANTHROPIC_API_KEY") in ("environment", ".env")
+    assert app_config.origin("ANTHROPIC_API_KEY") in ("environment", ".env")
 
 
 def test_origin_says_unset_when_nothing_set_it(monkeypatch):
     monkeypatch.delenv("WIKIPEDIA_API_KEY", raising=False)
-    assert config.origin("WIKIPEDIA_API_KEY") == "unset"
+    assert app_config.origin("WIKIPEDIA_API_KEY") == "unset"
 
 
 # ---------- the endpoint ----------
@@ -106,8 +107,8 @@ async def test_the_llm_row_follows_the_key_that_credentials_the_model(
     resp = await client.put("/config/keys", json={"llm_api_key": "pylf_v1_new"})
 
     assert resp.json()["keys"]["llm_var"] == "PYDANTIC_AI_GATEWAY_API_KEY"
-    assert config.get_settings().pydantic_ai_gateway_api_key == "pylf_v1_new"
-    assert config.get_settings().anthropic_api_key != "pylf_v1_new"
+    assert core_config.get_settings().pydantic_ai_gateway_api_key == "pylf_v1_new"
+    assert core_config.get_settings().anthropic_api_key != "pylf_v1_new"
 
 
 @pytest.mark.asyncio
@@ -117,7 +118,7 @@ async def test_the_llm_row_falls_back_to_anthropic(client, monkeypatch):
     resp = await client.put("/config/keys", json={"llm_api_key": "sk-ant-new"})
 
     assert resp.json()["keys"]["llm_var"] == "ANTHROPIC_API_KEY"
-    assert config.get_settings().anthropic_api_key == "sk-ant-new"
+    assert core_config.get_settings().anthropic_api_key == "sk-ant-new"
 
 
 @pytest.mark.asyncio
@@ -129,7 +130,7 @@ async def test_setting_a_key_takes_effect_on_the_next_read(client, monkeypatch):
     assert resp.status_code == 200
     assert resp.json()["keys"]["tavily"] == "session"
     assert resp.json()["search_enabled"] is True
-    assert config.get_settings().tavily_api_key == "tvly-abc"
+    assert core_config.get_settings().tavily_api_key == "tvly-abc"
 
 
 @pytest.mark.asyncio
@@ -138,7 +139,7 @@ async def test_an_omitted_field_leaves_that_key_alone(client, monkeypatch):
 
     await client.put("/config/keys", json={"wikipedia_api_key": "wiki-abc"})
 
-    assert config.get_settings().tavily_api_key == "tvly-keep-me"
+    assert core_config.get_settings().tavily_api_key == "tvly-keep-me"
 
 
 @pytest.mark.asyncio

@@ -26,15 +26,16 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from config import resolve_agent_model
+from superforecaster.config import resolve_agent_model
 from pydantic_evals import Case, Dataset
 from pydantic_evals.evaluators import Evaluator, EvaluatorContext, LLMJudge
 from pydantic_evals.evaluators.common import OutputConfig
 
-from .. import checks
-from ..agents.decompose import run_decompose
-from ..deps import ForecastDeps
-from ..models import Decomposition, ForecastInput
+from superforecaster import checks
+from superforecaster.agents.decompose import run_decompose
+from superforecaster.deps import ForecastDeps
+from superforecaster.models import Decomposition, ForecastInput
+from ..config import load_env
 from ..observability import configure_logfire
 
 Ctx = EvaluatorContext[ForecastInput, Decomposition, dict]
@@ -98,6 +99,7 @@ sub-questions. Judge these five things, and say which ones failed.
 5. NOTHING SETTLED. No sub-question asks about an event the question itself already
    states has happened. If the question says the company already filed, a
    "will they file?" sub-question fails this.
+6. 
 
 Score 1.0 when all five hold. Subtract 0.2 for each one that fails. In the reason,
 name the numbered items that failed and quote the sub-question at fault. If they all
@@ -245,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
     # `run_agent` configures logfire too, but only once the first case is already
     # running — and a span opened before `logfire.configure()` is never exported. The
     # experiment span opens before any of that, so configure here or lose the tree.
+    load_env()
     configure_logfire()
 
     # The judge holds still while `--model` moves. It defaults to the configured agent

@@ -22,17 +22,20 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-import config  # noqa: F401 — loads backend/.env
+from .config import load_env
+from .observability import configure_logfire
 
 from . import db
-from .agents.critic import run_critique
-from .agents.postmortem import run_postmortem
-from .agents.resolution import run_resolution_check
-from .agents.update import run_update
-from .deps import ForecastDeps
-from .graphs import run_update_graph, update_mermaid
-from .stages import run_all
-from .models import (
+from superforecaster.agents.critic import run_critique
+from superforecaster.agents.postmortem import run_postmortem
+from superforecaster.agents.resolution import run_resolution_check
+from superforecaster.agents.update import run_update
+from superforecaster.deps import ForecastDeps
+from .update import run_update_graph
+
+from superforecaster.update import update_mermaid
+from superforecaster.stages import run_all
+from superforecaster.models import (
     Forecast,
     ForecastInput,
     ForecastRecord,
@@ -40,7 +43,7 @@ from .models import (
     ResearchSummary,
     SubPrediction,
 )
-from . import model_garden
+from superforecaster import model_garden
 from .evals import components as component_evals
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
@@ -159,7 +162,6 @@ async def _cmd_forecast(args: argparse.Namespace) -> int:
             category=category,
             max_iterations=args.max_iterations,
         ),
-        verbose=args.verbose,
     )
 
     if violations:
@@ -182,12 +184,12 @@ async def _cmd_forecast(args: argparse.Namespace) -> int:
 async def _cmd_refresh(args: argparse.Namespace) -> int:
     if args.id is not None:
         db.init_db()
-        _print_json(await run_update_graph(args.id, verbose=args.verbose))
+        _print_json(await run_update_graph(args.id))
         return 0
 
     data = _load_fixture(args.fixture, "existing_forecast.json")
     record = _record_from_fixture(data)
-    deps = ForecastDeps(verbose=args.verbose)
+    deps = ForecastDeps()
     _print_json(await run_update(record, deps))
     return 0
 
@@ -210,7 +212,7 @@ async def _cmd_resolve(args: argparse.Namespace) -> int:
     else:
         record = _record_from_fixture(data)
 
-    deps = ForecastDeps(verbose=args.verbose)
+    deps = ForecastDeps()
     _print_json(await run_resolution_check(record, deps))
     return 0
 
@@ -229,7 +231,7 @@ async def _cmd_critique(args: argparse.Namespace) -> int:
         question=args.question,
         resolution_criteria=args.criteria,
         resolution_date=resolution_date,
-        deps=ForecastDeps(verbose=args.verbose),
+        deps=ForecastDeps(),
     )
     _print_json(result)
     return 0
@@ -245,7 +247,7 @@ async def _cmd_postmortem(args: argparse.Namespace) -> int:
     if record is None:
         print(f"forecast {args.id} not found", file=sys.stderr)
         return 1
-    _print_json(await run_postmortem(record, ForecastDeps(verbose=args.verbose)))
+    _print_json(await run_postmortem(record, ForecastDeps()))
     return 0
 
 
@@ -342,7 +344,9 @@ def _cmd_config(args: argparse.Namespace) -> int:
     """
     import os
 
-    from config import ENV_FILE, origin, resolve_agent_model
+    from .config import ENV_FILE, origin
+
+    from superforecaster.config import resolve_agent_model
 
     print(
         f"\n.env file   {ENV_FILE}  ({'present' if ENV_FILE.exists() else 'ABSENT'})\n"
@@ -435,7 +439,7 @@ app = typer.Typer(
 )
 
 VERBOSE = typer.Option(
-    False, "-v", "--verbose", help="Print agent tool calls and usage stats to stderr"
+    False, "-v", "--verbose", help="Print agent activity to the terminal"
 )
 
 
@@ -583,7 +587,12 @@ def serve(
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Kept as a function so `python -m superforecaster` and the tests share an entry."""
+    """Kept as a function so the console script and the tests share an entry."""
+    load_env()
+    # The library instruments; this process decides where the traces go. Verbose is read
+    # off argv rather than the parsed flags because configuration has to happen before
+    # the first agent runs, and typer has not dispatched yet.
+    configure_logfire(verbose=bool({"-v", "--verbose"} & set(argv or sys.argv[1:])))
     try:
         app(args=argv, standalone_mode=False)
     except typer.Exit as exc:

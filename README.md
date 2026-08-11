@@ -145,6 +145,9 @@ The CLI runs the same stages without the browser:
 | `make resolve ID=<uuid>` | has it resolved yet? |
 | `make cli ARGS="--help"` | everything else |
 
+The CLI is the `superforecaster` console script (`app.cli:main`). `python -m
+superforecaster` no longer works — the package is a library and the CLI lives in `app`.
+
 **Docker**, if you would rather not install `uv` and Node at all. Set your keys **and**
 an `ADMIN_API_KEY` in the environment first — a container is not localhost, so the Keys
 panel cannot authenticate you into one that has no admin key:
@@ -213,7 +216,7 @@ does not stop a model that searches forty times for cheap results.
 | tool calls | searches | Pydantic AI |
 | iterations | model requests | Pydantic AI |
 
-The defaults are one row per agent in `backend/config.py` (`BUDGETS`). Override one with
+The defaults are one row per agent in `backend/superforecaster/config.py` (`BUDGETS`). Override one with
 `BUDGET_<AGENT>="cost,tokens,tool_calls,iterations"` — for example
 `BUDGET_CRITIC="0.10,60000,3,6"`.
 
@@ -233,6 +236,22 @@ together.
 ---
 
 ## Where things are
+
+`backend/` holds three packages, and imports run one way: `api → app → superforecaster`.
+
+| | |
+|---|---|
+| `backend/superforecaster/` | the methodology — models, checks, scoring, the eleven agents, the stages, the update cycle. Installable and importable on its own; no database, no CLI, no web framework |
+| `backend/app/` | what runs it — SQLite, the gated-run state machine, the scheduler, the CLI, the evals, `.env` loading, Logfire configuration |
+| `backend/api/` | the FastAPI routes |
+
+Using the library on its own:
+
+```python
+from superforecaster import ForecastInput, run_all
+
+forecast, violations = await run_all(ForecastInput(...))
+```
 
 - **What exists and what it does** → [`spec/CURRENT_STATE.md`](spec/CURRENT_STATE.md)
 - **Why it is shaped this way** → [`spec/ADR.md`](spec/ADR.md)

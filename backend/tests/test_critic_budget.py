@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 from pydantic_ai.exceptions import UsageLimitExceeded
 
-import config
+from superforecaster import config
 from superforecaster.agents import critic
 from superforecaster.models import CriteriaCritique
 
@@ -230,7 +230,7 @@ def test_no_llm_key_is_a_503_that_says_which_variable_to_set(monkeypatch):
 
 @asynccontextmanager
 async def _noop_lifespan(app):
-    from superforecaster import db
+    from app import db
 
     db.init_db()
     yield
