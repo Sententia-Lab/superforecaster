@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 from pydantic_ai import Agent, RunContext, capture_run_messages
+from pydantic_ai.capabilities.hooks import Hooks
 from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import (
     ModelMessage,
@@ -225,7 +226,7 @@ def _spender(batch: int, *, withdraw: bool) -> Agent:
         FunctionModel(_greedy(batch)),
         deps_type=ForecastDeps,
         output_type=_Answer,
-        prepare_tools=withdraw_spent_tools if withdraw else None,
+        capabilities=[Hooks(prepare_tools=withdraw_spent_tools)] if withdraw else [],
     )
 
     @agent.tool
@@ -249,7 +250,7 @@ async def test_a_greedy_agent_still_returns_an_answer(batch: int):
 
     assert result.output.finding == "thin"
     # It may overshoot by one over-eager batch, never by a second.
-    assert result.usage().tool_calls < CELL.tool_calls + batch
+    assert result.usage.tool_calls < CELL.tool_calls + batch
 
 
 @pytest.mark.parametrize("batch", [1, 3, 4])

@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
+from pydantic_graph import EndMarker
 
 from superforecaster import update as ug
 from superforecaster.deps import ForecastDeps
@@ -113,15 +114,23 @@ def stub(monkeypatch):
 async def visited(
     record: ForecastRecord,
 ) -> tuple[list[str], UpdateState, UpdateOutcome]:
-    """Walk the cycle, reporting which nodes ran, the state, and what it concluded."""
+    """Walk the cycle, reporting which nodes ran, the state, and what it concluded.
+
+    Iterating a run yields a batch of scheduled tasks at a time, or an `EndMarker` when
+    the graph finishes. A task names its node rather than being one, so the node name
+    comes off `task.node_id` — which `BaseNode.get_node_id` defines as the class name,
+    the same string this used to read off the node instance.
+    """
     seen: list[str] = []
     st = UpdateState(record=record)
     async with ug.update_graph.iter(
-        ug.CheckResolved(), state=st, deps=ForecastDeps()
+        inputs=ug.CheckResolved(), state=st, deps=ForecastDeps()
     ) as run:
-        async for node in run:
-            seen.append(type(node).__name__)
-    return seen, st, run.result.output
+        async for item in run:
+            if isinstance(item, EndMarker):
+                break
+            seen.extend(task.node_id for task in item)
+    return seen, st, run.output
 
 
 # ---------- resolution short-circuits ----------
@@ -245,7 +254,15 @@ async def test_an_internally_inconsistent_update_is_refused(stub):
 
 
 def test_mermaid_shows_both_branches():
+    """A node with two possible successors now renders through an explicit
+    `<<choice>>` node, so `CheckResolved --> ApplyBayes` is drawn in two hops."""
     code = ug.update_mermaid()
-    assert "CheckResolved --> ApplyBayes" in code
-    assert "GuardUpdate --> VerifyLargeMove" in code
+
+    assert "[*] --> CheckResolved" in code
+    assert "CheckResolved --> decision" in code
+    assert "decision --> ApplyBayes" in code  # not resolved
+    assert "decision --> [*]" in code  # resolved, straight to the end
+
+    assert "GuardUpdate --> decision_2" in code
+    assert "decision_2 --> VerifyLargeMove" in code
     assert "VerifyLargeMove --> GuardUpdate" in code

@@ -15,6 +15,7 @@ from datetime import datetime
 
 from ..config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
+from pydantic_ai.capabilities.hooks import Hooks
 from pydantic_ai.exceptions import UsageLimitExceeded
 
 from ..deps import ForecastDeps
@@ -96,7 +97,7 @@ def build_critic_agent(
         output_type=CriteriaCritique,
         system_prompt=INSTRUCTIONS,
         tools=[search_web],
-        prepare_tools=withdraw_spent_tools,
+        capabilities=[Hooks(prepare_tools=withdraw_spent_tools)],
         retries=1,
     )
     attach_budget(agent)

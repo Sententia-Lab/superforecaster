@@ -655,6 +655,8 @@ scheduler, and no side effects on import.
 | `fixtures/` | the three JSON questions `--fixture` loads |
 | `evals/components.py` | per-agent eval harness (`run_component`, `SCORERS`). Scorers only — the case files are not written yet |
 | `evals/decompose_eval.py` | pydantic-evals dataset for the decompose agent: three mechanical evaluators plus an `LLMJudge` scoring against `RUBRIC`. `--model`, `--judge-model`, `--budget` flags. Run as a script, not under pytest — it calls the real model |
+| `evals/trajectory.py` | judges an agent's tool calls, not its output. `record_trajectory` captures one run via `capture_run_messages` and writes it to the case; `ToolTrajectoryJudge` scores tool selection, arguments, and call count with a second model. Counting is left to pydantic-evals' own `MaxToolCalls`/`MaxModelRequests`, which read spans. Agent-neutral — each eval brings its own rubric |
+| `evals/critic_eval.py` | pydantic-evals dataset for the critic agent: `Verdict` and `NamedASource` on the output, `MaxToolCalls` (per case) and `MaxModelRequests` on the spans, an `LLMJudge` on `RUBRIC`, and a `ToolTrajectoryJudge` on `TOOL_RUBRIC`. Same flags as `decompose_eval.py`, and the same reason for being a script |
 
 **Backend — `backend/api/`**
 

@@ -210,7 +210,7 @@ async def run_agent(
     if cancelled is not None:
         raise cancelled
 
-    usage = result.usage()
+    usage = result.usage
     logfire.info(
         "finished {run_name}",
         run_name=run_name,

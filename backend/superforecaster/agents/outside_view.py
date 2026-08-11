@@ -19,6 +19,7 @@ from dataclasses import replace
 
 from ..config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
+from pydantic_ai.capabilities.hooks import Hooks
 from pydantic_ai.exceptions import UsageLimitExceeded
 
 from .. import checks
@@ -102,7 +103,7 @@ def build_base_rate_cell_agent(
         output_type=SubQuestionBaseRates,
         system_prompt=INSTRUCTIONS,
         tools=[search_web, search_wikipedia],
-        prepare_tools=withdraw_spent_tools,
+        capabilities=[Hooks(prepare_tools=withdraw_spent_tools)],
         retries=1,
     )
     attach_budget(agent)
