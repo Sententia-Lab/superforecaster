@@ -25,7 +25,6 @@ from .. import checks
 from ..deps import ForecastDeps
 from ..models import (
     Decomposition,
-    Evidence,
     ForecastInput,
     Lens,
     OutsideView,
@@ -166,7 +165,6 @@ your evidence blocks and analogs."""
             bound,
             prompt,
             deps=deps,
-            verbose=deps.verbose,
             budget=get_budget("base_rate_cell", max_iterations=input.max_iterations),
             run_name=f"base rates · {sub_question.id} · {lens.name}",
         )

@@ -162,7 +162,6 @@ async def _cmd_forecast(args: argparse.Namespace) -> int:
             category=category,
             max_iterations=args.max_iterations,
         ),
-        verbose=args.verbose,
     )
 
     if violations:
@@ -185,12 +184,12 @@ async def _cmd_forecast(args: argparse.Namespace) -> int:
 async def _cmd_refresh(args: argparse.Namespace) -> int:
     if args.id is not None:
         db.init_db()
-        _print_json(await run_update_graph(args.id, verbose=args.verbose))
+        _print_json(await run_update_graph(args.id))
         return 0
 
     data = _load_fixture(args.fixture, "existing_forecast.json")
     record = _record_from_fixture(data)
-    deps = ForecastDeps(verbose=args.verbose)
+    deps = ForecastDeps()
     _print_json(await run_update(record, deps))
     return 0
 
@@ -213,7 +212,7 @@ async def _cmd_resolve(args: argparse.Namespace) -> int:
     else:
         record = _record_from_fixture(data)
 
-    deps = ForecastDeps(verbose=args.verbose)
+    deps = ForecastDeps()
     _print_json(await run_resolution_check(record, deps))
     return 0
 
@@ -232,7 +231,7 @@ async def _cmd_critique(args: argparse.Namespace) -> int:
         question=args.question,
         resolution_criteria=args.criteria,
         resolution_date=resolution_date,
-        deps=ForecastDeps(verbose=args.verbose),
+        deps=ForecastDeps(),
     )
     _print_json(result)
     return 0
@@ -248,7 +247,7 @@ async def _cmd_postmortem(args: argparse.Namespace) -> int:
     if record is None:
         print(f"forecast {args.id} not found", file=sys.stderr)
         return 1
-    _print_json(await run_postmortem(record, ForecastDeps(verbose=args.verbose)))
+    _print_json(await run_postmortem(record, ForecastDeps()))
     return 0
 
 
@@ -440,7 +439,7 @@ app = typer.Typer(
 )
 
 VERBOSE = typer.Option(
-    False, "-v", "--verbose", help="Print agent tool calls and usage stats to stderr"
+    False, "-v", "--verbose", help="Print agent activity to the terminal"
 )
 
 

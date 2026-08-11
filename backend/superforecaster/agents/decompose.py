@@ -123,7 +123,6 @@ Return a Decomposition."""
             bound,
             prompt,
             deps=deps,
-            verbose=deps.verbose,
             # No tools, so the ceiling is zero rather than whatever the process-wide
             # default happens to be. An agent that cannot search should not be holding a
             # search budget it could spend on a tool it does not have.

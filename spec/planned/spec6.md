@@ -1,5 +1,9 @@
 # Spec 6 — The Eval Harness: Golden & Platinum Data, Per-Agent Tests, Cheap Runs
 
+> **Path note (ADR 73).** The eval harness now lives in `backend/app/evals/`, not
+> `backend/superforecaster/`. Every `app/evals/...` path below reflects that move; the
+> design is unchanged.
+
 Make the system measurable. Supersedes `spec/planned/spec4.md` (which defined golden/platinum by
 *contamination*; this spec redefines them by *purpose* and demotes contamination to a per-case field).
 
@@ -11,7 +15,7 @@ Make the system measurable. Supersedes `spec/planned/spec4.md` (which defined go
 |---|---|---|
 | `stages.run_all` — whole pipeline, no gates | `superforecaster/stages.py` | Done. **The e2e eval entry point.** |
 | Per-agent seams `run_<agent>(...)` | `superforecaster/agents/*.py` | Done. 11 agents, uniform signature. |
-| Component harness + 8 scorers | `superforecaster/evals/components.py` | Done. `components/*.json` are all `[]`. |
+| Component harness + 8 scorers | `app/evals/components.py` | Done. The empty `components/*.json` were deleted; the scorers still have no data. |
 | Clamp 1 — date-clamped tools | `superforecaster/tools.py` | Done, tested. `_drop_leaked` audits leaks. |
 | Clamp 2 — model garden | `superforecaster/model_garden.py` | Done. Floor = **2025-07-31** (Haiku 4.5 / Sonnet 4.5). |
 | `checks.run_forecast_checks` / `blocking` | `superforecaster/checks.py` | Done. The contamination-proof metric. |
@@ -123,7 +127,7 @@ structured-output schemas.
 The single biggest cost + flake lever. Wraps `tools.py`, nothing else.
 
 ```python
-# superforecaster/evals/cassette.py
+# app/evals/cassette.py
 
 @dataclass(frozen=True, slots=True)
 class Interaction:
@@ -182,7 +186,7 @@ committed artefacts; a stale one is a diff you can read.
 Hoist it unconditionally and push it into deps.
 
 ```python
-# superforecaster/evals/ledger.py
+# app/evals/ledger.py
 
 @dataclass
 class Ledger:
@@ -217,7 +221,7 @@ Cost control is **code-level truncation after decompose**, not prompt edits — 
 it does not change what any agent is asked to do.
 
 ```python
-# superforecaster/evals/profiles.py
+# app/evals/profiles.py
 
 @dataclass(frozen=True, slots=True)
 class EvalProfile:
@@ -294,7 +298,7 @@ flowchart LR
 ```
 
 ```python
-# superforecaster/evals/mint.py
+# app/evals/mint.py
 
 async def record_case(case: GoldenQuestion, *, profile: EvalProfile) -> RunTrace:
     """Run run_all with cassette=record and an emit hook that snapshots every
@@ -326,7 +330,7 @@ For gap-filling, generate cases where the *right answer is known by construction
 | `resolved_early` | Take a `resolution` case; set `as_of` before the resolving event | return `appears_resolved=False` |
 
 ```python
-# superforecaster/evals/synthesize_cases.py
+# app/evals/synthesize_cases.py
 def generate(kind: str, seed_case: ComponentCase, *, n: int = 1) -> list[ComponentCase]: ...
 ```
 
@@ -340,7 +344,7 @@ hand-written fiction.
 Platinum is derived, never hand-edited.
 
 ```python
-# superforecaster/evals/rotation.py
+# app/evals/rotation.py
 
 PROMOTE_AFTER = 2    # failures in the last WINDOW golden runs
 DEMOTE_AFTER  = 3    # consecutive passes
@@ -401,7 +405,7 @@ class GoldenQuestion(BaseModel):
 ### 10.3 Importer
 
 ```python
-# superforecaster/evals/import_corpus.py   — run by hand, NEVER from a test
+# app/evals/import_corpus.py   — run by hand, NEVER from a test
 
 def fetch(source: str, *, opened_after: date, limit: int) -> list[GoldenQuestion]: ...
 def classify_contamination(q: GoldenQuestion) -> int: ...
@@ -550,7 +554,7 @@ CREATE VIEW regressions AS   -- cases that passed last run and fail this one
 ```
 
 ```python
-# superforecaster/evals/store.py
+# app/evals/store.py
 def init(path: Path) -> sqlite3.Connection: ...
 def open_run(conn, *, target, profile, budget) -> int: ...
 def write_case(conn, run_id: int, score: QuestionScore) -> None: ...
@@ -566,7 +570,7 @@ def to_csv(conn, out_dir: Path, *, last: int = 1) -> None:   # zero-dep fallback
 ## 13. Runner
 
 ```python
-# superforecaster/evals/runner.py
+# app/evals/runner.py
 
 def load_corpus(path: Path, *, tier=None, gap_tags=None, limit=None) -> list[GoldenQuestion]: ...
 
@@ -590,7 +594,7 @@ def audit_leaks(sc: Scorecard) -> list[SourceRef]:
 Pure scoring, no network, unit-testable:
 
 ```python
-# superforecaster/evals/scoring.py
+# app/evals/scoring.py
 def brier(p: float, outcome: float) -> float: ...
 def calibration_buckets(scores: list[QuestionScore]) -> list[CalibrationBucket]: ...
 def process_score(scores) -> float:          # fraction with zero blocking violations
@@ -605,7 +609,7 @@ def render_scorecard(sc: Scorecard) -> str: ...
 ## 14. File inventory
 
 ```
-backend/superforecaster/evals/
+backend/app/evals/
   components.py        # EXISTS — add 3 scorers, thread ledger + cassette through run_case
   components/*.json    # EXISTS (empty) — filled by mint + hand-written `expect`
   cassette.py          # NEW

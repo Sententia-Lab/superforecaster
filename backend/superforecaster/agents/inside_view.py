@@ -195,7 +195,6 @@ rate for THIS population, not for the question — each with a flip test. Say in
             bound,
             prompt,
             deps=deps,
-            verbose=deps.verbose,
             budget=get_budget(agent.name, max_iterations=input.max_iterations),
             run_name=f"inside view · {sub_question.id} · {lens.name}",
         )

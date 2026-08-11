@@ -27,4 +27,5 @@ run_durability.sqlite*
 backend/run_durability.sqlite*
 *.db.bak-*
 
-/referencesbackend/dist/
+/references
+backend/dist/

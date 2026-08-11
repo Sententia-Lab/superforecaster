@@ -26,15 +26,12 @@ from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     PartDeltaEvent,
-    PartEndEvent,
-    TextPart,
-    ThinkingPart,
 )
 from pydantic_ai.tools import RunContext
 
 from .config import Budget, get_agent_timeout
 from .errors import AgentTimeout
-from .events import Query, Source, Thought
+from .events import Query, Sink, Source, Thought
 
 # The single human-meaningful argument of each search tool. Three parameter names for
 # the same idea, so a subscriber would otherwise have to know each tool's signature.
@@ -76,22 +73,20 @@ def _tool_query_arg(args: Any) -> str:
     return preview(args, 200)
 
 
-def _make_event_handler():
-    """Log every agent event, and forward it to `deps.emit` when a caller is listening.
+def _make_event_handler(sink: Sink, sub_question: str | None):
+    """Turn the agent's event stream into `AgentEvent`s for one subscriber.
 
-    Attached to every run rather than only to traced ones. The Logfire calls cost
-    nothing when Logfire is unconfigured, and gating them on "is tracing on" is what
-    used to make this module ask the application a question.
+    Attached only when `deps.emit` is set, because attaching it is what puts the run in
+    streaming mode — a cost with no payer when nobody is listening. Tracing does not
+    need it: `logfire.instrument_pydantic_ai` records tool calls and model messages on
+    its own, and duplicating that here is how this module used to end up asking the
+    application whether tracing was on.
     """
 
     async def _handler(
         ctx: RunContext[Any],
         stream: AsyncIterable[AgentStreamEvent],
     ) -> None:
-        tool_n = 0
-        emit = getattr(ctx.deps, "emit", None)
-        # Which column of the grid this agent is filling, forwarded as an opaque tag.
-        sub_question = getattr(ctx.deps, "sub_question", None)
         # Tools append to `deps.sources_seen` themselves for the leakage audit. Diffing
         # that list is how a `Source` event gets a real URL without touching any tool.
         # Safe under concurrency only because each cell is handed a private list.
@@ -99,54 +94,24 @@ def _make_event_handler():
 
         async for event in stream:
             if isinstance(event, FunctionToolCallEvent):
-                tool_n += 1
-                if emit is not None:
-                    emit(
-                        Query(
-                            tool=event.part.tool_name,
-                            text=_tool_query_arg(event.part.args),
-                        ),
-                        sub_question,
-                    )
-                logfire.info(
-                    "agent chose tool {tool}",
-                    tool=event.part.tool_name,
-                    args=event.part.args,
-                    step=tool_n,
-                    _tags=["agent-progress", "tool-call"],
+                sink(
+                    Query(
+                        tool=event.part.tool_name,
+                        text=_tool_query_arg(event.part.args),
+                    ),
+                    sub_question,
                 )
             elif isinstance(event, FunctionToolResultEvent):
                 seen = getattr(ctx.deps, "sources_seen", None) or []
-                if emit is not None:
-                    for ref in seen[sources_reported:]:
-                        emit(Source(ref=ref), sub_question)
+                for ref in seen[sources_reported:]:
+                    sink(Source(ref=ref), sub_question)
                 sources_reported = len(seen)
-                logfire.info(
-                    "tool result for {tool}",
-                    tool=getattr(event.result, "tool_name", "unknown"),
-                    content=getattr(event.result, "content", event.result),
-                    _tags=["agent-progress", "tool-result"],
-                )
             elif isinstance(event, PartDeltaEvent):
                 # ToolCallPartDelta carries `args_delta`, not `content_delta`, so this
                 # picks up narration without leaking partial JSON arguments.
                 delta = getattr(event.delta, "content_delta", None)
-                if emit is not None and isinstance(delta, str) and delta:
-                    emit(Thought(delta=delta), sub_question)
-            elif isinstance(event, PartEndEvent):
-                part = event.part
-                if isinstance(part, TextPart) and part.content:
-                    logfire.info(
-                        "agent reasoning",
-                        text=part.content,
-                        _tags=["agent-progress", "reasoning"],
-                    )
-                elif isinstance(part, ThinkingPart) and part.content:
-                    logfire.info(
-                        "agent thinking",
-                        text=part.content,
-                        _tags=["agent-progress", "thinking"],
-                    )
+                if isinstance(delta, str) and delta:
+                    sink(Thought(delta=delta), sub_question)
 
     return _handler
 
@@ -205,11 +170,16 @@ async def run_agent(
     with logfire.span(run_name, prompt_preview=preview(prompt, 500)) as span:
         try:
             async with _deadline(deadline):
+                sink = getattr(deps, "emit", None)
                 result = await agent.run(
                     prompt,
                     deps=deps,
                     usage_limits=limits,
-                    event_stream_handler=_make_event_handler(),
+                    event_stream_handler=(
+                        _make_event_handler(sink, getattr(deps, "sub_question", None))
+                        if sink is not None
+                        else None
+                    ),
                 )
         except asyncio.CancelledError as exc:
             # The client hung up mid-run — the deliberate stop ADR 46 promises, not a

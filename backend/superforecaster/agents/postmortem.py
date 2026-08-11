@@ -150,7 +150,6 @@ Return a PostMortem."""
             bound,
             prompt,
             deps=deps,
-            verbose=deps.verbose,
             budget=get_budget(agent.name),
             run_name="post-mortem",
         )

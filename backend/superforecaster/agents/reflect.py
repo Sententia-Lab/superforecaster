@@ -131,7 +131,6 @@ question, plus all five bias checks."""
             bound,
             prompt,
             deps=deps,
-            verbose=deps.verbose,
             budget=get_budget(agent.name),
             run_name="reflect",
         )

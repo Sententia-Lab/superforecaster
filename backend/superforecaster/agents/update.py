@@ -170,7 +170,6 @@ posterior={prior:.3f} with an empty evidence list."""
             bound,
             prompt,
             deps=deps,
-            verbose=deps.verbose,
             budget=get_budget(agent.name),
             run_name=run_name,
         )

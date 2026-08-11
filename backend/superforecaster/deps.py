@@ -30,7 +30,6 @@ class ForecastDeps:
 
     as_of: datetime | None = None
     model: str | None = None
-    verbose: bool = False
     sources_seen: list[SourceRef] = field(default_factory=list)
     """Every source a tool recorded, in the order the tools recorded it.
 

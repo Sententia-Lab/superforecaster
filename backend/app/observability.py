@@ -97,8 +97,11 @@ def configure_logfire(*, verbose: bool = False) -> None:
         kwargs["token"] = token
 
     logfire.configure(**kwargs)
-    if tracing:
-        logfire.instrument_pydantic_ai(include_content=True, version=3)
+    # Unconditionally, not only when traces are sent to the cloud. This is what records
+    # tool calls and model messages, and with the console on and no token it is the only
+    # thing that does — `runner` builds its event handler for a UI subscriber, not for
+    # tracing, so a verbose CLI run with no token would otherwise report nothing.
+    logfire.instrument_pydantic_ai(include_content=True, version=3)
 
     _cloud_tracing_active = tracing
     _console_active = bool(kwargs["console"])

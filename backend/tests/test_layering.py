@@ -17,8 +17,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 CORE = Path(__file__).resolve().parent.parent / "superforecaster"
 
 FORBIDDEN = {
@@ -50,14 +48,20 @@ def _imported_roots(path: Path) -> set[str]:
     return roots
 
 
-@pytest.mark.parametrize(
-    "path", sorted(CORE.rglob("*.py")), ids=lambda p: str(p.relative_to(CORE))
-)
-def test_core_module_imports_nothing_from_above_it(path: Path):
-    offenders = _imported_roots(path) & FORBIDDEN
-    assert not offenders, (
-        f"{path.relative_to(CORE.parent)} imports {sorted(offenders)}. "
-        "Core is a library: storage, HTTP, the CLI, and the scheduler live in `app`."
+def test_core_imports_nothing_from_above_it():
+    """One test over every core module, reporting all offenders at once.
+
+    Parametrizing per file turns one rule into ~26 results and hides the others behind
+    the first failure. The rule is single; so is the test.
+    """
+    offenders = {
+        str(path.relative_to(CORE.parent)): sorted(bad)
+        for path in sorted(CORE.rglob("*.py"))
+        if (bad := _imported_roots(path) & FORBIDDEN)
+    }
+    assert offenders == {}, (
+        f"{offenders} — core is a library: storage, HTTP, the CLI, and the scheduler "
+        "live in `app`."
     )
 
 

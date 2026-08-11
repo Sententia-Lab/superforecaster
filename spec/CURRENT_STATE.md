@@ -8,18 +8,19 @@ Deliberately not here:
 - **Repository layout** — read the tree.
 - **How to run** — `README.md`.
 - **Data models** — `backend/superforecaster/models.py`.
-- **Environment variables** — `backend/.env.example` and `backend/config.py`.
+- **Environment variables** — `backend/.env.example`, `backend/superforecaster/config.py`,
+  and `backend/app/config.py`.
 - **Dependencies** — `backend/pyproject.toml`.
 - **Why it is shaped this way** — `spec/ADR.md`.
 - **The 16 principles** (`P<n>` below) — `spec/superforecasting_methodology.md`.
 
-Last regenerated: 2026-08-07.
+Last regenerated: 2026-08-11.
 
 ---
 
 ## Storage map
 
-Everything persists in four SQLite tables (`backend/superforecaster/db.py`, `SCHEMA_VERSION = 4`).
+Everything persists in four SQLite tables (`backend/app/db.py`, `SCHEMA_VERSION = 4`).
 
 | Table | One row means | Written by |
 |---|---|---|
@@ -91,7 +92,7 @@ mount App.jsx
 | Layer | What happens |
 |---|---|
 | FE | `App.jsx` sets `config`; `useRuns.js:9` fills the sidebar; `KeyPanel.jsx` reads `keys` |
-| API | `main.py _client_config` → `is_local_mode(request)` (`deps.py:15`), `config.origin` per key |
+| API | `main.py _client_config` → `is_local_mode(request)` (`deps.py:15`), `app.config.origin` per key |
 | API | `runs.py:60 list_runs` → `db.list_gated_runs` |
 | DB | two SELECTs: all runs newest-first, plus a `GROUP BY run_id, stage, status` count roll-up |
 | Back | `auth_required` is the load-bearing field — the *server* decides whether the browser needs a token, so a laptop with no `ADMIN_API_KEY` never asks for one |
@@ -99,7 +100,7 @@ mount App.jsx
 `keys` values are `environment` / `.env` / `session` / `unset` — **where** each key came
 from, never what it is. `llm_var` names the variable credentialing the model, which is
 `PYDANTIC_AI_GATEWAY_API_KEY` when the gateway is configured and `ANTHROPIC_API_KEY`
-otherwise (`config.active_llm_key_name`).
+otherwise (`superforecaster.config.active_llm_key_name`).
 
 Writes: **none.**
 
@@ -117,8 +118,8 @@ KeyPanel.jsx save()  ->  api.setKeys(body)
 
 ```
   -> require_admin(request)                  [403 without the bearer token, skipped locally]
-  -> config.set_runtime_key("TAVILY_API_KEY", "tvly-abc123")
-       name must be in config.RUNTIME_KEYS   [422 otherwise]
+  -> app.config.set_runtime_key("TAVILY_API_KEY", "tvly-abc123")
+       name must be in app.config.RUNTIME_KEYS   [422 otherwise]
        os.environ[name] = value              [writes: process environment only]
   -> _client_config(request)
 ```
@@ -286,7 +287,8 @@ FastAPI  stream_step ── preflight ──► generate()
                logfire.span("step {stage}")     │ │
                asyncio.timeout(STAGE_TIMEOUT)   │ │
                _dispatch → stages.run_*_stage ──┘─┘
-                            observability.py:197 turns agent events into frames
+               runner._make_event_handler emits typed events;
+               app/stream.py:16 turns each into a frame
 ```
 
 | Frame | Emitted from | Front-end effect (`useStepStream.js:39`) |
@@ -402,7 +404,7 @@ There is no server-side queue. The request *is* the step and its last frame is t
 ```
 RunHeader "Run All"  (starts a backlog run first, via POST /runs/{id}/start)
   -> useRunQueue.drain(scope, run)
-       -> runQueue.nextRunnable(run, scope) -> step | null    [mirrors db.STAGE_ORDER + the gate]
+       -> runQueue.nextRunnable(run, scope) -> step | null    [mirrors stages.STAGE_ORDER + the gate]
        -> useStepStream.start(runId, stepId) -> run | null    [the same §3 stream]
        -> repeat with the returned run, until nextRunnable is null
 ```
@@ -541,14 +543,17 @@ PATCH /forecasts/{id}/resolve {outcome: 0|1|null}          [admin]
   └─ db.get_forecast        ◄── ForecastRecord
 
 POST /forecasts/{id}/refresh                               [admin]
-  └─ graphs.run_update_graph(id)      ← the ONLY graph left
-       CheckResolved   run_resolution_check agent
-                       db.mark_refreshed(id, flagged=appears_resolved)
-                       appears_resolved → End (flagged_resolved=True)   ← short-circuit
-       ApplyBayes      run_update agent → P11 likelihoods
-       VerifyLargeMove second opinion when the move is large
-       GuardUpdate     |Δp| < MIN_PROBABILITY_DELTA → drop as noise
-                       else db.add_forecast_update  INSERT forecast_updates
+  └─ app.update.run_update_graph(id)
+       db.get_forecast(id)                 → None means "not found", decided here
+       superforecaster.update.run_update_cycle(record, deps)   ← no storage below this line
+         CheckResolved   run_resolution_check agent
+                         appears_resolved → End (flagged_resolved=True)  ← short-circuit
+         ApplyBayes      run_update agent → P11 likelihoods
+         VerifyLargeMove second opinion when the move is large
+         GuardUpdate     |Δp| < MIN_PROBABILITY_DELTA → drop as noise
+                         else End(updated=True, new_probability, reasoning)
+       db.mark_refreshed(id, flagged=outcome.flagged_resolved)   UPDATE forecasts
+       outcome.updated → db.add_forecast_update  INSERT forecast_updates
      ◄── RefreshActionResponse {updated, reason}
 ```
 
@@ -613,27 +618,43 @@ POST /admin/refresh/run                                    [admin]
 
 Where the functions named above live.
 
-**Backend — `backend/superforecaster/`**
+Imports run one way: `api -> app -> superforecaster` (ADR 73).
+
+**Backend — `backend/superforecaster/`** — the library. No SQLite, no HTTP, no CLI, no
+scheduler, and no side effects on import.
 
 | Module | Holds |
 |---|---|
-| `machine.py` | gated-run state machine: `start_run`, `expected_steps`, `reconcile`, `gate_offender`, `execute_step`, `edit_blocker`, `edit_payload`, `detail`, `busy`, `DERIVED`, `REQUIRED_FIELDS`, `GateError`, `BusyError` |
-| `stages.py` | `run_decompose_stage`, `run_lenses_stage`, `run_base_rate_step`, `run_inside_step`, `assemble_outside`, `run_synthesis_stage`, `run_all`, `normalize_weights` |
-| `db.py` | SQLite (WAL, FKs, migrations). Forecast fns + gated-run fns + `NotFoundError`/`StateError` |
+| `__init__.py` | the public surface: `ForecastInput`, `ForecastDeps`, `Forecast`, `run_all`, `__version__` |
+| `config.py` | `Budget`/`BUDGETS`/`get_budget`, `CheckThresholds`/`get_check_thresholds`, `Settings`/`get_settings`, `resolve_agent_model`, `get_model_settings`, the two timeouts. Reads `os.environ`; never loads a file |
+| `stages.py` | `STAGE_ORDER`, `run_decompose_stage`, `run_lenses_stage`, `run_base_rate_step`, `run_inside_step`, `assemble_outside`, `run_synthesis_stage`, `run_all`, `normalize_weights` |
+| `update.py` | the update cycle: `CheckResolved → ApplyBayes → VerifyLargeMove → GuardUpdate`, `run_update_cycle`, `UpdateState`, `update_mermaid`. Returns an `UpdateOutcome`; writes nothing |
 | `models.py` | every Pydantic model |
 | `checks.py` | the 16 principles as pure functions; `lens_rate`, `anchor_from`, `implied_probability`, `combine_sub_question_rates`, `run_forecast_checks`, `blocking` |
 | `scoring.py` | `time_weighted_probability`, `brier_score`, `calibration` — pure |
 | `deps.py` | `ForecastDeps` — the `as_of`/`model` clamps, the column tag, the run's `Budget`, `sources_seen`, the `emit` sink |
+| `events.py` | `Query`, `Source`, `Thought`, `Exhausted`, and the `Sink` type `deps.emit` takes |
+| `runner.py` | `run_agent` — attaches the budget, applies the deadline, opens the span, translates timeouts. Emits Logfire spans; never configures Logfire |
 | `tools.py` | `search_web` (Tavily), `search_wikipedia` (optional bearer key), `as_of` backdating clamps |
-| `observability.py` | logfire config, the `run_agent` wrapper (attaches the budget, applies the deadline), agent-event → stream-frame handler |
 | `errors.py` | `AgentTimeout`, `StageTimeout` |
-| `cron.py` | `run_daily_refresh`, APScheduler wiring |
-| `model_garden.py` | model registry with published training cutoffs (backtest clamp) |
-| `graphs/update.py` | the only graph: `CheckResolved → ApplyBayes → VerifyLargeMove → GuardUpdate`, `run_update_graph` |
+| `model_garden.py` | model registry with published training cutoffs (backtest clamp). Reads its bundled JSON; never writes it |
 | `agents/` | eleven agents, one module each: `decompose`, `lenses`, `outside_view`, `inside_view`, `reflect`, `synthesize`, `critic`, `draft`, `resolution`, `update`, `postmortem`. `__init__.py` holds `attach_budget` — the per-iteration budget instruction, in three bands so the order to stop arrives while a search is still legal (ADR 68) — `withdraw_spent_tools`, which stops offering the search tools once the budget is spent (ADR 69), plus `SEARCH_RESERVE` and `spent_usd` |
-| `evals/components.py` | per-agent eval harness (`run_component`, `SCORERS`) |
+
+**Backend — `backend/app/`** — everything that runs it.
+
+| Module | Holds |
+|---|---|
+| `config.py` | `load_env`, `ENV_FILE`, `AppSettings`/`get_app_settings` (database path, admin key, cron schedule, frontend dir), `set_runtime_key`, `origin`, `RUNTIME_KEYS` |
+| `db.py` | SQLite (WAL, FKs, migrations). Forecast fns + gated-run fns + `NotFoundError`/`StateError` |
+| `machine.py` | gated-run state machine: `start_run`, `expected_steps`, `reconcile`, `gate_offender`, `execute_step`, `edit_blocker`, `edit_payload`, `detail`, `busy`, `DERIVED`, `REQUIRED_FIELDS`, `GateError`, `BusyError` |
+| `update.py` | `run_update_graph` — loads the record, runs the core cycle, writes the result |
+| `cron.py` | `run_daily_refresh`, APScheduler wiring |
+| `observability.py` | `configure_logfire`, the write-token probe, `cloud_tracing_active`, `console_active` |
+| `stream.py` | `frame` — an `AgentEvent` as the `{type, sub_question, payload}` the browser reads |
+| `cli.py` | typer CLI (`superforecaster` console script): `forecast`, `refresh`, `resolve`, `critique`, `postmortem`, `models`, `diagram`, `test`, `config`, `serve` |
+| `fixtures/` | the three JSON questions `--fixture` loads |
+| `evals/components.py` | per-agent eval harness (`run_component`, `SCORERS`). Scorers only — the case files are not written yet |
 | `evals/decompose_eval.py` | pydantic-evals dataset for the decompose agent: three mechanical evaluators plus an `LLMJudge` scoring against `RUBRIC`. `--model`, `--judge-model`, `--budget` flags. Run as a script, not under pytest — it calls the real model |
-| `__main__.py` | typer CLI: `forecast`, `refresh`, `resolve`, `critique`, `postmortem`, `models`, `diagram`, `test`, `config`, `serve` |
 
 **Backend — `backend/api/`**
 
@@ -652,7 +673,7 @@ Where the functions named above live.
 | Module | Holds |
 |---|---|
 | `api.js` | fetch wrappers + `streamStep` (fetch + ReadableStream + AbortController, deliberately not `EventSource`) |
-| `runQueue.js` | `STAGE_ORDER`, `nextRunnable`, `sectionRunnable` — mirrors `db.STAGE_ORDER` and the gate. Pure |
+| `runQueue.js` | `STAGE_ORDER`, `nextRunnable`, `sectionRunnable` — mirrors `stages.STAGE_ORDER` and the gate. Pure |
 | `derive.js` | mirrors `checks.py`: `lensRate`, `adjustedLensRate`, `subQuestionRate`, `signedAdjustment`, `claimSupport`; mirrors `machine`/`stages`: `editBlocker`, `normalizeWeights`, `weightSum` |
 | `hooks/useRuns.js` | the sidebar list |
 | `hooks/useStepStream.js` | one stream at a time; unmount aborts, abort cancels server-side. `start` resolves to the run the stream produced. Three separate states: `active` is work in flight and ends with the request, `failure` holds the last message and outlives it, `streaming` is what buttons disable on |
@@ -690,12 +711,15 @@ Where the functions named above live.
   from the header. Server-held keys apply on the next request and are dropped on restart;
   no route ever returns a key value (§0b, ADR 61).
 - The CLI pipeline (`forecast`) and component evals through the same `stages` functions.
-- Daily refresh cron + manual refresh through the update graph; resolution + scoring +
+- Daily refresh cron + manual refresh through the update cycle; resolution + scoring +
   calibration report.
+- **`superforecaster` installs and imports on its own** (ADR 73). The wheel carries no
+  SQLite layer, no CLI, and no web framework, and importing it opens no socket and
+  configures no logging. `tests/test_layering.py` asserts both.
 - Local mode: two exported keys and `serve`, no token, no `.env`, no build step for the
   API (UI needs `npm run build` once).
-- CI on push/PR; opt-in pre-push test gate. 341 backend tests pass with no network and no
-  API keys.
+- CI on push/PR; opt-in pre-push test gate. The backend suite passes with no network and
+  no API keys.
 - Nothing is hosted. `docker-compose.yml` runs the API with a named SQLite volume and the
   frontend built into the image; `.github/workflows/ci.yml` is the only automation.
 
@@ -707,6 +731,12 @@ Where the functions named above live.
   built; `superforecaster test e2e` says so and exits 2.
 - `GoldenQuestion`, `QuestionScore`, and `Scorecard` are defined in `models.py` but unused —
   the eval corpus they describe does not exist yet (spec6).
+- **The component eval harness has no data.** `app/evals/components.py` holds a working
+  scorer for each of eight agents; the case files were deleted rather than kept as eight
+  empty arrays, so `superforecaster test component` reports 0 cases for every agent.
+- **Pinned below pydantic-ai 2.x.** `superforecaster/update.py` uses the `BaseNode` graph
+  API, which 2.x deprecates in favour of `GraphBuilder`. `pyproject.toml` caps at `<2`;
+  the migration is unscheduled.
 - **`Forecast.decompositions[].probability` is carried by the model, not computed.**
   `run_synthesis_stage` hands the synthesis agent the decomposition JSON — pre-research
   working estimates included — and instructs it to carry the sub-questions through.

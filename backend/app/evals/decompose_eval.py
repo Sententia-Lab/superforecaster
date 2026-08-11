@@ -99,6 +99,7 @@ sub-questions. Judge these five things, and say which ones failed.
 5. NOTHING SETTLED. No sub-question asks about an event the question itself already
    states has happened. If the question says the company already filed, a
    "will they file?" sub-question fails this.
+6. 
 
 Score 1.0 when all five hold. Subtract 0.2 for each one that fails. In the reason,
 name the numbered items that failed and quote the sub-question at fault. If they all

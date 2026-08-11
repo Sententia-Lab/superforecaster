@@ -146,7 +146,6 @@ enough that someone else could count the same cases, and weigh them by fit alone
             bound,
             prompt,
             deps=deps,
-            verbose=deps.verbose,
             budget=get_budget(agent.name),
             run_name=f"lenses · {sub_question.id}",
         )

@@ -110,7 +110,6 @@ Return a DraftedQuestion."""
             bound,
             prompt,
             deps=deps,
-            verbose=deps.verbose,
             budget=get_budget(agent.name),
             run_name="draft question",
         )

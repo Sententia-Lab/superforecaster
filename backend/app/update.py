@@ -13,7 +13,7 @@ from superforecaster.update import run_update_cycle
 from . import db
 
 
-async def run_update_graph(forecast_id: str, *, verbose: bool = False) -> UpdateOutcome:
+async def run_update_graph(forecast_id: str) -> UpdateOutcome:
     """Run the daily cycle on one saved forecast. Callable from cron, the API, or the CLI.
 
     `mark_refreshed` runs whatever the outcome, including a flagged one — the forecast
@@ -25,7 +25,7 @@ async def run_update_graph(forecast_id: str, *, verbose: bool = False) -> Update
     if record.outcome is not None or record.is_ambiguous:
         return UpdateOutcome(reason="forecast already resolved")
 
-    outcome = await run_update_cycle(record, ForecastDeps(verbose=verbose))
+    outcome = await run_update_cycle(record, ForecastDeps())
 
     db.mark_refreshed(record.id, flagged=outcome.flagged_resolved)
     if outcome.updated and outcome.new_probability is not None:

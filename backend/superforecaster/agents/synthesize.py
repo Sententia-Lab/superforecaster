@@ -185,7 +185,6 @@ exactly. Carry the sub-questions into `decompositions`."""
             bound,
             prompt,
             deps=deps,
-            verbose=deps.verbose,
             budget=get_budget(agent.name),
             run_name="synthesize",
         )

@@ -173,7 +173,7 @@ async def test_verification_happens_at_most_once(stub):
     assert seen.count("GuardUpdate") == 2
 
 
-async def test_a_survived_large_move_is_written(stub):
+async def test_a_survived_large_move_is_reported_as_an_update(stub):
     stub["decision"] = a_decision(0.10, 0.95)
     _, st, out = await visited(a_record(0.10))
 
@@ -181,7 +181,7 @@ async def test_a_survived_large_move_is_written(stub):
     assert (out.updated, out.new_probability) == (True, 0.95)
 
 
-async def test_a_walked_back_large_move_is_written_at_the_revised_value(stub):
+async def test_a_walked_back_large_move_reports_the_revised_value(stub):
     stub["decision"] = a_decision(0.10, 0.95)
     stub["verify_decision"] = a_decision(0.10, 0.30)
     _, st, out = await visited(a_record(0.10))
@@ -204,7 +204,7 @@ async def test_large_move_threshold_is_configurable(stub, monkeypatch):
 # ---------- the write gate ----------
 
 
-async def test_material_consistent_update_is_written(stub):
+async def test_a_material_consistent_update_is_reported_as_an_update(stub):
     _, st, out = await visited(a_record())
     assert out.updated is True
     assert out.new_probability == 0.60
@@ -227,7 +227,7 @@ async def test_no_evidence_and_no_movement_is_a_clean_no_op(stub):
     assert st.violations == []
 
 
-async def test_internally_inconsistent_update_is_not_written(stub):
+async def test_an_internally_inconsistent_update_is_refused(stub):
     """Principle 11 — evidence points up, the number went down. Refuse the write."""
     stub["decision"] = UpdateDecision(
         evidence=[EvidenceItem(fact="f", source="s", p_if_true=0.9, p_if_false=0.1)],

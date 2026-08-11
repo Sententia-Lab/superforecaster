@@ -103,7 +103,6 @@ Return a ResolutionCheckResult."""
             bound,
             prompt,
             deps=deps,
-            verbose=deps.verbose,
             budget=get_budget(agent.name),
             run_name="resolution check",
         )
