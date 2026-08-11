@@ -37,7 +37,13 @@ from ..models import (
 )
 from ..observability import run_agent
 from ..tools import find_disconfirming_evidence, search_web, search_wikipedia
-from . import as_of_note, attach_budget, format_question, with_model
+from . import (
+    as_of_note,
+    attach_budget,
+    format_question,
+    withdraw_spent_tools,
+    with_model,
+)
 
 INSTRUCTIONS = """You supply the INSIDE VIEW for ONE part of a larger question: what
 makes this specific case differ from its reference class. You do not produce a final
@@ -128,6 +134,7 @@ def build_inside_view_agent(
         output_type=SubQuestionAdjustments,
         system_prompt=INSTRUCTIONS,
         tools=[search_web, search_wikipedia, find_disconfirming_evidence],
+        prepare_tools=withdraw_spent_tools,
         retries=1,
     )
     attach_budget(agent)

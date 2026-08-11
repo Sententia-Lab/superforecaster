@@ -13,7 +13,12 @@ import pytest
 
 from api.main import app
 from superforecaster import db, machine
-from superforecaster.models import Decomposition, Lens, SubQuestionLensesEdit
+from superforecaster.models import (
+    Decomposition,
+    DependentGroup,
+    Lens,
+    SubQuestionLensesEdit,
+)
 from superforecaster.stages import normalize_weights
 
 from .gated_factories import (
@@ -150,6 +155,27 @@ def test_removing_a_sub_question_drops_its_pending_lens_row():
     machine.edit_payload(run_id, _step(run_id, "decompose")["id"], shorter.model_dump())
     # Ids are re-stamped by position, so the third slot is sq3 whatever it was called.
     assert _keys(run_id, "lenses") == {("sq1", ""), ("sq2", ""), ("sq3", "")}
+
+
+def test_editing_a_decomposition_keeps_its_dependent_groups():
+    """`with_ids` re-stamps ids with `model_copy(update={"sub_questions": ...})`. A
+    field it does not name has to survive that, or a hand-set grouping vanishes on save
+    and the anchor silently reverts to the independent product."""
+    run_id = _decomposed()
+    edited = Decomposition(
+        sub_questions=[sub("sq1"), sub("sq2"), sub("sq3")],
+        chain_rule="conjunction",
+        chain_note="all must hold",
+        dependent_groups=[
+            DependentGroup(name="same driver", members=[1, 3], kind="shared_driver")
+        ],
+    )
+    machine.edit_payload(run_id, _step(run_id, "decompose")["id"], edited.model_dump())
+
+    saved = Decomposition.model_validate_json(
+        _step(run_id, "decompose")["payload_json"]
+    )
+    assert saved.dependent_groups == edited.dependent_groups
 
 
 def test_editing_the_decomposition_is_blocked_once_a_lens_step_has_run():

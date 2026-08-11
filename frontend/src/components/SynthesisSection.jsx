@@ -1,4 +1,5 @@
 import Accordion from "./Accordion.jsx";
+import DependentGroups from "./DependentGroups.jsx";
 import Prose from "./Prose.jsx";
 import {
   adjustedLensRate,
@@ -168,6 +169,7 @@ export default function SynthesisSection({ payload, decomposition }) {
         <div className="card-sub" style={{ marginTop: 8 }}>
           Chain rule: <b>{decomposition?.chain_rule}</b> — {decomposition?.chain_note}
         </div>
+        <DependentGroups decomposition={decomposition} />
       </div>
 
       <div className="card">

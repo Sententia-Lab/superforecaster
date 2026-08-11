@@ -11,6 +11,7 @@ where the behaviour depends on them.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 
 import pytest
@@ -23,6 +24,7 @@ from superforecaster.models import (
     Adjustment,
     BiasCheck,
     Decomposition,
+    DependentGroup,
     Evidence,
     EvidenceItem,
     Forecast,
@@ -599,7 +601,12 @@ def researched(sub_question_id: str, rate: float) -> ResearchedLens:
     return ref(f"lens for {sub_question_id}", rate, sub_question_ids=[sub_question_id])
 
 
-def a_grid(rule: str, rates: dict[str, float], estimates: dict[str, float]):
+def a_grid(
+    rule: str,
+    rates: dict[str, float],
+    estimates: dict[str, float],
+    groups: tuple[DependentGroup, ...] = (),
+):
     """A decomposition and an outside view sharing sub-question ids sq1..sqN."""
     ids = sorted(set(rates) | set(estimates))
     d = Decomposition(
@@ -614,6 +621,7 @@ def a_grid(rule: str, rates: dict[str, float], estimates: dict[str, float]):
         ],
         chain_rule=rule,
         chain_note="stated",
+        dependent_groups=list(groups),
     )
     o = OutsideView(
         lenses=[researched(i, r) for i, r in sorted(rates.items())]
@@ -682,6 +690,102 @@ def test_aggregation_catches_an_anchor_that_is_not_the_chain():
     v = checks.check_aggregation(o, d)
     assert v is not None
     assert "conjunction" in v.detail
+
+
+# ---------- P1: sub-questions that move together ----------
+
+
+def group(*members: int, kind: str = "shared_driver") -> DependentGroup:
+    return DependentGroup(name="they move together", members=list(members), kind=kind)
+
+
+def test_a_decomposition_with_no_dependent_groups_anchors_exactly_where_it_did_before():
+    """ADR 28. A checkpoint written before this field existed has to load and produce
+    the number it produced then, not merely a close one."""
+    old = {
+        "sub_questions": [
+            {"question": f"part {i}", "probability": 0.5, "rationale": "because"}
+            for i in range(3)
+        ],
+        "chain_rule": "conjunction",
+        "chain_note": "stated",
+    }
+    d = Decomposition.model_validate(old)
+    assert d.dependent_groups == []
+
+    rates = [0.55, 0.70, 0.60]
+    assert checks.combine_sub_question_rates(rates, "conjunction") == 0.55 * 0.70 * 0.60
+
+
+def test_a_shared_driver_group_pulls_a_conjunction_up_toward_its_weakest_member():
+    """Correlated parts do not multiply. Multiplying them understates the answer."""
+    rates = [0.5, 0.8, 0.6]
+    combined = checks.combine_sub_question_rates(rates, "conjunction", [group(1, 2)])
+
+    assert combined == pytest.approx(0.261)
+    assert combined > math.prod(rates)  # 0.240 if they were independent
+    assert combined < min(rates)  # but never past the Fréchet-Hoeffding bound
+
+
+def test_a_shared_driver_group_pulls_a_disjunction_down_toward_its_strongest_member():
+    """The direction flips. Two things that fire together give an OR fewer distinct
+    chances to fire, so correlation makes a disjunction *less* likely."""
+    rates = [0.2, 0.3, 0.1]
+    combined = checks.combine_sub_question_rates(rates, "disjunction", [group(1, 2)])
+
+    assert combined == pytest.approx(0.4519)
+    assert combined < 1 - (0.8 * 0.7 * 0.9)  # 0.496 if they were independent
+    assert combined > max(rates)
+
+
+def test_a_group_of_kind_none_changes_nothing():
+    """A dependence parameter of 0 is the identity. This catches an off-by-one in the
+    partition, which would otherwise look like a plausible number."""
+    rates = [0.5, 0.8, 0.6]
+    assert checks.combine_sub_question_rates(
+        rates, "conjunction", [group(1, 2, kind="none")]
+    ) == pytest.approx(math.prod(rates))
+
+
+def test_a_group_naming_a_sub_question_that_does_not_exist_is_rejected():
+    """The delete-then-save case. Positions shift; a stale group must not silently
+    point at a different sub-question."""
+    with pytest.raises(ValidationError, match="names sub-question 4 of 3"):
+        a_grid("conjunction", {"sq1": 0.5, "sq2": 0.8, "sq3": 0.6}, {}, (group(1, 4),))
+
+
+def test_a_sub_question_cannot_sit_in_two_groups():
+    """Without this the grouped and ungrouped sets stop partitioning the rates, and
+    sq2 is counted twice."""
+    with pytest.raises(ValidationError, match="more than one group"):
+        a_grid(
+            "conjunction",
+            {"sq1": 0.5, "sq2": 0.8, "sq3": 0.6},
+            {},
+            (group(1, 2), group(2, 3)),
+        )
+
+
+def test_a_custom_chain_rule_cannot_carry_dependent_groups():
+    """`custom` has no formula, so there is nothing for a dependence parameter to move.
+    Rejecting says so; accepting would leave a field on screen that changes nothing."""
+    with pytest.raises(ValidationError, match="no formula for dependence"):
+        a_grid("custom", {"sq1": 0.5, "sq2": 0.8, "sq3": 0.6}, {}, (group(1, 2),))
+
+
+def test_the_anchor_and_the_implied_probability_apply_the_same_groups():
+    """ADR 33's property. If only one of the two read `dependent_groups`, the anchor and
+    `check_derivation` would quietly disagree about what the evidence implies."""
+    d, o = a_grid(
+        "conjunction", {"sq1": 0.5, "sq2": 0.8, "sq3": 0.6}, {}, (group(1, 2),)
+    )
+    anchor, rule = checks.anchor_from(o, d)
+
+    assert rule == "conjunction"
+    assert anchor == pytest.approx(0.261)
+
+    i = inside(adjustments=[adjustment("neutral", 0.0)])
+    assert checks.implied_probability(o, i, d) == pytest.approx(anchor)
 
 
 # ---------- P7: spread is measured within a column ----------

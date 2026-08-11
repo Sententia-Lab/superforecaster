@@ -49,7 +49,16 @@ function Modifier({ adjustment: a, index }) {
  * without reading three paragraphs. The arithmetic line underneath is the same one the
  * synthesis table recomputes.
  */
-export default function ModifierCard({ step, lens, researched, insidePayload, active, busy, onStart }) {
+export default function ModifierCard({
+  step,
+  lens,
+  researched,
+  insidePayload,
+  active,
+  error,
+  busy,
+  onStart,
+}) {
   const measured = researched?.lens;
   const complete = step.status === "complete" && insidePayload;
 
@@ -96,7 +105,13 @@ export default function ModifierCard({ step, lens, researched, insidePayload, ac
             ) : null}
           </>
         ) : (
-          <StepControls step={step} label="Find modifiers" busy={busy} onStart={onStart} />
+          <StepControls
+            step={step}
+            label="Find modifiers"
+            busy={busy}
+            onStart={onStart}
+            error={error}
+          />
         )}
       </Accordion>
     </div>

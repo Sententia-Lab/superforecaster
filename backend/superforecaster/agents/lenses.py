@@ -51,6 +51,25 @@ definition and enumerate the same cases. Write the boundary, not the vibe:
 
 A population nobody could count is a population nobody can check.
 
+NOW MAKE IT ONE SOMEBODY HAS ALREADY COUNTED
+Precision and findability pull against each other, and the next step has a handful of
+searches, no database, and no way to ask you what you meant. Every extra condition you
+stack on cuts the chance that any published source measured this exact thing.
+
+Before you name a population, ask: would a dataset, a study, an index, or a "list of"
+article plausibly cover it? If not, drop a condition until one would.
+
+  too narrow  midterms since 1946 where the out-party led the generic ballot by 3+
+              points in the final 60 days, measured against net seat change
+  countable   post-war midterm seat change for the president's party
+
+The narrow version is more precise and nothing has ever measured it, so the next step
+searches until it is cut off and writes up half a count. The wider one is a real base
+rate with a real source. Prefer the population that exists.
+
+Say what you gave up in `why_it_fits`, so the conditions you dropped are on the record
+rather than lost.
+
 WEIGH THEM BY FIT, AND ONLY BY FIT
 `weight` is how much this population resembles the case in front of you, relative to the
 other lenses you are naming. It is **not** sample size and must not anticipate it. A

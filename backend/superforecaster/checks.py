@@ -26,10 +26,12 @@ from config import CheckThresholds, get_check_thresholds
 
 from .models import (
     ALL_BIASES,
+    DEPENDENCE,
     Adjustment,
     ChainRule,
     CheckViolation,
     Decomposition,
+    DependentGroup,
     Forecast,
     GradedSource,
     InsideView,
@@ -96,7 +98,7 @@ def implied_probability(
         )
 
     rates = [row["rate"] for row in chain_inputs(d, o, i)]
-    combined = combine_sub_question_rates(rates, d.chain_rule)
+    combined = combine_sub_question_rates(rates, d.chain_rule, d.dependent_groups)
     if combined is None:
         return _clamp(o.aggregate_base_rate + whole_question)
     return _clamp(combined + whole_question)
@@ -144,23 +146,57 @@ def worst_sub_question_spread(o: OutsideView) -> float:
     return max(sub_question_spreads(o).values(), default=0.0)
 
 
-def combine_sub_question_rates(rates: list[float], rule: ChainRule) -> float | None:
+def _reduce(rates: list[float], rule: ChainRule, w: float) -> float:
+    """The chain rule, `w` of the way from independent to the Fréchet-Hoeffding bound.
+
+    At `w` of 0 the parts are independent and this is the plain rule. At 1 they move as
+    one, so a conjunction is its weakest member and a disjunction its strongest. The bound
+    is exact, not an approximation: an overlap can never exceed the smaller event, and a
+    union can never be smaller than the larger one.
+
+    No division, so nothing to guard. When the bound equals the independent value — one
+    member, a rate of 0, a rate of 1 — the term vanishes on its own.
+
+    Private: `rule` is never `custom` here, because the caller returns first.
+    """
+    if rule == "conjunction":
+        independent, bound = math.prod(rates), min(rates)
+    else:
+        independent, bound = 1.0 - math.prod(1.0 - p for p in rates), max(rates)
+    return independent + w * (bound - independent)
+
+
+def combine_sub_question_rates(
+    rates: list[float],
+    rule: ChainRule,
+    groups: list[DependentGroup] | None = None,
+) -> float | None:
     """What the chain the decomposition describes implies, from its parts.
 
     Public for the same reason as `signed_adjustment` and `weighted_base_rate`:
     `run_outside_view` records the anchor with this and `check_aggregation` re-derives it
     with this, so the recorded number and the check cannot tell different stories.
 
+    Each group reduces under its own dependence parameter. Those values, plus every
+    sub-question in no group, then reduce together as independent. The same reducer twice.
+    Groups are assumed independent of each other, which is why the second pass uses 0.
+
+    `groups` index into `rates` by 1-based position. `Decomposition` has already rejected
+    a position that does not exist or sits in two groups, so the partition below holds.
+
     None for `custom` — there is no formula to apply, so the caller falls back to the
     weighted mean over all classes, which is what the anchor was before this existed.
     """
-    if not rates:
+    if not rates or rule not in ("conjunction", "disjunction"):
         return None
-    if rule == "conjunction":
-        return math.prod(rates)
-    if rule == "disjunction":
-        return 1.0 - math.prod(1.0 - p for p in rates)
-    return None
+    groups = groups or []
+    grouped = {m for g in groups for m in g.members}
+    values = [
+        _reduce([rates[m - 1] for m in g.members], rule, DEPENDENCE[g.kind])
+        for g in groups
+    ]
+    values += [r for n, r in enumerate(rates, 1) if n not in grouped]
+    return _reduce(values, rule, 0.0)
 
 
 def chain_inputs(
@@ -484,7 +520,7 @@ def anchor_from(o: OutsideView, d: Decomposition | None) -> tuple[float | None, 
     """
     if d is not None and d.chain_rule != "custom":
         rates = [row["rate"] for row in chain_inputs(d, o)]
-        combined = combine_sub_question_rates(rates, d.chain_rule)
+        combined = combine_sub_question_rates(rates, d.chain_rule, d.dependent_groups)
         if combined is not None:
             return combined, d.chain_rule
     return weighted_base_rate(o), "weighted mean"

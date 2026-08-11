@@ -35,65 +35,58 @@ from ..models import (
 )
 from ..observability import run_agent
 from ..tools import search_web, search_wikipedia
-from . import as_of_note, attach_budget, format_question, with_model
+from . import (
+    as_of_note,
+    attach_budget,
+    format_question,
+    withdraw_spent_tools,
+    with_model,
+)
 
-INSTRUCTIONS = """You measure ONE population. It has already been chosen and defined for
-you, and its definition is not yours to revise. You do not produce a probability for the
-question, you do not reason about what makes this case special, and you do not judge how
-well the population fits — other steps do all three. Your only job is: **within this
-population, how often did the thing happen?**
+INSTRUCTIONS = """# ROLE
+You are an expert researcher that finds and records the occurrences of historical events with a limited search budget. You measure ONE population of data and report what you counted. You do not forecast.
 
-COUNT, DO NOT ESTIMATE (principle 4)
-You return evidence blocks. The rate is divided out of them by code, so there is no field
-in which to state one, and no way for your number and your cases to disagree.
+# TASK
+You'll be given a question asking for the rate of occurrence of an event, and a population to measure it over. Your job is to answer that question with data that is PUBLISHED or COUNTED.
 
-Two kinds of block, and you may return several of either:
+- PUBLISHED data is a statistic published from a credible source ("61% of public companies have a revenue above x").
+- COUNTED data is raw data pulled from an index, table, survey or "list of" article. Take every relevant case from that page and record it.
 
-  counted    Cases you actually found and can name. Set `n` to how many you looked at
-             and `hits` to how many of those did the thing. List every one of them in
-             `analogs`, with `outcome` 1.0 for did and 0.0 for did not. A check verifies
-             `n` against how many analogs you listed and `hits` against how many resolved
-             yes, so a count with no cases behind it fails.
+## Search in this order:
+  1. Find a published statistic for this population. One search — the cheapest full answer.
+  2. If (1) fails, find a page listing many cases at once: an index, table, survey, or "list of" article.
+     One or two searches. Take every case from that one page.
+  3. If (2) fails, find individual cases from disparate sources and count them; one search each, at most three. Do not chase a tenth case.
 
-  published  A statistic someone else measured — "61% of 230 S-1 filings priced within
-             the year". Set `hits` and `n` from the statistic and cite the `source`.
-             This is how a population of 230 gets into a forecast that nobody could
-             enumerate by hand. Every published block needs a source; a statistic with
-             no provenance is an assertion.
+# CONSTRAINTS
+1. Every number comes from cases you found or a statistic someone else published. `hits` and `n` are counts. A rate you reasoned your way to is not a base rate.
+2. Never repeat a search with reworded terms. A query that found nothing means this population is hard to measure, not that the words were wrong.
+3. Stop at whichever comes first:
+  - you hold a published block, or a counted block with 3 or more named cases;
+  - two searches in a row return nothing new;
+  - two searches remain.
 
-Blocks pool into one rate: 7 counted out of 10 plus 140 published out of 230 is 147/240.
-So a handful of cases you verified yourself and a large published study can sit in the
-same base rate, each carrying exactly the weight of its own denominator.
+## WHEN YOU CANNOT MEASURE THIS POPULATION
+Say so. Return whatever you found, graded `low`, and name the problem in `disagreement`.
+That is an honest answer, not a failure — a later step can use a thin rate it knows is
+thin, and cannot use a confident one that is wrong.
 
-SEARCH FOR IT
-A rate you reasoned your way to is not a base rate. If the population turns out to be
-hard to measure, say so in `disagreement` and return the thin evidence you have —
-honestly small is worth more than confidently invented.
+Do not measure a different population instead. The boundary you were given was chosen
+before anyone looked anything up, on purpose, and a later step re-imposes it on whatever
+you return — so a wider class you measure quietly becomes a rate reported under the
+narrow class's name.
 
-SAY WHAT THIS POPULATION ALREADY ACCOUNTS FOR
-`disagreement` is where you write what this population might mislead about, and — this
-part matters downstream — what it already controls for. If your population is "large-cap
-tech IPOs", then being large-cap is *already priced in*, and a later step that adjusts
-upward for the company being large would be counting it twice. You are the only step that
-knows this, so say it.
+## GRADE EACH SOURCE FOR THIS RATE, NOT FOR ITS REPUTATION
+  high    a dataset or study measuring this population directly
+  medium  relevant but indirect — adjacent population, older data, partial coverage
+  low     a single report, a secondhand figure, or a number you had to infer
 
-GRADE YOUR SOURCES
-Every class needs at least one entry in `sources`. Grade each for how strongly it
-supports *this specific* base rate, not how reputable it is in general:
-    high    a real dataset or study measuring this population directly
-    medium  relevant but indirect — adjacent population, older data, partial coverage
-    low     a single report, a secondhand figure, or a number you had to infer
-Say why in `note`. Set `source` to a human label — the publication, dataset, or filing
-("PitchBook M&A Report 2024"), never a bare URL. Put the link in `url`, and only when
-you actually retrieved that page: a check verifies cited URLs against what your searches
-returned, and inventing one is a violation. Copy the link exactly as the search results
-gave it, in full — a partial or redirect fragment is dropped and the citation loses its
-link.
+Say in `note` what makes it that grade.
 
-Padding the list with weak citations does not help you — a class is graded by its
-*strongest* source, so an extra thin one neither raises nor lowers it. If the evidence
-is genuinely thin, say so in the evidence `note` and return fewer counted rows rather
-than inventing a rate.
+A counted block must name every case in `analogs`, because a check compares that list against `n` and `hits`. Three cases you can name beat ten you cannot.
+
+Your searches run out. When they do the search tools are withdrawn, and whatever you hold
+at that moment becomes the answer — so land deliberately rather than being cut off.
 """
 
 
@@ -109,6 +102,7 @@ def build_base_rate_cell_agent(
         output_type=SubQuestionBaseRates,
         system_prompt=INSTRUCTIONS,
         tools=[search_web, search_wikipedia],
+        prepare_tools=withdraw_spent_tools,
         retries=1,
     )
     attach_budget(agent)
@@ -156,9 +150,11 @@ YOUR POPULATION — {lens.name}
 Who is in it: {lens.population}
 Why it was chosen: {lens.why_it_fits}
 
-Count within this population and nothing else. Do not redefine it, do not substitute a
-population you find easier to search, and do not weigh it against any other — that has
-already been decided.
+Find historical data on this question, published or counted, for this population. Aim at
+it and nothing else, and do not weigh it against any other lens — that is already decided.
+
+If nothing measures it, say so in `disagreement` and grade what you did find `low`. Do not
+measure a nearer population instead.
 
 Return a SubQuestionBaseRates whose `lens` repeats the population exactly as given and adds
 your evidence blocks and analogs."""
@@ -219,8 +215,22 @@ async def _whole_question_cell(
         knowability="researchable",
     )
     result = await run_research_lens(input, fallback_claim, whole, deps)
+    # The same six fields `stages.run_base_rate_step` re-imposes on the main path. Without
+    # this the fallback keeps whatever population and weight the model returned, so the one
+    # path with no oversight is also the one where a cell may name its own reference class
+    # after measuring it — which is what choosing lenses blind exists to prevent (ADR 40).
+    measured = result.lens.model_copy(
+        update={
+            "name": whole.name,
+            "population": whole.population,
+            "why_it_fits": whole.why_it_fits,
+            "weight": whole.weight,
+            "weight_rationale": whole.weight_rationale,
+            "sub_question_ids": [],
+        }
+    )
     view = OutsideView(
-        lenses=[result.lens.model_copy(update={"sub_question_ids": []})],
+        lenses=[measured],
         aggregate_base_rate=0.0,
         disagreement=result.disagreement,
     )
@@ -240,10 +250,11 @@ def merge_base_rates(
     measured exactly one population for exactly one sub-question; letting it volunteer a
     different id would re-open the linkage hole `check_linkage` closes.
 
-    The weight and population definition are taken from the *chosen* lens rather than
-    from whatever came back, so a research cell cannot quietly re-weight its own
-    population after seeing what it measured — which is the entire reason choosing and
-    measuring are separate steps.
+    `sub_question_ids` is the only field this touches. The identity and weight were already
+    re-imposed from the *chosen* lens by `stages.run_base_rate_step`, which is where a
+    research cell is stopped from re-weighting its own population after seeing what it
+    measured. This docstring used to claim that job, and did not do it — the results
+    arriving here have been through it already.
 
     `aggregate_base_rate` is computed by `checks.anchor_from`, the same function
     `check_aggregation` re-derives it with.
