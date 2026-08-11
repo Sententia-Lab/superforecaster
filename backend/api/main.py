@@ -19,13 +19,12 @@ from superforecaster.config import (
     resolve_agent_model,
 )
 
-load_env()
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from superforecaster import cron, db
+from app import cron, db
 
 from .admin import router as admin_router
 from .deps import is_local_mode, require_admin
@@ -33,6 +32,10 @@ from .calibration import router as calibration_router
 from .forecasts import router as forecasts_router
 from .questions import router as questions_router
 from .runs import router as runs_router
+
+# Before anything reads a setting. The core library no longer loads `.env` on import —
+# it is a library — so the process that wants a `.env` says so, and this is that line.
+load_env()
 
 
 def _preflight() -> list[str]:

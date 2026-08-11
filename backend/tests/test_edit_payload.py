@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from api.main import app
-from superforecaster import db, machine
+from app import db, machine
 from superforecaster.models import (
     Decomposition,
     DependentGroup,

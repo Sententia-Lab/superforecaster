@@ -2,7 +2,7 @@
 
 Each principle in `spec/superforecasting_methodology.md` that can be expressed as a
 property of the output lives here as a function returning `CheckViolation | None`.
-No LLM, no network, no I/O, no imports from `agents` or `graphs`.
+No LLM, no network, no I/O, no imports from `agents` or `update`.
 
 Two reasons this is a module and not prompt text:
 
@@ -656,7 +656,7 @@ def check_citations(
     really returned, so this is set membership.
 
     Takes the retrieved sources as a plain argument rather than reaching for
-    `ForecastDeps`: this module does not import from `agents` or `graphs`, and the
+    `ForecastDeps`: this module does not import from `agents` or `update`, and the
     `Critique` node is where the two meet.
     """
     retrieved = {ref.url for ref in seen if ref.url}
@@ -1090,7 +1090,7 @@ def run_forecast_checks(
     """Every forecast-side check. Called by the `critique` step. Empty list is clean.
 
     Takes the pieces rather than a `ForecastState` so this module stays free of any
-    dependency on `graphs`, which imports it. `sources_seen` arrives the same way — it
+    dependency on `update`, which imports it. `sources_seen` arrives the same way — it
     lives on `ForecastDeps`, which this module also must not import.
     """
     ctx = _Ctx(forecast, decomposition, outside, inside, list(sources_seen), t)

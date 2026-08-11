@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from superforecaster import db
+from app import db
 from superforecaster.models import (
     BaseRateStepPayload,
     Decomposition,

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from superforecaster import db
+from app import db
 
 
 @pytest.fixture(autouse=True)
@@ -64,4 +64,4 @@ def _unset_admin_key(monkeypatch):
 
 @pytest.fixture
 def fixtures_dir() -> Path:
-    return Path(__file__).resolve().parent.parent / "superforecaster" / "fixtures"
+    return Path(__file__).resolve().parent.parent / "app" / "fixtures"

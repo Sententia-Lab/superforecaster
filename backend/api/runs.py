@@ -20,7 +20,7 @@ from pydantic import ValidationError
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from sse_starlette.sse import EventSourceResponse
 
-from superforecaster import db, machine
+from app import db, machine
 from superforecaster.errors import AgentTimeout, StageTimeout
 from superforecaster.models import (
     MAX_SEARCH_DEPTH,

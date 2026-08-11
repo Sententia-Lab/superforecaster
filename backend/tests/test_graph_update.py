@@ -15,8 +15,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from superforecaster.graphs import update as ug
-from superforecaster.graphs.state import ForecastDeps, UpdateState
+from superforecaster import update as ug
+from superforecaster.deps import ForecastDeps
+from superforecaster.update import UpdateState
 from superforecaster.models import (
     EvidenceItem,
     ForecastRecord,
@@ -24,6 +25,7 @@ from superforecaster.models import (
     ResearchSummary,
     ResolutionCheckResult,
     UpdateDecision,
+    UpdateOutcome,
 )
 from tests.test_checks import sub
 
@@ -75,15 +77,18 @@ def a_decision(
 
 @pytest.fixture
 def stub(monkeypatch):
-    """Stub the two agents and the DB writes. Returns knobs and call counts."""
+    """Stub the two agents. Returns knobs and call counts.
+
+    Nothing to stub for storage: the cycle writes nothing, so what used to be asserted
+    against fake DB calls is asserted against the `UpdateOutcome` it returns.
+    `tests/test_app_update.py` covers the writes.
+    """
     state = {
         "appears_resolved": False,
         "decision": a_decision(0.50, 0.60),
         "verify_decision": None,
         "update_calls": 0,
         "verify_calls": 0,
-        "written": [],
-        "marked": [],
     }
 
     async def fake_resolution(record, deps):
@@ -102,20 +107,13 @@ def stub(monkeypatch):
 
     monkeypatch.setattr(ug, "run_resolution_check", fake_resolution)
     monkeypatch.setattr(ug, "run_update", fake_update)
-    monkeypatch.setattr(
-        ug.db,
-        "mark_refreshed",
-        lambda fid, flagged: state["marked"].append((fid, flagged)),
-    )
-    monkeypatch.setattr(
-        ug.db,
-        "add_forecast_update",
-        lambda **kw: state["written"].append(kw),
-    )
     return state
 
 
-async def visited(record: ForecastRecord) -> tuple[list[str], UpdateState]:
+async def visited(
+    record: ForecastRecord,
+) -> tuple[list[str], UpdateState, UpdateOutcome]:
+    """Walk the cycle, reporting which nodes ran, the state, and what it concluded."""
     seen: list[str] = []
     st = UpdateState(record=record)
     async with ug.update_graph.iter(
@@ -123,7 +121,7 @@ async def visited(record: ForecastRecord) -> tuple[list[str], UpdateState]:
     ) as run:
         async for node in run:
             seen.append(type(node).__name__)
-    return seen, st
+    return seen, st, run.result.output
 
 
 # ---------- resolution short-circuits ----------
@@ -132,7 +130,7 @@ async def visited(record: ForecastRecord) -> tuple[list[str], UpdateState]:
 async def test_resolved_forecast_never_reaches_the_update_step(stub):
     """The rule that used to live in a flagged_ids set, now an unreachable node."""
     stub["appears_resolved"] = True
-    seen, _ = await visited(a_record())
+    seen, _, _out = await visited(a_record())
 
     assert "ApplyBayes" not in seen
     assert "GuardUpdate" not in seen
@@ -142,13 +140,13 @@ async def test_resolved_forecast_never_reaches_the_update_step(stub):
 async def test_resolved_forecast_is_flagged_not_closed(stub):
     """Never auto-resolves — an admin confirms."""
     stub["appears_resolved"] = True
-    _, st = await visited(a_record())
-    assert stub["marked"] == [("fc_1", True)]
-    assert stub["written"] == []
+    _, st, out = await visited(a_record())
+    assert out.flagged_resolved is True
+    assert out.updated is False
 
 
 async def test_unresolved_forecast_proceeds_to_the_update(stub):
-    seen, _ = await visited(a_record())
+    seen, _, _out = await visited(a_record())
     assert seen[:3] == ["CheckResolved", "ApplyBayes", "GuardUpdate"]
     assert stub["update_calls"] == 1
 
@@ -159,7 +157,7 @@ async def test_unresolved_forecast_proceeds_to_the_update(stub):
 async def test_large_move_routes_through_verification(stub):
     """FTX filing is a legitimate 0.20 -> 0.99 move; corroborate, don't cap."""
     stub["decision"] = a_decision(0.10, 0.95)
-    seen, _ = await visited(a_record(0.10))
+    seen, _, _out = await visited(a_record(0.10))
 
     assert "VerifyLargeMove" in seen
     assert stub["verify_calls"] == 1
@@ -169,7 +167,7 @@ async def test_verification_happens_at_most_once(stub):
     """Even if the verified decision is still a large move, no second pass."""
     stub["decision"] = a_decision(0.10, 0.95)
     stub["verify_decision"] = a_decision(0.10, 0.93)
-    seen, _ = await visited(a_record(0.10))
+    seen, _, _out = await visited(a_record(0.10))
 
     assert seen.count("VerifyLargeMove") == 1
     assert seen.count("GuardUpdate") == 2
@@ -177,29 +175,29 @@ async def test_verification_happens_at_most_once(stub):
 
 async def test_a_survived_large_move_is_written(stub):
     stub["decision"] = a_decision(0.10, 0.95)
-    _, st = await visited(a_record(0.10))
+    _, st, out = await visited(a_record(0.10))
 
     assert st.decision.verified_large_move is True
-    assert stub["written"][0]["probability"] == 0.95
+    assert (out.updated, out.new_probability) == (True, 0.95)
 
 
 async def test_a_walked_back_large_move_is_written_at_the_revised_value(stub):
     stub["decision"] = a_decision(0.10, 0.95)
     stub["verify_decision"] = a_decision(0.10, 0.30)
-    _, st = await visited(a_record(0.10))
+    _, st, out = await visited(a_record(0.10))
 
-    assert stub["written"][0]["probability"] == 0.30
+    assert (out.updated, out.new_probability) == (True, 0.30)
 
 
 async def test_normal_move_skips_verification(stub):
-    seen, _ = await visited(a_record())
+    seen, _, _out = await visited(a_record())
     assert "VerifyLargeMove" not in seen
     assert stub["verify_calls"] == 0
 
 
 async def test_large_move_threshold_is_configurable(stub, monkeypatch):
     monkeypatch.setenv("CHECK_LARGE_MOVE", "0.05")
-    seen, _ = await visited(a_record())
+    seen, _, _out = await visited(a_record())
     assert "VerifyLargeMove" in seen
 
 
@@ -207,29 +205,25 @@ async def test_large_move_threshold_is_configurable(stub, monkeypatch):
 
 
 async def test_material_consistent_update_is_written(stub):
-    _, st = await visited(a_record())
-    assert stub["written"] == [
-        {
-            "forecast_id": "fc_1",
-            "probability": 0.60,
-            "reasoning": "r",
-        }
-    ]
+    _, st, out = await visited(a_record())
+    assert out.updated is True
+    assert out.new_probability == 0.60
+    assert out.reasoning == "r"
 
 
 async def test_sub_threshold_move_is_treated_as_noise(stub):
     """Principle 10 — the 3-point gate that filters rephrasing of the same view."""
     stub["decision"] = a_decision(0.50, 0.51)
-    _, st = await visited(a_record())
+    _, st, out = await visited(a_record())
 
-    assert stub["written"] == []
+    assert out.updated is False
 
 
 async def test_no_evidence_and_no_movement_is_a_clean_no_op(stub):
     stub["decision"] = a_decision(0.50, 0.50)
-    _, st = await visited(a_record())
+    _, st, out = await visited(a_record())
 
-    assert stub["written"] == []
+    assert out.updated is False
     assert st.violations == []
 
 
@@ -241,17 +235,10 @@ async def test_internally_inconsistent_update_is_not_written(stub):
         posterior=0.30,
         reasoning="contradicts itself",
     )
-    _, st = await visited(a_record())
+    _, st, out = await visited(a_record())
 
-    assert stub["written"] == []
+    assert out.updated is False
     assert 11 in {v.principle for v in st.violations}
-
-
-async def test_refreshed_timestamp_is_always_marked(stub):
-    """Even a no-op run records that the forecast was looked at."""
-    stub["decision"] = a_decision(0.50, 0.50)
-    await visited(a_record())
-    assert stub["marked"] == [("fc_1", False)]
 
 
 # ---------- diagram ----------

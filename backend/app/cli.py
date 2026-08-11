@@ -22,17 +22,19 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.config import load_env
+from .config import load_env
 
 from . import db
-from .agents.critic import run_critique
-from .agents.postmortem import run_postmortem
-from .agents.resolution import run_resolution_check
-from .agents.update import run_update
-from .deps import ForecastDeps
-from .graphs import run_update_graph, update_mermaid
-from .stages import run_all
-from .models import (
+from superforecaster.agents.critic import run_critique
+from superforecaster.agents.postmortem import run_postmortem
+from superforecaster.agents.resolution import run_resolution_check
+from superforecaster.agents.update import run_update
+from superforecaster.deps import ForecastDeps
+from .update import run_update_graph
+
+from superforecaster.update import update_mermaid
+from superforecaster.stages import run_all
+from superforecaster.models import (
     Forecast,
     ForecastInput,
     ForecastRecord,
@@ -40,7 +42,7 @@ from .models import (
     ResearchSummary,
     SubPrediction,
 )
-from . import model_garden
+from superforecaster import model_garden
 from .evals import components as component_evals
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
@@ -342,7 +344,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
     """
     import os
 
-    from app.config import ENV_FILE, origin
+    from .config import ENV_FILE, origin
 
     from .config import resolve_agent_model
 

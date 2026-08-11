@@ -41,10 +41,11 @@ def _convert_timestamp(value: bytes) -> datetime:
 sqlite3.register_adapter(datetime, _adapt_datetime)
 sqlite3.register_converter("TIMESTAMP", _convert_timestamp)
 
-from app.config import get_app_settings
+from .config import get_app_settings
 
-from . import scoring
-from .models import (
+from superforecaster import scoring
+from superforecaster.stages import STAGE_ORDER
+from superforecaster.models import (
     CalibrationBucket,
     CalibrationReport,
     Forecast,
@@ -661,15 +662,6 @@ def calibration_report() -> CalibrationReport:
 # lands here as a `run_steps` row, so the whole reasoning trail survives a restart and
 # "retry" is re-running one step from what the database already knows. Decisions about
 # *which* transitions are legal live in `machine`; this section only reads and writes.
-
-STAGE_ORDER: tuple[str, ...] = (
-    "decompose",
-    "lenses",
-    "base_rates",
-    "inside_view",
-    "synthesis",
-)
-"""The five gated stages, in the order the user advances through them."""
 
 
 def create_gated_run(

@@ -13,7 +13,8 @@ import httpx
 import pytest
 
 from api.main import app
-from superforecaster import db, machine, stages
+from app import db, machine
+from superforecaster import stages
 
 from .gated_factories import decomposition, future
 

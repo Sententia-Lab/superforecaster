@@ -10,7 +10,7 @@ it is what `check_base_rate_derivation` audits.
 
 One agent per *lens*, not per sub-question: with three lenses on five sub-questions the
 research fans out fifteen ways. The fan-out itself is a `.map()` edge in
-`graphs.forecast`, so this module knows nothing about how many cells run or when.
+`stages`, so this module knows nothing about how many cells run or when.
 """
 
 from __future__ import annotations

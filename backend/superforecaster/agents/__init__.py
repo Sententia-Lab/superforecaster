@@ -9,7 +9,7 @@ Every module here has the same four things:
 
 The uniformity is the point: a step you can call in isolation is a step you can
 test in isolation. Agents know nothing about each other — sequencing lives in
-`graphs`, and the methodology checks live in `checks`.
+`stages` and `update`, and the methodology checks live in `checks`.
 """
 
 from __future__ import annotations

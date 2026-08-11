@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from superforecaster import db
+from app import db
 from superforecaster.models import (
     Forecast,
     HistoricalAnalog,

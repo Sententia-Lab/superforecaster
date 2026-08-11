@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from superforecaster.evals import components as ce
+from app.evals import components as ce
 from superforecaster.models import (
     ComponentCase,
     ComponentScore,

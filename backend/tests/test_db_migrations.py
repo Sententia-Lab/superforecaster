@@ -16,7 +16,7 @@ import sqlite3
 
 import pytest
 
-from superforecaster import db
+from app import db
 
 # The `forecast_updates` schema exactly as it shipped before ADR 29 — including the
 # column that stopped being written. Hand-built rather than checked in as a .db file so

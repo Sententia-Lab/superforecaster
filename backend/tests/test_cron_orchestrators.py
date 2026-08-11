@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from superforecaster import cron, db
+from app import cron, db
 from superforecaster.models import (
     Forecast,
     HistoricalAnalog,

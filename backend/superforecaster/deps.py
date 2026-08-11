@@ -1,8 +1,8 @@
 """Runtime dependencies injected into every agent run.
 
-Its own module rather than part of `graphs.state` because `tools` needs it and
-`graphs` imports `agents` which imports `tools` — defining it alongside the graph
-state would be a circular import.
+Its own module rather than part of `update` because `tools` needs it and `update`
+imports `agents` which imports `tools` — defining it beside the update state would be
+a circular import.
 """
 
 from __future__ import annotations

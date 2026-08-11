@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from superforecaster.__main__ import _record_from_fixture
+from app.cli import _record_from_fixture
 from superforecaster.models import ForecastInput
 
 

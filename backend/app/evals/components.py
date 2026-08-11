@@ -22,16 +22,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from .. import checks
-from ..agents.critic import run_critique
-from ..agents.decompose import run_decompose
-from ..agents.postmortem import run_postmortem
-from ..agents.resolution import run_resolution_check
-from ..agents.synthesize import run_synthesize
-from ..agents.update import run_update
-from ..deps import ForecastDeps
-from ..model_garden import pick_clean_model
-from ..models import ComponentCase, ComponentReport, ComponentScore
+from superforecaster import checks
+from superforecaster.agents.critic import run_critique
+from superforecaster.agents.decompose import run_decompose
+from superforecaster.agents.postmortem import run_postmortem
+from superforecaster.agents.resolution import run_resolution_check
+from superforecaster.agents.synthesize import run_synthesize
+from superforecaster.agents.update import run_update
+from superforecaster.deps import ForecastDeps
+from superforecaster.model_garden import pick_clean_model
+from superforecaster.models import ComponentCase, ComponentReport, ComponentScore
 
 CASES_DIR = Path(__file__).resolve().parent / "components"
 

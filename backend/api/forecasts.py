@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from superforecaster import db
-from superforecaster.graphs import run_update_graph
+from app import db
+from app.update import run_update_graph
 from superforecaster.stages import run_all
 from superforecaster.models import (
     AddUpdateRequest,

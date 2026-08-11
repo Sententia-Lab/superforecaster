@@ -56,6 +56,20 @@ from .models import (
     SynthesisStepPayload,
 )
 
+STAGE_ORDER: tuple[str, ...] = (
+    "decompose",
+    "lenses",
+    "base_rates",
+    "inside_view",
+    "synthesis",
+)
+"""The five gated stages, in the order a caller advances through them.
+
+The order the functions below must run in, so it belongs beside them. It used to live
+in the persistence module, which meant the state machine read the pipeline's shape back
+out of the database layer that only stored it.
+"""
+
 MAX_SYNTHESIS_ATTEMPTS = 2
 
 SYNTHESIS_FIXABLE = frozenset({"linkage", "derivation", "calibration_hygiene"})

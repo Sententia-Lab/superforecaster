@@ -14,7 +14,7 @@ already control for the feature, and under-count against the ones that do not.
 That is also why the cell is told what its population already accounts for — the research
 step recorded it, and it is the single most useful thing to know before adjusting.
 
-The fan-out is a `.map()` edge in `graphs.forecast`; this module supplies one cell. P14
+The fan-out is handled by `stages`; this module supplies one cell. P14
 and P15 belong to `reflect`, its own step after the barrier — see that module for why
 they cannot be asked of one lens.
 """

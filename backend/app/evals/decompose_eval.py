@@ -26,16 +26,18 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from ..config import resolve_agent_model
+from superforecaster.config import resolve_agent_model
 from pydantic_evals import Case, Dataset
 from pydantic_evals.evaluators import Evaluator, EvaluatorContext, LLMJudge
 from pydantic_evals.evaluators.common import OutputConfig
 
-from .. import checks
-from ..agents.decompose import run_decompose
-from ..deps import ForecastDeps
-from ..models import Decomposition, ForecastInput
-from ..observability import configure_logfire
+from superforecaster import checks
+from superforecaster.agents.decompose import run_decompose
+from superforecaster.deps import ForecastDeps
+from superforecaster.models import Decomposition, ForecastInput
+from superforecaster.observability import configure_logfire
+
+from ..config import load_env
 
 Ctx = EvaluatorContext[ForecastInput, Decomposition, dict]
 
@@ -245,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
     # `run_agent` configures logfire too, but only once the first case is already
     # running — and a span opened before `logfire.configure()` is never exported. The
     # experiment span opens before any of that, so configure here or lose the tree.
+    load_env()
     configure_logfire()
 
     # The judge holds still while `--model` moves. It defaults to the configured agent
