@@ -33,7 +33,7 @@ from ..models import (
     OutsideView,
     Reflection,
 )
-from ..observability import run_agent
+from ..runner import run_agent
 from . import as_of_note, format_question, with_model
 
 INSTRUCTIONS = """You review a forecast that has already been researched, and supply the

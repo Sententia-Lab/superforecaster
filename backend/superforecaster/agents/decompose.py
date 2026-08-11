@@ -11,7 +11,7 @@ from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
 from ..models import Decomposition, ForecastInput
-from ..observability import run_agent
+from ..runner import run_agent
 from . import as_of_note, format_question, with_model
 
 INSTRUCTIONS = """You break forecasting questions into tractable pieces. You do not

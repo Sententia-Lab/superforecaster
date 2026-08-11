@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import load_env
+from .observability import configure_logfire
 
 from . import db
 from superforecaster.agents.critic import run_critique
@@ -346,7 +347,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
 
     from .config import ENV_FILE, origin
 
-    from .config import resolve_agent_model
+    from superforecaster.config import resolve_agent_model
 
     print(
         f"\n.env file   {ENV_FILE}  ({'present' if ENV_FILE.exists() else 'ABSENT'})\n"
@@ -589,6 +590,10 @@ def serve(
 def main(argv: list[str] | None = None) -> int:
     """Kept as a function so the console script and the tests share an entry."""
     load_env()
+    # The library instruments; this process decides where the traces go. Verbose is read
+    # off argv rather than the parsed flags because configuration has to happen before
+    # the first agent runs, and typer has not dispatched yet.
+    configure_logfire(verbose=bool({"-v", "--verbose"} & set(argv or sys.argv[1:])))
     try:
         app(args=argv, standalone_mode=False)
     except typer.Exit as exc:

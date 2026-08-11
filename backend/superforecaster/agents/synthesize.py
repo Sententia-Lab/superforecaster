@@ -29,7 +29,7 @@ from ..models import (
     InsideView,
     OutsideView,
 )
-from ..observability import run_agent
+from ..runner import run_agent
 from . import as_of_note, format_question, with_model
 
 INSTRUCTIONS = """You produce the final Forecast from work already done. You have no

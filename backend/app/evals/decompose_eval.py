@@ -35,9 +35,8 @@ from superforecaster import checks
 from superforecaster.agents.decompose import run_decompose
 from superforecaster.deps import ForecastDeps
 from superforecaster.models import Decomposition, ForecastInput
-from superforecaster.observability import configure_logfire
-
 from ..config import load_env
+from ..observability import configure_logfire
 
 Ctx = EvaluatorContext[ForecastInput, Decomposition, dict]
 

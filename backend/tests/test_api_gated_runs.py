@@ -15,6 +15,7 @@ import pytest
 from api.main import app
 from app import db, machine
 from superforecaster import stages
+from superforecaster.events import Thought
 
 from .gated_factories import decomposition, future
 
@@ -102,7 +103,7 @@ async def test_start_409_when_not_backlog(client):
 @pytest.fixture
 def stub_decompose(monkeypatch):
     async def fake(input, deps):
-        deps.emit and deps.emit("thought", {"delta": "thinking..."}, None)
+        deps.emit and deps.emit(Thought(delta="thinking..."), None)
         return decomposition()
 
     monkeypatch.setattr(stages, "run_decompose_stage", fake)

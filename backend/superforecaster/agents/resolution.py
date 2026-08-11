@@ -17,7 +17,7 @@ from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
 from ..models import ForecastRecord, ResolutionCheckResult
-from ..observability import run_agent
+from ..runner import run_agent
 from ..tools import search_web, search_wikipedia
 from . import with_model
 

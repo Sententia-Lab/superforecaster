@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable
 
 from .config import Budget
 
+from .events import Sink
 from .models import SourceRef
 
 
@@ -35,12 +35,12 @@ class ForecastDeps:
     """Every source a tool recorded, in the order the tools recorded it.
 
     A cell gets a *private* list, merged back into the parent's after the barrier. Not a
-    style choice: `observability` detects new sources by remembering how long this list
+    style choice: `runner` detects new sources by remembering how long this list
     was and slicing off the tail, and two cells appending to one list makes that index
     hand each cell the other's sources.
     """
 
-    emit: Callable[[str, dict[str, Any], str | None], None] | None = None
+    emit: Sink | None = None
     """Fire-and-forget sink for live run events. None everywhere except a streamed run.
 
     Rides here rather than through `run_agent`'s signature because `deps` is already
@@ -48,8 +48,8 @@ class ForecastDeps:
     `ctx.deps` — threading it explicitly would mean editing all eight `run_<agent>`
     call sites to pass something none of them care about.
 
-    Called as `emit(type, payload, sub_question)`. The third argument is the column the
-    event belongs to, or None for work a stage did as a whole.
+    Called as `emit(event, sub_question)` with an `events.AgentEvent`. The second
+    argument is the column the event belongs to, or None for work a stage did as a whole.
 
     MUST be synchronous and non-blocking: it is called from inside the agent's own
     event stream, and awaiting there would stall token delivery.

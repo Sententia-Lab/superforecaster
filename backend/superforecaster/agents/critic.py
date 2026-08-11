@@ -20,7 +20,7 @@ from pydantic_ai.exceptions import UsageLimitExceeded
 from ..deps import ForecastDeps
 from ..errors import AgentTimeout
 from ..models import CriteriaCritique
-from ..observability import run_agent
+from ..runner import run_agent
 from ..tools import search_web
 from . import attach_budget, withdraw_spent_tools, with_model
 

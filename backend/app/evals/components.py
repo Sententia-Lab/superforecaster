@@ -290,9 +290,13 @@ async def _score_outside_row(input, decomposition, deps):
     thing that matters is the merged view a scorer reads, and a plain loop is the version
     you can single-step through.
     """
-    from ..agents.lenses import run_choose_lenses
-    from ..agents.outside_view import cell_deps, merge_base_rates, run_research_lens
-    from ..models import SubQuestionBaseRates
+    from superforecaster.agents.lenses import run_choose_lenses
+    from superforecaster.agents.outside_view import (
+        cell_deps,
+        merge_base_rates,
+        run_research_lens,
+    )
+    from superforecaster.models import SubQuestionBaseRates
 
     cells = [s for s in decomposition.sub_questions if s.knowability == "researchable"]
     claims: list = []
@@ -322,10 +326,10 @@ async def _score_outside_row(input, decomposition, deps):
 
 async def _score_inside_row(input, decomposition, outside, deps):
     """The inside-view row plus its reflect pass, run for scoring. See above."""
-    from ..agents.inside_view import run_adjust_lens
-    from ..agents.outside_view import cell_deps
-    from ..agents.reflect import run_reflect
-    from ..models import InsideView
+    from superforecaster.agents.inside_view import run_adjust_lens
+    from superforecaster.agents.outside_view import cell_deps
+    from superforecaster.agents.reflect import run_reflect
+    from superforecaster.models import InsideView
 
     by_id = {s.id: s for s in decomposition.sub_questions if s.id}
     adjustments = []
@@ -363,7 +367,7 @@ async def _score_inside_row(input, decomposition, outside, deps):
 
 async def _dispatch(case: ComponentCase, deps: ForecastDeps) -> Any:
     """Call the agent this case targets, with its inputs reconstructed from JSON."""
-    from ..models import (
+    from superforecaster.models import (
         Decomposition,
         ForecastInput,
         ForecastRecord,

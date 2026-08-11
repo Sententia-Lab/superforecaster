@@ -22,7 +22,7 @@ from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
 from ..models import DraftedQuestion
-from ..observability import run_agent
+from ..runner import run_agent
 from . import with_model
 
 INSTRUCTIONS = """You convert one block of freeform text into a structured forecasting

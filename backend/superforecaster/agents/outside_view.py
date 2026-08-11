@@ -33,7 +33,8 @@ from ..models import (
     SubQuestionBaseRates,
     SubPrediction,
 )
-from ..observability import run_agent
+from ..events import Exhausted
+from ..runner import run_agent
 from ..tools import search_web, search_wikipedia
 from . import (
     as_of_note,
@@ -122,7 +123,7 @@ def get_base_rate_cell_agent() -> Agent[ForecastDeps, SubQuestionBaseRates]:
 def cell_deps(deps: ForecastDeps, sub_question_id: str) -> ForecastDeps:
     """A deps copy bound to one column, with its own source list.
 
-    The private `sources_seen` is not a style choice: `observability` detects new sources
+    The private `sources_seen` is not a style choice: `runner` detects new sources
     by remembering how long that list was and slicing off the tail, and two cells
     appending to one list makes that index hand each cell the other's sources. The parent
     extends from these after the barrier.
@@ -184,7 +185,7 @@ def exhausted_notice(deps: ForecastDeps) -> None:
     """
     if deps.emit is None:
         return
-    deps.emit("exhausted", {"id": deps.sub_question}, deps.sub_question)
+    deps.emit(Exhausted(), deps.sub_question)
 
 
 async def _whole_question_cell(

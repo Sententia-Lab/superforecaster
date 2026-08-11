@@ -76,7 +76,7 @@ def _always_searches(messages: list[ModelMessage], info: AgentInfo) -> ModelResp
 async def instructions_until_exhausted(budget: Budget) -> list[str]:
     """What a greedy agent was told, request by request, on its way into the ceiling.
 
-    Runs with the budget's own `limits()`, the way `observability.run_agent` does — the
+    Runs with the budget's own `limits()`, the way `runner.run_agent` does — the
     endgame only exists when Pydantic AI is enforcing the ceiling, so a run without them
     tests nothing about it.
     """

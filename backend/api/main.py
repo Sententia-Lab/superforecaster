@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from app.config import get_app_settings, load_env, origin, set_runtime_key
+from app.observability import configure_logfire
 from superforecaster.config import (
     active_llm_key_name,
     get_settings,
@@ -71,6 +72,8 @@ def _preflight() -> list[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Core emits spans but never configures Logfire. This process decides where they go.
+    configure_logfire()
     db.init_db()
     cron.start_scheduler()
     print("\nSuperforecaster", flush=True)

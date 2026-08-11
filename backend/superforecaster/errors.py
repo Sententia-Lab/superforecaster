@@ -1,6 +1,6 @@
 """Failures this system raises on purpose.
 
-Its own module because the timeouts are raised in `observability` and `machine` and
+Its own module because the timeouts are raised in `runner` and `app.machine` and
 caught in `agents.critic`, `api.questions`, and `api.runs` — a shared home keeps that
 from becoming an import cycle between the agent layer and the run layer.
 

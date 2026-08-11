@@ -16,7 +16,7 @@ from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
 from ..models import ForecastRecord, UpdateDecision
-from ..observability import run_agent
+from ..runner import run_agent
 from ..tools import find_disconfirming_evidence, search_web
 from . import with_model
 

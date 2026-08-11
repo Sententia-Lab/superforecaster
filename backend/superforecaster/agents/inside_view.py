@@ -35,7 +35,7 @@ from ..models import (
     SubQuestionAdjustments,
     SubPrediction,
 )
-from ..observability import run_agent
+from ..runner import run_agent
 from ..tools import find_disconfirming_evidence, search_web, search_wikipedia
 from . import (
     as_of_note,

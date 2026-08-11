@@ -24,6 +24,7 @@ from superforecaster import stages
 from superforecaster.stages import STAGE_ORDER
 from superforecaster.agents.decompose import with_ids
 from superforecaster.deps import ForecastDeps
+from superforecaster.events import Sink
 from superforecaster.errors import AgentTimeout, StageTimeout
 from superforecaster.models import (
     BaseRateStepPayload,
@@ -243,7 +244,7 @@ async def execute_step(
     step_id: str,
     *,
     max_iterations: int | None = None,
-    emit: Callable[[str, dict, str | None], None] | None = None,
+    emit: Sink | None = None,
 ) -> dict:
     """Claim and run one gated step; persist whatever happens to it.
 

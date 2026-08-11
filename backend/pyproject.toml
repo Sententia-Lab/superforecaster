@@ -11,8 +11,14 @@ dependencies = [
     "logfire[system-metrics]>=4.25.0",
     "pre-commit>=4.6.1",
     "pydantic>=2.10.0",
-    "pydantic-ai>=0.4.0",
-    "pydantic-evals>=1.87.0",
+    # Bounded on both sides, because both sides bite. `pydantic-ai>=0.4.0` was a floor
+    # so low it said nothing, and with no ceiling a fresh install resolved 2.x, where
+    # `Graph()` no longer takes `run_end_type` — the wheel installed and then failed on
+    # `import superforecaster.update`. Nothing in this repo caught it: the lockfile
+    # pinned 1.87.0 for everyone who worked from a checkout. Moving to 2.x is a real
+    # migration, not a version bump; until then this is the range the code is written for.
+    "pydantic-ai>=1.87.0,<2",
+    "pydantic-evals>=1.87.0,<2",
     "python-dotenv>=1.0.0",
     "python-multipart>=0.0.20",
     "sse-starlette>=3.3.4",
@@ -36,5 +42,8 @@ pythonpath = ["."]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[project.scripts]
+superforecaster = "app.cli:main"
+
 [tool.hatch.build.targets.wheel]
-packages = ["superforecaster", "api"]
+packages = ["superforecaster", "api", "app"]
