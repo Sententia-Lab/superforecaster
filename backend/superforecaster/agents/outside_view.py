@@ -43,59 +43,50 @@ from . import (
     with_model,
 )
 
-INSTRUCTIONS = """You measure ONE population and report what you counted. You do not forecast.
+INSTRUCTIONS = """# ROLE
+You are an expert researcher that finds and records the occurrences of historical events with a limited search budget. You measure ONE population of data and report what you counted. You do not forecast.
 
-COUNT, NEVER ESTIMATE
-Every number comes from cases you found or a statistic someone else published. `hits`
-and `n` are counts. A rate you reasoned your way to is not a base rate.
+# TASK
+You'll be given a question asking for the rate of occurrence of an event, and a population to measure it over. Your job is to answer that question with data that is PUBLISHED or COUNTED.
 
-SEARCH IN THIS ORDER
-Stop at the first step that gives you an evidence block.
+- PUBLISHED data is a statistic published from a credible source ("61% of public companies have a revenue above x").
+- COUNTED data is raw data pulled from an index, table, survey or "list of" article. Take every relevant case from that page and record it.
 
-  1. A published statistic for this population. One search — the cheapest full answer.
-  2. A page listing many cases at once: an index, table, survey, or "list of" article.
+## Search in this order:
+  1. Find a published statistic for this population. One search — the cheapest full answer.
+  2. If (1) fails, find a page listing many cases at once: an index, table, survey, or "list of" article.
      One or two searches. Take every case from that one page.
-  3. Individual cases, one search each, at most three. Do not chase a tenth case.
+  3. If (2) fails, find individual cases from disparate sources and count them; one search each, at most three. Do not chase a tenth case.
 
-Never repeat a search with reworded terms. A query that found nothing means this
-population is hard to measure, not that the words were wrong.
-
-WHEN NOTHING MEASURES THIS POPULATION EXACTLY
-This is the common case, not the failure case. Populations here are written to be
-precise, and precise ones are often narrower than anything anybody has published.
-
-Measure the nearest population somebody *has* measured, and grade it down. A wider
-class, an older window, a partial sample — any of these is a real base rate. Name the
-gap in `note` and in `disagreement`, so the next step knows what it is standing on.
-
-  the population   midterms since 1946 where the out-party led the generic ballot
-                   by 3+ points in the final 60 days
-  no published measure of exactly that
-  good             all post-war midterms for the president's party, graded `medium`,
-                   with the gap named: "not conditioned on the polling lead"
-
-The one thing that is never right is to keep searching for an exact match that does not
-exist. Two searches that return nothing new mean you are already at this step.
-
-STOP AND WRITE UP
-Stop at whichever comes first:
+# CONSTRAINTS
+1. Every number comes from cases you found or a statistic someone else published. `hits` and `n` are counts. A rate you reasoned your way to is not a base rate.
+2. Never repeat a search with reworded terms. A query that found nothing means this population is hard to measure, not that the words were wrong.
+3. Stop at whichever comes first:
   - you hold a published block, or a counted block with 3 or more named cases;
   - two searches in a row return nothing new;
   - two searches remain.
 
-You will be stopped anyway: the search tools are withdrawn once the budget is spent, and
-whatever you hold at that moment becomes the answer. Landing early and deliberately, on
-the nearest measurable population, beats being cut off mid-count.
+## WHEN YOU CANNOT MEASURE THIS POPULATION
+Say so. Return whatever you found, graded `low`, and name the problem in `disagreement`.
+That is an honest answer, not a failure — a later step can use a thin rate it knows is
+thin, and cannot use a confident one that is wrong.
 
-GRADE EACH SOURCE FOR THIS RATE, NOT FOR ITS REPUTATION
+Do not measure a different population instead. The boundary you were given was chosen
+before anyone looked anything up, on purpose, and a later step re-imposes it on whatever
+you return — so a wider class you measure quietly becomes a rate reported under the
+narrow class's name.
+
+## GRADE EACH SOURCE FOR THIS RATE, NOT FOR ITS REPUTATION
   high    a dataset or study measuring this population directly
   medium  relevant but indirect — adjacent population, older data, partial coverage
   low     a single report, a secondhand figure, or a number you had to infer
 
-Most honest answers here are `medium`. Say in `note` what makes it that.
+Say in `note` what makes it that grade.
 
-A counted block must name every case in `analogs`, because a check compares that list
-against `n` and `hits`. Three cases you can name beat ten you cannot.
+A counted block must name every case in `analogs`, because a check compares that list against `n` and `hits`. Three cases you can name beat ten you cannot.
+
+Your searches run out. When they do the search tools are withdrawn, and whatever you hold
+at that moment becomes the answer — so land deliberately rather than being cut off.
 """
 
 
@@ -162,11 +153,8 @@ Why it was chosen: {lens.why_it_fits}
 Find historical data on this question, published or counted, for this population. Aim at
 it and nothing else, and do not weigh it against any other lens — that is already decided.
 
-If nothing measures it exactly, measure the nearest population that somebody has measured
-and say so. That is a graded-down base rate, not a substitution: the boundary you report
-is the one you actually counted, and `note` and `disagreement` say how it differs from the
-population above. What is forbidden is quietly swapping in an easier population and
-reporting it as this one.
+If nothing measures it, say so in `disagreement` and grade what you did find `low`. Do not
+measure a nearer population instead.
 
 Return a SubQuestionBaseRates whose `lens` repeats the population exactly as given and adds
 your evidence blocks and analogs."""
@@ -227,8 +215,22 @@ async def _whole_question_cell(
         knowability="researchable",
     )
     result = await run_research_lens(input, fallback_claim, whole, deps)
+    # The same six fields `stages.run_base_rate_step` re-imposes on the main path. Without
+    # this the fallback keeps whatever population and weight the model returned, so the one
+    # path with no oversight is also the one where a cell may name its own reference class
+    # after measuring it — which is what choosing lenses blind exists to prevent (ADR 40).
+    measured = result.lens.model_copy(
+        update={
+            "name": whole.name,
+            "population": whole.population,
+            "why_it_fits": whole.why_it_fits,
+            "weight": whole.weight,
+            "weight_rationale": whole.weight_rationale,
+            "sub_question_ids": [],
+        }
+    )
     view = OutsideView(
-        lenses=[result.lens.model_copy(update={"sub_question_ids": []})],
+        lenses=[measured],
         aggregate_base_rate=0.0,
         disagreement=result.disagreement,
     )
@@ -248,10 +250,11 @@ def merge_base_rates(
     measured exactly one population for exactly one sub-question; letting it volunteer a
     different id would re-open the linkage hole `check_linkage` closes.
 
-    The weight and population definition are taken from the *chosen* lens rather than
-    from whatever came back, so a research cell cannot quietly re-weight its own
-    population after seeing what it measured — which is the entire reason choosing and
-    measuring are separate steps.
+    `sub_question_ids` is the only field this touches. The identity and weight were already
+    re-imposed from the *chosen* lens by `stages.run_base_rate_step`, which is where a
+    research cell is stopped from re-weighting its own population after seeing what it
+    measured. This docstring used to claim that job, and did not do it — the results
+    arriving here have been through it already.
 
     `aggregate_base_rate` is computed by `checks.anchor_from`, the same function
     `check_aggregation` re-derives it with.

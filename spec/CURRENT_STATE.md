@@ -340,7 +340,8 @@ stage's rows.
 The stage functions carry the methodology's code-stamped invariants as data transforms:
 `run_lenses_stage` never receives a rate (populations chosen blind, ADR 40); `run_base_rate_step`
 re-stamps the lens identity from the *chosen* lens so a cell cannot re-weight its population
-after measuring it; `run_inside_step` requires a measured `BaseRateStepPayload` by signature
+after measuring it — a cell that cannot measure its population reports that and grades itself
+`low` rather than measuring a different one (ADR 72); `run_inside_step` requires a measured `BaseRateStepPayload` by signature
 (P4 as a call signature); `run_synthesis_stage` computes the anchor and implied probability with
 `checks.anchor_from` / `checks.implied_probability` — **arithmetic first, never the model** —
 then loops against `checks.run_forecast_checks` with one retry.

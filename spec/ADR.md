@@ -2430,3 +2430,75 @@ same thing. For four of the five things cut that was true. For the confidence ru
 was not, and the cost was not a smaller prompt but a worse one — the agent lost its only
 honest way to stop short. Checking what a schema actually emits, rather than what its
 field descriptions look like in the source, is the cheap step that was skipped.
+
+## ADR 72 — A cell measures the population it was given, or says it could not
+
+**Supersedes ADR 71's relaxation clause. Restores ADR 40.**
+
+ADR 71 told the base-rate cell that when nothing measures its population exactly it should
+"measure the nearest population somebody *has* measured, and grade it down". That was
+wrong in a way worth writing down, because it looked like the humane option.
+
+**The pipeline throws the choice away and keeps the evidence.**
+`stages.run_base_rate_step` re-imposes six fields from the *chosen* lens on whatever comes
+back — `name`, `population`, `why_it_fits`, `weight`, `weight_rationale`,
+`sub_question_ids`. Only `evidence`, `analogs` and `disagreement` survive. So a cell that
+took ADR 71's advice produced:
+
+```
+chosen      "midterms since 1946 where the out-party led the generic ballot by 3+
+             points in the final 60 days"
+measured     all post-war midterms
+stored       population = the narrow one     <- relabelled
+             evidence   = 24/40              <- from a different class
+             weight     = fit of the narrow class, applied to the wide one
+```
+
+A rate for a population nobody measured, under a name nobody counted, weighted by the
+relevance of a third thing. The card shows the chosen population beside the counted rate
+and puts `disagreement` — the only surviving trace of the gap — behind a collapsed
+accordion.
+
+**Nothing catches it.** No check in `FORECAST_CHECKS` reads `ResearchedLens.population`.
+`check_base_rate_derivation` audits `analogs` against `n` and `hits`, which still agree.
+This is exactly the failure ADR 40 names: output indistinguishable from an honest one.
+
+**Decision.** The cell measures the population it was given, or reports that it could not:
+whatever it found, graded `low`, with the problem in `disagreement`. `chain_inputs` already
+handles a column with no researched rate by falling back to the sub-question's own estimate
+and marking the row `estimated`, so the honest failure is already legible downstream.
+
+The prompt now also tells the cell *why* it may not substitute — that a later step
+re-imposes the boundary — rather than only forbidding it. A rule whose reason is stated is
+one the model can apply to cases the rule did not anticipate.
+
+**Measurability moves upstream, where the choice is already made blind.** ADR 71's other
+change — the countability test in `agents.lenses` — stays and is the right home. If cells
+keep failing to measure, that is a lens problem.
+
+**The self-budgeting section is deleted too.** `withdraw_spent_tools` (ADR 69) and
+`attach_budget`'s three bands (ADR 68) enforce it, and prose exhorting a model to converge
+cannot beat removing the tools. What replaces it is one line saying what the deadline
+means: the tools are withdrawn and whatever you hold becomes the answer, so land
+deliberately.
+
+**Why this agent and not the others.** Counting the distinct jobs each tool-using prompt
+asks for: `reflect` 2, `synthesize` 4, `critic` 5, `lenses` 6, `decompose` 6, `inside_view`
+6, `base_rate_cell` **9** — in the fewest lines of any of them. It was also the only prompt
+carrying all three of a budget-spending plan, a sanctioned degradation path, and an
+obligation to satisfy a downstream arithmetic audit; every other prompt has at most one.
+`inside_view` runs on the identical budget and identical mechanisms with one job and a
+one-line exit ("Leave `sources` empty when an adjustment is a judgment call … That is an
+honest answer"). That is the shape this now matches.
+
+**The fallback path had no rule at all.** `_whole_question_cell` runs the same cell without
+going through `stages.run_base_rate_step`, and kept whatever population and weight the
+model returned — so the one path with no oversight was the only one where a cell could name
+its own reference class after measuring it. It now applies the same six-field overwrite.
+`tests/test_outside_view.py` pins it.
+
+**A known limit, stated rather than checked.** Nothing verifies that a cell's analogs
+actually belong to the population it was told to measure. That is a judgment, not
+arithmetic, and no check in the registry can make it — `population` is overwritten
+unconditionally, so comparing stored against chosen would be trivially true. The guard is
+that the cell has no sanctioned reason to wander, not that wandering is detected.
