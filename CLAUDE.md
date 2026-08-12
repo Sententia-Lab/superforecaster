@@ -148,7 +148,7 @@ every endpoint that exists today.
 | Repository layout / file tree | the tree itself; people can read it |
 | How to run, install, or deploy | `README.md` |
 | Data models | `backend/superforecaster/models.py` |
-| Environment variables | `backend/.env.example`, `backend/config.py` |
+| Environment variables | `backend/.env.example`, `backend/app/config.py`, `backend/superforecaster/config.py` |
 | Dependencies | `backend/pyproject.toml` |
 | Test inventory | the `tests/` directory (may return later if it earns its place) |
 | Why it is shaped this way | `spec/ADR.md` |

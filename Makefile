@@ -92,9 +92,6 @@ cli: ## Anything else — make cli ARGS="postmortem <uuid>"
 backend/.env:
 	@touch $@
 
-docker: backend/.env ## The whole app in one container on :8000
-	docker compose up --build
-
 docker-dev: backend/.env ## Containerized hot-reload: frontend :5173, api :8000
 	docker compose --profile dev up --build
 

@@ -27,9 +27,9 @@ RUN pip install --no-cache-dir uv
 COPY backend/pyproject.toml backend/uv.lock* ./
 RUN uv sync --no-dev
 
-# Copy application code
-COPY backend/config.py ./
+# Copy application code, in the one direction the imports run: api -> app -> superforecaster
 COPY backend/superforecaster/ ./superforecaster/
+COPY backend/app/ ./app/
 COPY backend/api/ ./api/
 
 # The built frontend — see the frontend-build stage above. Deployment shape is still
