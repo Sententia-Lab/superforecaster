@@ -2,6 +2,7 @@ import Accordion from "./Accordion.jsx";
 import CellActivity from "./CellActivity.jsx";
 import LensOrigin from "./LensOrigin.jsx";
 import Prose from "./Prose.jsx";
+import SourceList from "./SourceList.jsx";
 import StepControls from "./StepControls.jsx";
 import { domainOf, lensRate, pct, signedAdjustment } from "../derive.js";
 import { firstSentence, ordinal } from "../labels.js";
@@ -103,6 +104,8 @@ export default function ModifierCard({
                 <Prose>{insidePayload.steel_man}</Prose>
               </Accordion>
             ) : null}
+
+            <SourceList sources={insidePayload.sources} />
           </>
         ) : (
           <StepControls

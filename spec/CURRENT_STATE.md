@@ -394,6 +394,10 @@ accordion, and the modifier card leads each move with its signed magnitude and
 before that field). Display labels — `Sub-question 1`, `Lens 1`, `Base rate 1`, `Modifier 1` —
 are computed from position in `labels.js` and never stored (ADR 59).
 
+Both cell cards end in a `SourceList` — the `sources` their payload stored, one row per URL
+with the search that returned it. The stream's `source` chips die with the request; these are
+read back from `run_steps.payload_json`, so a reloaded run still shows what each cell read.
+
 **Prose.** Every agent-written string renders through `Prose.jsx` (`react-markdown` +
 `remark-gfm`), which is also what turns a bare URL into a link (ADR 60).
 
@@ -691,7 +695,7 @@ scheduler, and no side effects on import.
 | `hooks/useRunQueue.js` | Run All / Run Section: `drain`, `stop`. A browser loop, no server queue (ADR 55) |
 | `App.jsx` | shell + selection model (`new` \| run id); theme toggle; `/config`-driven chips |
 | `labels.js` | `subQuestionLabel`, `ordinal`, `firstSentence` — display labels computed from position, never stored (ADR 59). Also `DEPENDENCE_KINDS` / `dependenceKind`, the label and one-line meaning of each dependence kind |
-| `components/` | `Sidebar`, `NewForecastView`, `BacklogView`, `RunView`, `RunHeader`, `FieldEditor`, `EditorField`, `StepControls`, `BaseRateCard`, `ModifierCard`, `LensOrigin`, `Accordion`, `Prose`, `KeyPanel`, `CellActivity`, `LiveTail`, `SynthesisSection`, `DecomposeEditor`, `DependentGroups`, `LensSetEditor`, `ConfirmDialog` |
+| `components/` | `Sidebar`, `NewForecastView`, `BacklogView`, `RunView`, `RunHeader`, `FieldEditor`, `EditorField`, `StepControls`, `BaseRateCard`, `ModifierCard`, `SourceList`, `LensOrigin`, `Accordion`, `Prose`, `KeyPanel`, `CellActivity`, `LiveTail`, `SynthesisSection`, `DecomposeEditor`, `DependentGroups`, `LensSetEditor`, `ConfirmDialog` |
 
 ---
 

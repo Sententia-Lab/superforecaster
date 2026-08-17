@@ -463,6 +463,15 @@ textarea.field-input {
 }
 .lens-origin .prose { color:var(--pv-text-2); font-size:var(--pv-fs-sm); margin-top:3px; }
 
+/* ---------- what a cell retrieved ---------- */
+
+.source-row { padding:5px 0; border-top:1px dashed var(--pv-border); font-size:var(--pv-fs-sm); }
+.source-row:first-child { border-top:none; }
+.source-row a { display:block; overflow-wrap:anywhere; }
+/* The query and the tool are provenance, not the headline. */
+.source-row .micro { text-transform:none; letter-spacing:0; margin-top:1px;
+  overflow-wrap:anywhere; }
+
 /* ---------- modifiers ---------- */
 
 .mod { margin:10px 0; }
