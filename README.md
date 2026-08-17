@@ -2,8 +2,6 @@
 
 Make testable forecasts about the future.
 
-Built on PydanticAI and based on Philip Tetlock's Superforecasting methodology.
-
 ![A whole run, from a backlogged question to a probability](docs/images/live-run.gif)
 
 Explainable forecasts to teach you how to distinguish signal from noise and predict the unknowable.
