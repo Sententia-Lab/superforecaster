@@ -14,7 +14,7 @@ Deliberately not here:
 - **Why it is shaped this way** — `spec/ADR.md`.
 - **The 16 principles** (`P<n>` below) — `spec/superforecasting_methodology.md`.
 
-Last regenerated: 2026-08-11.
+Last regenerated: 2026-08-17.
 
 ---
 
@@ -173,7 +173,8 @@ only if the reader presses "Check resolvable", which does search.
 
 ```
 NewForecastView  "Check resolvable"   (needs question + criteria)
-   ──► POST /questions/critique { question, resolution_criteria, resolution_date }
+   ──► POST /questions/critique { question, resolution_criteria, resolution_date,
+                                  resolution_source }
          run_critique(...)  →  _require_a_source(...)
    ◄── { "is_resolvable": false,
          "what_changed": "Replaced 'above 3.0%' with the exact series and vintage, and
@@ -192,6 +193,14 @@ The rewrite replaces the text rather than offering itself. There is no accept st
 nothing to dismiss — the previous wording is one undo away in the textarea. An empty
 suggestion leaves the field alone. `is_resolvable` is not rendered; the API and the CLI
 read it, the editor reads the two rewrites.
+
+**Every field the rewrite lands on is a field the request carries**, `resolution_source`
+included. The critic judges the author's adjudicator first and returns it unchanged when
+it settles the question; it replaces the wording only when that source cannot. An empty
+`suggested_resolution_source` still means "no adjudicator" and `_require_a_source` flips
+`is_resolvable` — agreeing with the author is expressed by echoing their text, never by
+returning nothing. The CLI's `critique` command sends no source (it has no `--source`
+option), so it always takes the "(none given)" branch.
 
 The check is optional. A drafted question is already runnable; this sharpens it and
 verifies the adjudicator with a live search.
@@ -655,7 +664,7 @@ scheduler, and no side effects on import.
 | `fixtures/` | the three JSON questions `--fixture` loads |
 | `evals/components.py` | per-agent eval harness (`run_component`, `SCORERS`). Scorers only — the case files are not written yet |
 | `evals/decompose_eval.py` | pydantic-evals dataset for the decompose agent: three mechanical evaluators plus an `LLMJudge` scoring against `RUBRIC`. `--model`, `--judge-model`, `--budget` flags. Run as a script, not under pytest — it calls the real model |
-| `evals/trajectory.py` | judges an agent's tool calls, not its output. `record_trajectory` captures one run via `capture_run_messages` and writes it to the case; `ToolTrajectoryJudge` scores tool selection, arguments, and call count with a second model. Counting is left to pydantic-evals' own `MaxToolCalls`/`MaxModelRequests`, which read spans. Agent-neutral — each eval brings its own rubric |
+| `evals/eval_agents/trajectory.py` | judges an agent's tool calls, not its output. `record_trajectory` captures one run via `capture_run_messages` and writes it to the case; `ToolTrajectoryJudge` scores tool selection, arguments, and call count with a second model. Counting is left to pydantic-evals' own `MaxToolCalls`/`MaxModelRequests`, which read spans. Agent-neutral — each eval brings its own rubric |
 | `evals/critic_eval.py` | pydantic-evals dataset for the critic agent: `Verdict` and `NamedASource` on the output, `MaxToolCalls` (per case) and `MaxModelRequests` on the spans, an `LLMJudge` on `RUBRIC`, and a `ToolTrajectoryJudge` on `TOOL_RUBRIC`. Same flags as `decompose_eval.py`, and the same reason for being a script |
 
 **Backend — `backend/api/`**
@@ -736,9 +745,6 @@ scheduler, and no side effects on import.
 - **The component eval harness has no data.** `app/evals/components.py` holds a working
   scorer for each of eight agents; the case files were deleted rather than kept as eight
   empty arrays, so `superforecaster test component` reports 0 cases for every agent.
-- **Pinned below pydantic-ai 2.x.** `superforecaster/update.py` uses the `BaseNode` graph
-  API, which 2.x deprecates in favour of `GraphBuilder`. `pyproject.toml` caps at `<2`;
-  the migration is unscheduled.
 - **`Forecast.decompositions[].probability` is carried by the model, not computed.**
   `run_synthesis_stage` hands the synthesis agent the decomposition JSON — pre-research
   working estimates included — and instructs it to carry the sub-questions through.

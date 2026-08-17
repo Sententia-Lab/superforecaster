@@ -36,13 +36,25 @@ The backlog lives in the **GitHub Project**, never in a file in this repo:
 https://github.com/orgs/Sententia-Lab/projects/5
 
 ```bash
-gh project item-list 5 --owner Sententia-Lab          # read
-gh project item-create 5 --owner Sententia-Lab --title "..." --body "one sentence"
+gh project item-list 5 --owner Sententia-Lab --format json   # read
 ```
 
-- Broad features, one line each. No estimates, no owners, no dates. Built-in Status
-  (Todo / In Progress / Done) is the whole workflow; leave `Priority`, `Size`, and
-  `Estimate` empty.
+Write with the GraphQL mutation, not `gh project item-create`. The subcommand exits 0
+and prints nothing on success, and `item-list` serves a stale result for about a minute
+afterwards — retrying because the item "did not appear" creates duplicates. The mutation
+returns the new item id, so success is visible immediately.
+
+```bash
+gh api graphql -f query='mutation($p:ID!,$t:String!,$b:String!){
+  addProjectV2DraftIssue(input:{projectId:$p,title:$t,body:$b}){projectItem{id}}}' \
+  -f p='PVT_kwDODU0sS84BVodp' -f t='...' -f b='one sentence'
+```
+
+- Broad features, one line each. No estimates, no owners, no dates. Built-in Status is
+  the whole workflow; leave `Priority`, `Size`, and `Estimate` empty.
+- The Status field offers `Backlog`, `Ready`, `In progress`, `In review`, and `Done`.
+  Only `Backlog`, `Ready`, and `Done` are in use. A new item starts in `Backlog`;
+  `Ready` means the next person can pick it up with no more thinking.
 - Draft issues by default, so the repo issue tracker stays quiet until an item is picked up.
 - An item earns a real description only when it graduates to `spec/planned/specN.md`.
 - Delete items freely rather than archiving them into a column nobody reads.

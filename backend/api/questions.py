@@ -49,12 +49,15 @@ async def critique_question(body: CritiqueQuestionRequest) -> CriteriaCritique:
 
     The caller writes `suggested_criteria` and `suggested_resolution_source` straight
     into the fields being edited and shows `what_changed` beneath them, so the response
-    is a replacement rather than a report.
+    is a replacement rather than a report. Every field it overwrites is also a field it
+    reads, `resolution_source` included — the critic verifies the adjudicator the author
+    named rather than replacing it with one chosen blind.
     """
     return await run_critique(
         question=body.question,
         resolution_criteria=body.resolution_criteria,
         resolution_date=body.resolution_date,
+        resolution_source=body.resolution_source,
     )
 
 

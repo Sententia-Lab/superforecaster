@@ -73,11 +73,19 @@ export const api = {
   draftQuestion: (text) => req("POST", "/questions/draft", { text }),
   // Returns the rewrite, not a report: the caller writes `suggested_criteria` and
   // `suggested_resolution_source` over the fields it sent, and shows `what_changed`.
-  critiqueQuestion: ({ question, resolution_criteria, resolution_date }) =>
+  // Every field the rewrite lands on is sent, source included — a critic that cannot
+  // read the author's source replaces it with one picked blind.
+  critiqueQuestion: ({
+    question,
+    resolution_criteria,
+    resolution_date,
+    resolution_source,
+  }) =>
     req("POST", "/questions/critique", {
       question,
       resolution_criteria,
       resolution_date: resolution_date || null,
+      resolution_source: resolution_source || null,
     }),
   // Returns the whole updated run, so the caller redraws from this response with no
   // follow-up GET. 409 when something downstream has already run; 422 on a payload the

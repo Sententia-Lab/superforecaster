@@ -76,6 +76,14 @@ one sentence from you and then look at the new wording. Write for that reader.
                  "official statistics". A question with no named adjudicator is not
                  resolvable no matter how crisp its wording, so if you cannot name one,
                  say so in `what_changed` and set `is_resolvable` false.
+                 When the author already named a source, judge theirs first: does that
+                 body publish what these criteria assume it does, on a schedule that
+                 lands before the resolution date? If it does, return their wording
+                 unchanged and say in `what_changed` that their source checks out.
+                 Replace it only when it cannot settle the question — then name what
+                 is wrong with it. Never return this field empty because you agree
+                 with the author: an empty source reads as "no adjudicator" and fails
+                 the question.
 
 At most TWO searches, and only to check that a source you are about to name exists and
 publishes what the criteria assume it does — a criterion resting on a statistic nobody
@@ -119,13 +127,25 @@ async def run_critique(
     resolution_criteria: str,
     resolution_date: datetime | None = None,
     deps: ForecastDeps | None = None,
+    resolution_source: str | None = None,
 ) -> CriteriaCritique:
-    """Evaluate whether a question could be scored fairly, and suggest a fix."""
+    """Evaluate whether a question could be scored fairly, and suggest a fix.
+
+    `resolution_source` is what the author already named, when they named one. It goes
+    in the prompt so the critic verifies their adjudicator instead of picking one blind
+    — its answer overwrites the field they typed, so a suggestion made without reading
+    that field replaces their work with a guess.
+    """
     deps = deps or ForecastDeps()
     date_line = (
         f"\nPROPOSED RESOLUTION DATE: {resolution_date.isoformat()}"
         if resolution_date is not None
         else "\nPROPOSED RESOLUTION DATE: (none given — that is itself a finding)"
+    )
+    source_line = (
+        f"\n\nPROPOSED RESOLUTION SOURCE:\n{resolution_source.strip()}"
+        if resolution_source and resolution_source.strip()
+        else "\n\nPROPOSED RESOLUTION SOURCE: (none given — name one)"
     )
 
     prompt = f"""Review this forecast question for resolvability.
@@ -133,7 +153,7 @@ async def run_critique(
 QUESTION: {question}
 
 PROPOSED RESOLUTION CRITERIA:
-{resolution_criteria}{date_line}
+{resolution_criteria}{date_line}{source_line}
 
 Return a CriteriaCritique."""
 

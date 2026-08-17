@@ -35,6 +35,7 @@ def _capture(monkeypatch) -> dict:
 
     async def fake_run_agent(agent, prompt, **kwargs):
         seen.update(kwargs)
+        seen["prompt"] = prompt
         return _Result()
 
     monkeypatch.setattr(critic, "run_agent", fake_run_agent)
@@ -150,6 +151,68 @@ async def test_a_critique_that_names_a_source_is_left_alone(monkeypatch):
 
     assert out.is_resolvable is True
     assert out.what_changed == ""
+
+
+async def test_the_author_s_source_reaches_the_critic(monkeypatch):
+    """The critic overwrites `resolution_source`, so it has to read it first.
+
+    It did not. The field was absent from the request model, the endpoint, and the
+    prompt, so a source the author typed was replaced by one the critic named without
+    knowing theirs existed.
+    """
+    seen = _capture(monkeypatch)
+    await critic.run_critique(
+        "Will X happen?",
+        "X is at least 10% by 2027-01-01.",
+        resolution_source="the ONS Consumer Price Inflation bulletin",
+    )
+
+    assert "the ONS Consumer Price Inflation bulletin" in seen["prompt"]
+
+
+async def test_no_source_is_stated_as_missing_rather_than_omitted(monkeypatch):
+    """An absent line reads as a question with no source field at all. The critic has to
+    know the author left it empty, because that is itself a finding."""
+    seen = _capture(monkeypatch)
+    await critic.run_critique("Will X happen?", "X is at least 10% by 2027-01-01.")
+
+    assert "PROPOSED RESOLUTION SOURCE: (none given" in seen["prompt"]
+
+
+def test_the_endpoint_forwards_the_source_it_was_sent(monkeypatch):
+    """The request model dropped the field silently — an unknown key on a pydantic model
+    is ignored, so the browser could send it and get a 200 with the source thrown away.
+    """
+    from fastapi.testclient import TestClient
+
+    from api import questions as questions_api
+
+    seen: dict = {}
+
+    async def fake_critique(**kwargs):
+        seen.update(kwargs)
+        return CRITIQUE.model_copy(
+            update={"suggested_resolution_source": "the ONS bulletin"}
+        )
+
+    monkeypatch.setattr(questions_api, "run_critique", fake_critique)
+    monkeypatch.setattr(questions_api, "resolve_agent_model", lambda: "test:model")
+
+    from api.main import app
+
+    app.router.lifespan_context = _noop_lifespan
+    with TestClient(app) as client:
+        response = client.post(
+            "/questions/critique",
+            json={
+                "question": "Will X happen?",
+                "resolution_criteria": "X is at least 10% by 2027-01-01.",
+                "resolution_source": "the ONS Consumer Price Inflation bulletin",
+            },
+        )
+
+    assert response.status_code == 200
+    assert seen["resolution_source"] == "the ONS Consumer Price Inflation bulletin"
 
 
 async def test_the_source_finding_is_not_duplicated_on_a_second_pass():

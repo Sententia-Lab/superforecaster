@@ -836,6 +836,7 @@ class CritiqueQuestionRequest(BaseModel):
     question: str
     resolution_criteria: str
     resolution_date: Optional[datetime] = None
+    resolution_source: Optional[str] = None
 
 
 # ---------- Drafting a question from freeform text ----------
