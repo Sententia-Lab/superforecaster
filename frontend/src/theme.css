@@ -463,6 +463,14 @@ textarea.field-input {
 }
 .lens-origin .prose { color:var(--pv-text-2); font-size:var(--pv-fs-sm); margin-top:3px; }
 
+/* ---------- a lens, on the card that names it ---------- */
+
+/* One block per question the lens answers, so the population, the fit and the weight
+   argument do not read as one paragraph. */
+.lens-block { margin:10px 0; }
+.lens-block .micro { color:var(--pv-text-3); margin-bottom:3px; }
+.lens-block .prose { color:var(--pv-text-2); font-size:var(--pv-fs-sm); }
+
 /* ---------- modifiers ---------- */
 
 .mod { margin:10px 0; }
