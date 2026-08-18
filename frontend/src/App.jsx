@@ -82,8 +82,6 @@ export default function App() {
         {config && !config.search_enabled && (
           <span className="chip yellow">no web search</span>
         )}
-        {/* Always shown. Gating this on `auth_required` hid it in exactly the local case
-            where somebody wants to paste an LLM key. */}
         <button className="btn tiny" onClick={() => setShowKeys(true)}>
           Keys
         </button>

@@ -2,25 +2,12 @@
 //
 // The stream uses fetch + ReadableStream rather than EventSource, deliberately:
 // EventSource auto-reconnects on error, and under connection-as-lifetime semantics a
-// reconnect would silently re-run a step the user cancelled; it also cannot send an
-// Authorization header, and the trigger is semantically a POST.
-
-const TOKEN_KEY = "sf_admin_token";
-
-export function getToken() {
-  return localStorage.getItem(TOKEN_KEY) || "";
-}
-
-export function setToken(token) {
-  if (token) localStorage.setItem(TOKEN_KEY, token);
-  else localStorage.removeItem(TOKEN_KEY);
-}
+// reconnect would silently re-run a step the user cancelled; the trigger is also
+// semantically a POST.
 
 function headers(extra = {}) {
-  const token = getToken();
   return {
     "Content-Type": "application/json",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...extra,
   };
 }

@@ -2,7 +2,7 @@
 
 Split from `superforecaster.config`, which holds the tunables the forecasting logic
 reads. The line between them is whether core could work without it: core has no
-database, no admin authentication, and no frontend, so those live here.
+database and no frontend, so those live here.
 
 This module also owns `.env` loading. Reading a file off disk at import time is a thing
 an application may do and a library may not, so `load_env()` is explicit and every
@@ -95,7 +95,6 @@ def origin(name: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class AppSettings:
-    admin_api_key: str | None
     database_path: str
     refresh_cron_schedule: str
     frontend_dir: str
@@ -104,7 +103,6 @@ class AppSettings:
 def get_app_settings() -> AppSettings:
     """Re-read on every call, matching `superforecaster.config.get_settings`."""
     return AppSettings(
-        admin_api_key=os.getenv("ADMIN_API_KEY"),
         database_path=os.getenv("DATABASE_PATH", "./superforecaster.db"),
         refresh_cron_schedule=os.getenv("REFRESH_CRON_SCHEDULE", "0 6 * * *"),
         frontend_dir=os.getenv(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 
 from app import db
 from app.update import run_update_graph
@@ -17,16 +17,12 @@ from superforecaster.models import (
     ResolveRequest,
 )
 
-from .deps import require_admin
-
 router = APIRouter(prefix="/forecasts", tags=["forecasts"])
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def create_forecast(
-    body: CreateForecastRequest, _: None = Depends(require_admin)
-) -> ForecastRecord:
-    """Run the whole pipeline back-to-back (no gates) and persist. Admin only.
+async def create_forecast(body: CreateForecastRequest) -> ForecastRecord:
+    """Run the whole pipeline back-to-back (no gates) and persist.
 
     The gated flow (`/runs`) is the primary path; this blocking endpoint is the API
     twin of `superforecaster forecast` for scripted use. Runs live: no `as_of` or
@@ -73,7 +69,6 @@ def get_forecast(forecast_id: str) -> ForecastRecord:
 def add_update(
     forecast_id: str,
     body: AddUpdateRequest,
-    _: None = Depends(require_admin),
 ) -> ForecastUpdateRecord:
     try:
         return db.add_forecast_update(
@@ -88,9 +83,7 @@ def add_update(
 
 
 @router.patch("/{forecast_id}/resolve")
-def resolve(
-    forecast_id: str, body: ResolveRequest, _: None = Depends(require_admin)
-) -> ForecastRecord:
+def resolve(forecast_id: str, body: ResolveRequest) -> ForecastRecord:
     try:
         db.resolve_forecast(forecast_id, outcome=body.outcome)
     except db.NotFoundError as exc:
@@ -103,9 +96,7 @@ def resolve(
 
 
 @router.post("/{forecast_id}/refresh")
-async def refresh(
-    forecast_id: str, _: None = Depends(require_admin)
-) -> RefreshActionResponse:
+async def refresh(forecast_id: str) -> RefreshActionResponse:
     """Manually trigger one update cycle for a single forecast.
 
     Same graph the cron job runs — resolution check first, then the probability

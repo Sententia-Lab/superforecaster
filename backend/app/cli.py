@@ -315,7 +315,6 @@ _SECRETS = {
     "PYDANTIC_AI_GATEWAY_API_KEY",
     "TAVILY_API_KEY",
     "LOGFIRE_TOKEN",
-    "ADMIN_API_KEY",
     "OPENAI_API_KEY",
 }
 
@@ -323,7 +322,6 @@ _REPORTED = (
     "ANTHROPIC_API_KEY",
     "PYDANTIC_AI_GATEWAY_API_KEY",
     "TAVILY_API_KEY",
-    "ADMIN_API_KEY",
     "LOGFIRE_TOKEN",
     "AGENT_MODEL",
     "DATABASE_PATH",
@@ -382,8 +380,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     anyone runs, and `uvicorn api.main:app --port 8000` requires knowing the module path,
     the working directory it resolves against, and that the frontend comes with it.
 
-    Defaults to 127.0.0.1: this binds nothing to the network until someone asks, which is
-    also what keeps `api.deps.is_local_mode` an honest statement about who can reach it.
+    Defaults to 127.0.0.1: this binds nothing to the network until someone asks.
 
     Synchronous — the only one. `uvicorn.run` builds its own event loop, so dispatching
     this through `asyncio.run` like every other subcommand raises "cannot be called from

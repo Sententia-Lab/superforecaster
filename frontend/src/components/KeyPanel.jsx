@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { api, getToken, setToken } from "../api.js";
+import { api } from "../api.js";
 
-// The server-held keys, in the order they matter to a run. The admin token is not here:
-// it lives in this browser and never enters the request body.
+// The server-held keys, in the order they matter to a run.
 const FIELDS = [
   {
     field: "llm_api_key",
@@ -51,7 +50,6 @@ function OriginChip({ origin }) {
  */
 export default function KeyPanel({ config, busy, onSaved, onClose }) {
   const [values, setValues] = useState({});
-  const [adminToken, setAdminToken] = useState(getToken);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const firstRef = useRef(null);
@@ -77,8 +75,6 @@ export default function KeyPanel({ config, busy, onSaved, onClose }) {
     setSaving(true);
     setError("");
     try {
-      setToken(adminToken.trim());
-
       const body = {};
       for (const { field } of FIELDS) {
         const typed = (values[field] || "").trim();
@@ -107,28 +103,7 @@ export default function KeyPanel({ config, busy, onSaved, onClose }) {
       >
         <div className="modal-title">Keys</div>
         <div className="modal-body">
-          <div className="editor-field">
-            <div className="editor-label">
-              Admin token
-              <span className="chip">
-                {adminToken ? "set in this browser" : "unset"}
-              </span>
-            </div>
-            <input
-              ref={firstRef}
-              className="field-input"
-              type="password"
-              autoComplete="off"
-              value={adminToken}
-              onChange={(e) => setAdminToken(e.target.value)}
-            />
-            <div className="editor-hint">
-              Sent as a bearer token. The server compares it against ADMIN_API_KEY in
-              backend/.env. Stored in this browser only.
-            </div>
-          </div>
-
-          {FIELDS.map(({ field, origin, label, hint }) => (
+          {FIELDS.map(({ field, origin, label, hint }, i) => (
             <div className="editor-field" key={field}>
               <div className="editor-label">
                 {label}
@@ -144,6 +119,7 @@ export default function KeyPanel({ config, busy, onSaved, onClose }) {
                 )}
               </div>
               <input
+                ref={i === 0 ? firstRef : undefined}
                 className="field-input"
                 type="password"
                 autoComplete="off"

@@ -15,7 +15,7 @@ import asyncio
 import json
 from contextlib import suppress
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import ValidationError
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from sse_starlette.sse import EventSourceResponse
@@ -30,8 +30,6 @@ from superforecaster.models import (
     GatedRunSummary,
     UpdateGatedRunRequest,
 )
-
-from .deps import require_admin
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -91,7 +89,7 @@ def edit_run(run_id: str, body: UpdateGatedRunRequest) -> GatedRunDetail:
 
 
 @router.delete("/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_run(run_id: str, _: None = Depends(require_admin)) -> None:
+def delete_run(run_id: str) -> None:
     try:
         db.delete_gated_run(run_id)
     except db.NotFoundError as exc:
@@ -99,7 +97,7 @@ def delete_run(run_id: str, _: None = Depends(require_admin)) -> None:
 
 
 @router.post("/{run_id}/start", status_code=status.HTTP_202_ACCEPTED)
-def start_run(run_id: str, _: None = Depends(require_admin)) -> GatedRunDetail:
+def start_run(run_id: str) -> GatedRunDetail:
     """The four-field gate, then `backlog → active` with a pending decompose step.
 
     Nothing executes here — the decompose step sits pending until its stream is
@@ -122,7 +120,6 @@ def edit_step_payload(
     run_id: str,
     step_id: str,
     body: dict,
-    _: None = Depends(require_admin),
 ) -> GatedRunDetail:
     """Replace a completed payload by hand, then rebuild the pending rows below it.
 
@@ -170,7 +167,6 @@ async def stream_step(
     run_id: str,
     step_id: str,
     max_iterations: int | None = Query(default=None, ge=1, le=MAX_SEARCH_DEPTH),
-    _: None = Depends(require_admin),
 ) -> EventSourceResponse:
     """The gated "next": execute one step, streaming its progress until it lands.
 

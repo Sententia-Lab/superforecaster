@@ -1059,7 +1059,7 @@ against resolved questions — the only record of whether this system works.
 
 ## ADR 35 — An unset admin key means "not deployed", not "misconfigured"
 
-**Status:** Accepted (2026-08-05)
+**Status:** Superseded by ADR 74 (2026-08-18)
 
 **Decision.** With `ADMIN_API_KEY` unset, admin routes accept unauthenticated requests that
 arrive from a loopback address and carry no proxy header. Everything else still 403s or 500s
@@ -2580,3 +2580,29 @@ rather than a second set of `[agent] …` prints of the same information.
 everything that is true of *this* deployment rather than of forecasting. A consumer who
 imports `superforecaster` gets the methodology and brings their own storage, process, and
 interface.
+
+---
+
+## ADR 74 — Admin auth is removed; this app is not deployed elsewhere
+
+**Supersedes ADR 35.**
+
+**Status:** Accepted (2026-08-18)
+
+**Decision.** `ADMIN_API_KEY`, `require_admin`, and `is_local_mode` are gone. `POST
+/forecasts` and its sub-routes, the gated `/runs` writes and the step stream, `POST
+/admin/refresh/run`, and `PUT /config/keys` all accept requests with no authentication.
+
+**Rationale.** ADR 35 already established that a bearer token protects nothing when the
+only thing that can reach the port is the person who started the process. That decision
+kept the mechanism around for the day this app might run somewhere reachable by someone
+else — a container, a reverse proxy, a hosted instance. That day has not come, and one
+person running this on their own machine is the only use this app has ever had. Carrying
+an authentication layer, its loopback-and-proxy-header carve-out, the frontend's token
+storage, and the tests for both — for a scenario that has never occurred — is weight with
+no return.
+
+**What this rules out.** Exposing this app's port to anything other than the machine it
+runs on. If that ever changes, the write routes above need real authentication again —
+this decision should be reversed, not worked around, the same way ADR 35 itself
+documents its own reasoning for a future reader to weigh.

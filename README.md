@@ -29,7 +29,7 @@ You need [uv](https://docs.astral.sh/uv/), Node, and three keys:
 
 
 Open **http://localhost:5173**, click **Keys** in the header, and paste them in. That is
-the whole setup — no file to write, no admin token to invent, no database to create.
+the whole setup — no file to write, no database to create.
 
 Keys set in that panel live in the server process and are dropped when it restarts. To
 have them survive, set `ANTHROPIC_API_KEY` and `TAVILY_API_KEY` in the environment you
@@ -128,9 +128,8 @@ The CLI runs the same stages without the browser:
 The CLI is the `superforecaster` console script (`app.cli:main`). `python -m
 superforecaster` no longer works — the package is a library and the CLI lives in `app`.
 
-**Docker**, if you would rather not install `uv` and Node at all. Set your keys **and**
-an `ADMIN_API_KEY` in the environment first — a container is not localhost, so the Keys
-panel cannot authenticate you into one that has no admin key:
+**Docker**, if you would rather not install `uv` and Node at all. Set your keys in the
+environment first:
 
 | | |
 |---|---|
@@ -152,7 +151,6 @@ and `make config` prints all of them with their origins.
 | `ANTHROPIC_API_KEY` | The model. Or `PYDANTIC_AI_GATEWAY_API_KEY` to route through Logfire |
 | `TAVILY_API_KEY` | Web search for every research agent |
 | `WIKIPEDIA_API_KEY` | Optional. Raises the Wikimedia rate limit; nothing needs it |
-| `ADMIN_API_KEY` | **Required to serve this anywhere but your own machine** — see below |
 | `AGENT_MODEL` | Override the model for every agent, e.g. `anthropic:claude-sonnet-4-6` |
 | `LOGFIRE_TOKEN` | A `pylf_v1_...` *write* token for cloud traces. Different from the gateway key |
 | `BUDGET_<AGENT>` | Override one agent's four ceilings — see **Agent budgets** below |
@@ -164,19 +162,6 @@ Every check threshold is an environment variable too — see
 The LLM, Tavily, and Wikipedia keys can also be set from the **Keys** panel in the header.
 Those apply on the next request and are dropped when the process restarts; no route ever
 returns a key's value, only where it came from.
-
-### Admin auth
-
-Starting a forecast is an admin action. With `ADMIN_API_KEY` unset, the API accepts
-unauthenticated admin requests **from 127.0.0.1 only**, and refuses them everywhere else
-with a message saying why. That is what makes the two-key setup work: on a laptop, where
-the only thing that can reach the port is the person who started the process, a token
-protects nothing and costs the entire first-run experience.
-
-A request carrying any proxy header (`X-Forwarded-For` and friends) is never treated as
-local — a reverse proxy in front of this is the shape of a real deployment, and anything
-upstream can rewrite the origin. **Set `ADMIN_API_KEY` before exposing the port.** Once
-set, paste the same value into the **Keys** panel.
 
 ### Agent budgets
 

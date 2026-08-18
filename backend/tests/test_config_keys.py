@@ -154,18 +154,3 @@ async def test_no_response_ever_contains_a_key_value(client, monkeypatch):
 
     assert secret not in put.text
     assert secret not in get.text
-
-
-@pytest.mark.asyncio
-async def test_the_endpoint_needs_the_admin_token_when_not_local(client, monkeypatch):
-    monkeypatch.setenv("ADMIN_API_KEY", "the-real-key")
-
-    denied = await client.put("/config/keys", json={"tavily_api_key": "tvly-abc"})
-    assert denied.status_code == 403
-
-    allowed = await client.put(
-        "/config/keys",
-        json={"tavily_api_key": "tvly-abc"},
-        headers={"Authorization": "Bearer the-real-key"},
-    )
-    assert allowed.status_code == 200

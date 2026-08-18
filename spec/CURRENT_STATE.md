@@ -43,30 +43,30 @@ and from then on the forecast lives independently (delete the run, the forecast 
 
 All 22 routes, each traced in the section named.
 
-| Method + path | Auth | Traced in |
-|---|---|---|
-| `GET /config` | — | §0 App boot |
-| `PUT /config/keys` | admin | §0b Setting a key |
-| `GET /runs` | — | §0 App boot |
-| `POST /questions/draft` | — | §1 Drafting |
-| `POST /questions/critique` | — | §1 Drafting |
-| `POST /runs` | — | §2 Create & start |
-| `PATCH /runs/{id}` | — | §2 Create & start |
-| `POST /runs/{id}/start` | admin | §2 Create & start |
-| `POST /runs/{id}/steps/{step_id}/stream` | admin | §3 Running one step |
-| `PUT /runs/{id}/steps/{step_id}/payload` | admin | §3g Editing a payload |
-| `GET /runs/{id}` | — | §4 Reload |
-| `DELETE /runs/{id}` | admin | §5 Delete |
-| `POST /forecasts` | admin | §6 Ungated pipeline |
-| `GET /forecasts` | — | §7 Forecast reads |
-| `GET /forecasts/{id}` | — | §7 Forecast reads |
-| `POST /forecasts/{id}/updates` | admin | §8 Update, resolve, refresh |
-| `PATCH /forecasts/{id}/resolve` | admin | §8 Update, resolve, refresh |
-| `POST /forecasts/{id}/refresh` | admin | §8 Update, resolve, refresh |
-| `GET /calibration` | — | §9 Calibration |
-| `POST /admin/refresh/run` | admin | §10 Cron sweep |
-| `GET /healthz` | — | §11 Health & static |
-| `GET /` (+ all static) | — | §11 Health & static |
+| Method + path | Traced in |
+|---|---|
+| `GET /config` | §0 App boot |
+| `PUT /config/keys` | §0b Setting a key |
+| `GET /runs` | §0 App boot |
+| `POST /questions/draft` | §1 Drafting |
+| `POST /questions/critique` | §1 Drafting |
+| `POST /runs` | §2 Create & start |
+| `PATCH /runs/{id}` | §2 Create & start |
+| `POST /runs/{id}/start` | §2 Create & start |
+| `POST /runs/{id}/steps/{step_id}/stream` | §3 Running one step |
+| `PUT /runs/{id}/steps/{step_id}/payload` | §3g Editing a payload |
+| `GET /runs/{id}` | §4 Reload |
+| `DELETE /runs/{id}` | §5 Delete |
+| `POST /forecasts` | §6 Ungated pipeline |
+| `GET /forecasts` | §7 Forecast reads |
+| `GET /forecasts/{id}` | §7 Forecast reads |
+| `POST /forecasts/{id}/updates` | §8 Update, resolve, refresh |
+| `PATCH /forecasts/{id}/resolve` | §8 Update, resolve, refresh |
+| `POST /forecasts/{id}/refresh` | §8 Update, resolve, refresh |
+| `GET /calibration` | §9 Calibration |
+| `POST /admin/refresh/run` | §10 Cron sweep |
+| `GET /healthz` | §11 Health & static |
+| `GET /` (+ all static) | §11 Health & static |
 
 Sections §6–§10 are reachable but the React app never calls them — they are the CLI's API twin
 and the cron surface. That is noted per section rather than hidden in a footnote.
@@ -77,13 +77,12 @@ and the cron surface. That is noted per section rather than hidden in a footnote
 
 ```
 mount App.jsx
-  ├─ api.config()      GET /config  → { auth_required, search_enabled, model, keys }
+  ├─ api.config()      GET /config  → { search_enabled, model, keys }
   └─ useRuns.refresh() GET /runs    → [ GatedRunSummary + stage_counts ]
 ```
 
 ```json
-{"auth_required": true,
- "search_enabled": true,
+{"search_enabled": true,
  "model": "gateway/anthropic:claude-sonnet-4-6",
  "keys": {"llm": ".env", "llm_var": "PYDANTIC_AI_GATEWAY_API_KEY",
           "tavily": ".env", "wikipedia": "unset"}}
@@ -92,10 +91,9 @@ mount App.jsx
 | Layer | What happens |
 |---|---|
 | FE | `App.jsx` sets `config`; `useRuns.js:9` fills the sidebar; `KeyPanel.jsx` reads `keys` |
-| API | `main.py _client_config` → `is_local_mode(request)` (`deps.py:15`), `app.config.origin` per key |
+| API | `main.py _client_config` → `app.config.origin` per key |
 | API | `runs.py:60 list_runs` → `db.list_gated_runs` |
 | DB | two SELECTs: all runs newest-first, plus a `GROUP BY run_id, stage, status` count roll-up |
-| Back | `auth_required` is the load-bearing field — the *server* decides whether the browser needs a token, so a laptop with no `ADMIN_API_KEY` never asks for one |
 
 `keys` values are `environment` / `.env` / `session` / `unset` — **where** each key came
 from, never what it is. `llm_var` names the variable credentialing the model, which is
@@ -117,15 +115,14 @@ KeyPanel.jsx save()  ->  api.setKeys(body)
 ```
 
 ```
-  -> require_admin(request)                  [403 without the bearer token, skipped locally]
   -> app.config.set_runtime_key("TAVILY_API_KEY", "tvly-abc123")
        name must be in app.config.RUNTIME_KEYS   [422 otherwise]
        os.environ[name] = value              [writes: process environment only]
-  -> _client_config(request)
+  -> _client_config()
 ```
 
 ```json
-{"auth_required": true, "search_enabled": true,
+{"search_enabled": true,
  "model": "gateway/anthropic:claude-sonnet-4-6",
  "keys": {"llm": ".env", "llm_var": "PYDANTIC_AI_GATEWAY_API_KEY",
           "tavily": "session", "wikipedia": "unset"}}
@@ -133,7 +130,7 @@ KeyPanel.jsx save()  ->  api.setKeys(body)
 
 | Layer | What happens |
 |---|---|
-| FE | `KeyPanel.jsx` sends only fields that were typed; `""` clears one; the admin token goes to `localStorage` via `api.setToken` and never into the body |
+| FE | `KeyPanel.jsx` sends only fields that were typed; `""` clears one |
 | API | `main.py set_keys` maps `llm_api_key` onto `active_llm_key_name()`, so the row always writes the key the next run actually uses |
 | Back | `App.jsx setConfig(resp)` — the `no web search` chip clears with no reload |
 
@@ -231,7 +228,7 @@ Both buttons in `NewForecastView.save()` write; only "Run now" also starts.
         └─ db.create_gated_run               ├─ db.create_gated_run
            INSERT gated_runs                 │  INSERT gated_runs (status='backlog')
            status='backlog'                  │
-                                             └─ POST /runs/{id}/start   [admin]
+                                             └─ POST /runs/{id}/start
                                                 machine.start_run
                                                   ├─ four-field gate → 422 if missing
                                                   ├─ db.start_gated_run  UPDATE status='active'
@@ -437,7 +434,7 @@ to draw, error included). Every Run and Retry button keys off `streaming`.
 
 ## 3g. Editing a payload — `PUT /runs/{id}/steps/{step_id}/payload`
 
-Admin-only. Correct a decomposition or a lens set before anything is researched against it.
+Correct a decomposition or a lens set before anything is researched against it.
 
 ```
 PUT /runs/{run_id}/steps/{step_id}/payload   {edited payload}
@@ -548,17 +545,17 @@ Writes: **none.**
 The post-publication lifecycle. Not called by the React app.
 
 ```
-POST /forecasts/{id}/updates {probability, reasoning}     [admin]
+POST /forecasts/{id}/updates {probability, reasoning}
   └─ db.add_forecast_update   INSERT forecast_updates; UPDATE forecasts.probability
      404 NotFoundError · 409 StateError (already resolved)
 
-PATCH /forecasts/{id}/resolve {outcome: 0|1|null}          [admin]
+PATCH /forecasts/{id}/resolve {outcome: 0|1|null}
   └─ db.resolve_forecast      UPDATE forecasts status='resolved'|'ambiguous',
                                      outcome, resolved_at, brier (scoring.brier_score over
                                      scoring.time_weighted_probability of forecast_updates)
   └─ db.get_forecast        ◄── ForecastRecord
 
-POST /forecasts/{id}/refresh                               [admin]
+POST /forecasts/{id}/refresh
   └─ app.update.run_update_graph(id)
        db.get_forecast(id)                 → None means "not found", decided here
        superforecaster.update.run_update_cycle(record, deps)   ← no storage below this line
@@ -601,7 +598,7 @@ The same work the scheduler does at `REFRESH_CRON_SCHEDULE` (default 06:00 UTC),
 hand. Not called by the React app.
 
 ```
-POST /admin/refresh/run                                    [admin]
+POST /admin/refresh/run
   └─ cron.run_daily_refresh()
        db.list_active_forecast_ids()
        for each: run_update_graph(fid)          ← §8, writes per forecast
@@ -618,15 +615,6 @@ POST /admin/refresh/run                                    [admin]
 |---|---|
 | `GET /healthz` | constant JSON. No DB. The Docker healthcheck |
 | `GET /` and all unmatched paths | `StaticFiles(FRONTEND_DIR, html=True)`, **mounted last** in `main.py` so it never shadows an API route. Serves the Vite build |
-
----
-
-## Auth, in one line
-
-`require_admin` guards `DELETE /runs/{id}`, `POST /runs/{id}/start`, the step stream,
-`PUT /config/keys`, every `/forecasts` write, and `/admin/*`. With `ADMIN_API_KEY` unset **and** the request from loopback
-**and** no proxy header, it is skipped entirely (`is_local_mode`). The browser sends
-`Authorization: Bearer <token>` from `localStorage.sf_admin_token` when it has one.
 
 ---
 
@@ -660,7 +648,7 @@ scheduler, and no side effects on import.
 
 | Module | Holds |
 |---|---|
-| `config.py` | `load_env`, `ENV_FILE`, `AppSettings`/`get_app_settings` (database path, admin key, cron schedule, frontend dir), `set_runtime_key`, `origin`, `RUNTIME_KEYS` |
+| `config.py` | `load_env`, `ENV_FILE`, `AppSettings`/`get_app_settings` (database path, cron schedule, frontend dir), `set_runtime_key`, `origin`, `RUNTIME_KEYS` |
 | `db.py` | SQLite (WAL, FKs, migrations). Forecast fns + gated-run fns + `NotFoundError`/`StateError` |
 | `machine.py` | gated-run state machine: `start_run`, `expected_steps`, `reconcile`, `gate_offender`, `execute_step`, `edit_blocker`, `edit_payload`, `detail`, `busy`, `DERIVED`, `REQUIRED_FIELDS`, `GateError`, `BusyError` |
 | `update.py` | `run_update_graph` — loads the record, runs the core cycle, writes the result |
@@ -679,10 +667,9 @@ scheduler, and no side effects on import.
 | Module | Holds |
 |---|---|
 | `main.py` | FastAPI app, startup preflight, `/healthz`, `/config`, `PUT /config/keys`, static mount (last) |
-| `deps.py` | `require_admin`, `is_local_mode` |
 | `runs.py` | gated-run CRUD + `stream_step` + `edit_step_payload` |
 | `questions.py` | `/questions/draft`, `/questions/critique` |
-| `forecasts.py` | forecast reads + admin writes + single refresh |
+| `forecasts.py` | forecast reads + writes + single refresh |
 | `calibration.py` | `/calibration` |
 | `admin.py` | `/admin/refresh/run` |
 
@@ -725,17 +712,17 @@ scheduler, and no side effects on import.
   each cell shows which text came from its lens, long enumerations and steel-man arguments
   sit behind accordions, and the synthesis table lays out every lens and every modifier in
   one place. Agent prose renders as markdown, bare URLs included (ADR 60).
-- **The Keys panel** — the admin token plus the LLM, Tavily and Wikipedia keys, settable
-  from the header. Server-held keys apply on the next request and are dropped on restart;
-  no route ever returns a key value (§0b, ADR 61).
+- **The Keys panel** — the LLM, Tavily and Wikipedia keys, settable from the header.
+  Server-held keys apply on the next request and are dropped on restart; no route ever
+  returns a key value (§0b, ADR 61).
 - The CLI pipeline (`forecast`) and component evals through the same `stages` functions.
 - Daily refresh cron + manual refresh through the update cycle; resolution + scoring +
   calibration report.
 - **`superforecaster` installs and imports on its own** (ADR 73). The wheel carries no
   SQLite layer, no CLI, and no web framework, and importing it opens no socket and
   configures no logging. `tests/test_layering.py` asserts both.
-- Local mode: two exported keys and `serve`, no token, no `.env`, no build step for the
-  API (UI needs `npm run build` once).
+- Local mode: two exported keys and `serve`, no `.env`, no build step for the API (UI
+  needs `npm run build` once).
 - CI on push/PR; opt-in pre-push test gate. The backend suite passes with no network and
   no API keys.
 - Nothing is hosted. `docker-compose.yml` runs the API with a named SQLite volume and the

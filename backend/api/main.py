@@ -20,7 +20,7 @@ from superforecaster.config import (
     resolve_agent_model,
 )
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -28,7 +28,6 @@ from pydantic import BaseModel
 from app import cron, db
 
 from .admin import router as admin_router
-from .deps import is_local_mode, require_admin
 from .calibration import router as calibration_router
 from .forecasts import router as forecasts_router
 from .questions import router as questions_router
@@ -60,11 +59,6 @@ def _preflight() -> list[str]:
         if s.tavily_api_key
         else "  web search    OFF — set TAVILY_API_KEY. Wikipedia still works; base "
         "rates will be thinner."
-    )
-    lines.append(
-        "  admin auth    ADMIN_API_KEY"
-        if app_s.admin_api_key
-        else "  admin auth    local mode — unauthenticated requests from localhost only"
     )
     lines.append(f"  database      {app_s.database_path}")
     return lines
@@ -108,30 +102,23 @@ def healthz() -> dict[str, str]:
 
 
 @app.get("/config", tags=["health"])
-def client_config(request: Request) -> dict[str, object]:
+def client_config() -> dict[str, object]:
     """What the frontend needs to know about this server before it renders.
 
-    `auth_required` is the load-bearing one. The client used to decide for itself that a
-    run needs a token and refuse before sending anything, so a local server with no
-    `ADMIN_API_KEY` — the one-command case — answered "Admin token not set" to a button
-    the server would have honoured. The server is the authority on its own auth; this is
-    how the client asks.
-
-    Public and deliberately thin: three booleans and a model name, nothing an
+    Public and deliberately thin: two booleans and a model name, nothing an
     unauthenticated caller could not learn by trying a request. `keys` says where each
     key came from and never what it is — see ADR 61.
     """
-    return _client_config(request)
+    return _client_config()
 
 
-def _client_config(request: Request) -> dict[str, object]:
+def _client_config() -> dict[str, object]:
     s = get_settings()
     try:
         model = resolve_agent_model()
     except RuntimeError:
         model = ""
     return {
-        "auth_required": not is_local_mode(request),
         "search_enabled": bool(s.tavily_api_key),
         "model": model,
         "keys": {
@@ -155,9 +142,7 @@ class KeyUpdate(BaseModel):
 
 
 @app.put("/config/keys", tags=["health"])
-def set_keys(
-    body: KeyUpdate, request: Request, _: None = Depends(require_admin)
-) -> dict[str, object]:
+def set_keys(body: KeyUpdate) -> dict[str, object]:
     """Set API keys for the life of this process. ADR 61.
 
     Write-only: the response is the same `keys` origin map `GET /config` returns, so the
@@ -178,7 +163,7 @@ def set_keys(
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
 
-    return _client_config(request)
+    return _client_config()
 
 
 app.include_router(forecasts_router)
