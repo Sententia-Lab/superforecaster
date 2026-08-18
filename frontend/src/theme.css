@@ -450,6 +450,14 @@ textarea.field-input {
 /* Cells inside a sub-question card sit under its summary rather than beside it. */
 .acc.sub-question > .acc-body { padding-top:10px; }
 
+/* ---------- what a stage does, above the stage ---------- */
+
+.acc.how { margin:0 0 14px; color:var(--pv-text-3); font-size:var(--pv-fs-sm); }
+.acc.how > summary::after { top:.35em; }
+.acc.how .how-block { margin-top:8px; }
+.acc.how .how-block:first-child { margin-top:0; }
+.acc.how .micro { margin-bottom:2px; }
+
 /* ---------- the lens, restated inside a measured cell ---------- */
 
 .lens-origin {
