@@ -2,6 +2,7 @@ import Accordion from "./Accordion.jsx";
 import CellActivity from "./CellActivity.jsx";
 import LensOrigin from "./LensOrigin.jsx";
 import Prose from "./Prose.jsx";
+import SourceList from "./SourceList.jsx";
 import StepControls from "./StepControls.jsx";
 import { claimSupport, domainOf, lensEvidenceSummary, lensRate, lensSources, pct } from "../derive.js";
 import { ordinal } from "../labels.js";
@@ -118,6 +119,8 @@ export default function BaseRateCard({
                 <Prose>{researched.disagreement}</Prose>
               </Accordion>
             ) : null}
+
+            <SourceList sources={researched.sources} />
           </>
         ) : (
           <StepControls

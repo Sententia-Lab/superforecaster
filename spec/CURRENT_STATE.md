@@ -383,8 +383,10 @@ run state beyond the live tail of the one active card.
 
 **What the tree draws.** Every stage is a `<details>` (`StageSection`), open while the run is
 in flight and collapsed once synthesis completes — at which point section 5 renders *above*
-section 1, so a finished run opens on its answer. Section 2 gives each lens a `LensCard` —
-the same nested card a measured cell gets — carrying `population`, `why_it_fits` and
+section 1, so a finished run opens on its answer. Each stage body opens with a collapsed
+`HowThisWorks` panel — static copy naming what the stage produces and which tools its agent
+holds, keyed by stage, stored nowhere. Section 2 gives each lens a `LensCard` — the same
+nested card a measured cell gets — carrying `population`, `why_it_fits` and
 `weight_rationale` in three labelled blocks; those last two appear nowhere
 else. Sections 3 and 4 group their cells into one card per sub-question, holding
 `BaseRateCard`s and `ModifierCard`s respectively. Both restate the lens in a `LensOrigin`
@@ -394,6 +396,10 @@ accordion, and the modifier card leads each move with its signed magnitude and
 `Adjustment.title` (falling back to the first sentence of `evidence` for payloads written
 before that field). Display labels — `Sub-question 1`, `Lens 1`, `Base rate 1`, `Modifier 1` —
 are computed from position in `labels.js` and never stored (ADR 59).
+
+Both cell cards end in a `SourceList` — the `sources` their payload stored, one row per URL
+with the search that returned it. The stream's `source` chips die with the request; these are
+read back from `run_steps.payload_json`, so a reloaded run still shows what each cell read.
 
 **Prose.** Every agent-written string renders through `Prose.jsx` (`react-markdown` +
 `remark-gfm`), which is also what turns a bare URL into a link (ADR 60).
@@ -692,7 +698,7 @@ scheduler, and no side effects on import.
 | `hooks/useRunQueue.js` | Run All / Run Section: `drain`, `stop`. A browser loop, no server queue (ADR 55) |
 | `App.jsx` | shell + selection model (`new` \| run id); theme toggle; `/config`-driven chips |
 | `labels.js` | `subQuestionLabel`, `ordinal`, `firstSentence` — display labels computed from position, never stored (ADR 59). Also `DEPENDENCE_KINDS` / `dependenceKind`, the label and one-line meaning of each dependence kind |
-| `components/` | `Sidebar`, `NewForecastView`, `BacklogView`, `RunView`, `RunHeader`, `FieldEditor`, `EditorField`, `StepControls`, `BaseRateCard`, `ModifierCard`, `LensCard`, `LensOrigin`, `Accordion`, `Prose`, `KeyPanel`, `CellActivity`, `LiveTail`, `SynthesisSection`, `DecomposeEditor`, `DependentGroups`, `LensSetEditor`, `ConfirmDialog` |
+| `components/` | `Sidebar`, `NewForecastView`, `BacklogView`, `RunView`, `RunHeader`, `FieldEditor`, `EditorField`, `StepControls`, `BaseRateCard`, `ModifierCard`, `SourceList`, `LensCard`, `HowThisWorks`, `LensOrigin`, `Accordion`, `Prose`, `KeyPanel`, `CellActivity`, `LiveTail`, `SynthesisSection`, `DecomposeEditor`, `DependentGroups`, `LensSetEditor`, `ConfirmDialog` |
 
 ---
 
