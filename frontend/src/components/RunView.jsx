@@ -10,6 +10,7 @@ import CellActivity from "./CellActivity.jsx";
 import ConfirmDialog from "./ConfirmDialog.jsx";
 import DecomposeEditor from "./DecomposeEditor.jsx";
 import DependentGroups from "./DependentGroups.jsx";
+import HowThisWorks from "./HowThisWorks.jsx";
 import LensSetEditor from "./LensSetEditor.jsx";
 import LiveTail from "./LiveTail.jsx";
 import ModifierCard from "./ModifierCard.jsx";
@@ -34,7 +35,7 @@ const STAGE_TITLES = {
  * collapse once it is finished, so a completed run opens on its answer instead of on the
  * top of a very long scroll.
  */
-function StageSection({ n, title, children, note, action, open }) {
+function StageSection({ n, stage, title, children, note, action, open }) {
   return (
     <details className="stage acc" open={open}>
       <summary className="stage-head">
@@ -44,7 +45,10 @@ function StageSection({ n, title, children, note, action, open }) {
         {/* A click on the button must not also toggle the section it lives in. */}
         {action ? <span onClick={(e) => e.stopPropagation()}>{action}</span> : null}
       </summary>
-      <div className="acc-body">{children}</div>
+      <div className="acc-body">
+        <HowThisWorks stage={stage} />
+        {children}
+      </div>
     </details>
   );
 }
@@ -210,6 +214,7 @@ export default function RunView({ runId, onChanged, onDeleted }) {
     return (
       <StageSection
         n={n}
+        stage={stage}
         title={title}
         note={note}
         action={sectionAction(stage)}
@@ -262,6 +267,7 @@ export default function RunView({ runId, onChanged, onDeleted }) {
   const synthesisSection = synthesisStep && (
     <StageSection
       n={5}
+      stage="synthesis"
       title={STAGE_TITLES.synthesis}
       action={sectionAction("synthesis")}
       open
@@ -350,6 +356,7 @@ export default function RunView({ runId, onChanged, onDeleted }) {
 
       <StageSection
         n={1}
+        stage="decompose"
         title={STAGE_TITLES.decompose}
         action={sectionAction("decompose")}
         open={!done}
@@ -429,6 +436,7 @@ export default function RunView({ runId, onChanged, onDeleted }) {
       {byStage("lenses").length > 0 && (
         <StageSection
           n={2}
+          stage="lenses"
           title={STAGE_TITLES.lenses}
           note="All sub-questions need lenses before base rates unlock."
           action={sectionAction("lenses")}
