@@ -11,14 +11,14 @@ import ConfirmDialog from "./ConfirmDialog.jsx";
 import DecomposeEditor from "./DecomposeEditor.jsx";
 import DependentGroups from "./DependentGroups.jsx";
 import HowThisWorks from "./HowThisWorks.jsx";
+import LensCard from "./LensCard.jsx";
 import LensSetEditor from "./LensSetEditor.jsx";
 import LiveTail from "./LiveTail.jsx";
 import ModifierCard from "./ModifierCard.jsx";
-import Prose from "./Prose.jsx";
 import RunHeader from "./RunHeader.jsx";
 import StepControls from "./StepControls.jsx";
 import SynthesisSection from "./SynthesisSection.jsx";
-import { ordinal, subQuestionLabel } from "../labels.js";
+import { subQuestionLabel } from "../labels.js";
 
 const STAGE_TITLES = {
   decompose: "Decompose",
@@ -485,33 +485,10 @@ export default function RunView({ runId, onChanged, onDeleted }) {
                   <CellActivity active={active} />
                 ) : step.status === "complete" ? (
                   <div style={{ marginTop: 8 }}>
+                    {/* The only place `why_it_fits` and `weight_rationale` appear. The
+                        measured cells restate the population and nothing else. */}
                     {(step.payload?.lenses || []).map((l, i) => (
-                      <Accordion
-                        key={l.name}
-                        defaultOpen
-                        summary={
-                          <>
-                            <b style={{ flex: "none" }}>{ordinal("Lens", i)}</b>
-                            <span className="grow">{l.name}</span>
-                            <span className="chip">w {l.weight}</span>
-                          </>
-                        }
-                      >
-                        {/* The only place `why_it_fits` and `weight_rationale` appear.
-                            The measured cells restate the population and nothing else. */}
-                        <Prose className="prose tight">{l.population}</Prose>
-                        {l.why_it_fits && (
-                          <div className="card-sub">
-                            <Prose className="prose tight">{l.why_it_fits}</Prose>
-                          </div>
-                        )}
-                        {l.weight_rationale && (
-                          <div className="card-sub">
-                            <b>Weight {l.weight}</b>{" "}
-                            <Prose className="prose tight">{l.weight_rationale}</Prose>
-                          </div>
-                        )}
-                      </Accordion>
+                      <LensCard key={l.name} lens={l} index={i} />
                     ))}
                   </div>
                 ) : (
