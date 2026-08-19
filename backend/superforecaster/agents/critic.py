@@ -22,7 +22,7 @@ from ..deps import ForecastDeps
 from ..errors import AgentTimeout
 from ..models import CriteriaCritique
 from ..runner import run_agent
-from ..tools import search_web
+from ..tavily_mcp import web_search_toolset
 from . import attach_budget, withdraw_spent_tools, with_model
 
 INSTRUCTIONS = """You review forecast questions for resolvability. You do not forecast
@@ -104,7 +104,8 @@ def build_critic_agent(
         deps_type=ForecastDeps,
         output_type=CriteriaCritique,
         system_prompt=INSTRUCTIONS,
-        tools=[search_web],
+        tools=[],
+        toolsets=[web_search_toolset],
         capabilities=[Hooks(prepare_tools=withdraw_spent_tools)],
         retries=1,
     )

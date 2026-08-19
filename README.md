@@ -24,7 +24,7 @@ You need [uv](https://docs.astral.sh/uv/), Node, and three keys:
 | | | |
 |---|---|---|
 | **LLM** | [console.anthropic.com](https://console.anthropic.com/) | the model |
-| **Tavily** | [tavily.com](https://tavily.com) | web search — free tier is enough |
+| **Tavily** | [tavily.com](https://tavily.com) | web search, extract, and crawl, over Tavily's MCP server — free tier is enough |
 | **Wikipedia** | [wikipedia.com](https://pypi.org/project/Wikipedia-API/) | general knowledge |
 
 
@@ -150,6 +150,7 @@ and `make config` prints all of them with their origins.
 |---|---|
 | `ANTHROPIC_API_KEY` | The model. Or `PYDANTIC_AI_GATEWAY_API_KEY` to route through Logfire |
 | `TAVILY_API_KEY` | Web search for every research agent |
+| `TAVILY_MCP_URL` | Default `https://mcp.tavily.com/mcp/`. Set it only to use a self-hosted server |
 | `WIKIPEDIA_API_KEY` | Optional. Raises the Wikimedia rate limit; nothing needs it |
 | `AGENT_MODEL` | Override the model for every agent, e.g. `anthropic:claude-sonnet-4-6` |
 | `LOGFIRE_TOKEN` | A `pylf_v1_...` *write* token for cloud traces. Different from the gateway key |

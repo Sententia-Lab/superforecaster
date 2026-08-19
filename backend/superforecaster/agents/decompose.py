@@ -6,13 +6,16 @@ judgment-required so effort goes where a base rate actually exists.
 
 from __future__ import annotations
 
+from ..tavily_mcp import web_search_toolset
+
 from ..config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
 
+from pydantic_ai.capabilities.hooks import Hooks
 from ..deps import ForecastDeps
 from ..models import Decomposition, ForecastInput
 from ..runner import run_agent
-from . import as_of_note, format_question, with_model
+from . import as_of_note, format_question, with_model, withdraw_spent_tools
 
 INSTRUCTIONS = """You break forecasting questions into tractable pieces. You do not
 produce a final probability — a later step does that.
@@ -95,6 +98,8 @@ def build_decompose_agent(
         deps_type=ForecastDeps,
         output_type=Decomposition,
         system_prompt=INSTRUCTIONS,
+        toolsets=[web_search_toolset],
+        capabilities=[Hooks(prepare_tools=withdraw_spent_tools)],
         retries=1,
     )
 

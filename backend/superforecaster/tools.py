@@ -10,6 +10,9 @@ no filtering. That is the production path.
 
 Every URL an agent sees is recorded on `ctx.deps.sources_seen` so a backtest run can
 be audited for leakage rather than trusted.
+
+`search_web` here is the **backtest** path. A live run searches through Tavily's MCP
+server instead — see `tavily_mcp`, which explains why the two cannot be one.
 """
 
 from __future__ import annotations
@@ -325,11 +328,17 @@ async def find_disconfirming_evidence(ctx: RunContext[ForecastDeps], claim: str)
         f"why {claim} will not happen",
         f"{claim} criticism skepticism doubts",
     ]
-    # Three searches inside one tool call cost one call, because `search_web` is invoked
-    # here as a plain function and only the outer call reaches the toolset. The model made
-    # one decision, so it is charged for one.
+    # Three searches inside one tool call cost one call, because the search is invoked here
+    # as a plain function and only the outer call reaches the toolset. The model made one
+    # decision, so it is charged for one.
+    #
+    # The branch mirrors `tavily_mcp.web_search_toolset`: a backtest uses the audited HTTP
+    # tool, everything else uses the MCP server. Both record on `ctx.deps.sources_seen`.
+    from .tavily_mcp import mcp_search
+
+    search = search_web if ctx.deps.as_of is not None else mcp_search
     sections: list[str] = []
     for angle in angles:
-        result = await search_web(ctx, angle)
+        result = await search(ctx, angle)
         sections.append(f"### {angle}\n{result}")
     return "\n\n".join(sections)

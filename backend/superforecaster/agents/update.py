@@ -17,7 +17,8 @@ from pydantic_ai import Agent
 from ..deps import ForecastDeps
 from ..models import ForecastRecord, UpdateDecision
 from ..runner import run_agent
-from ..tools import find_disconfirming_evidence, search_web
+from ..tavily_mcp import web_search_toolset
+from ..tools import find_disconfirming_evidence
 from . import with_model
 
 INSTRUCTIONS = """You are deciding whether new evidence should move an existing
@@ -85,7 +86,8 @@ def build_update_agent(model: str | None = None) -> Agent[ForecastDeps, UpdateDe
         deps_type=ForecastDeps,
         output_type=UpdateDecision,
         system_prompt=INSTRUCTIONS,
-        tools=[search_web, find_disconfirming_evidence],
+        tools=[find_disconfirming_evidence],
+        toolsets=[web_search_toolset],
         retries=1,
     )
 

@@ -17,7 +17,7 @@ import httpx
 import pytest
 from pydantic_ai import RunContext
 
-from superforecaster import tools
+from superforecaster import tavily_mcp, tools
 from superforecaster.deps import ForecastDeps
 
 AS_OF = datetime(2022, 2, 1, tzinfo=timezone.utc)
@@ -258,17 +258,57 @@ def test_extract_page_text_falls_back_to_the_unslotted_shape():
 # ---------- find_disconfirming_evidence ----------
 
 
-async def test_find_disconfirming_evidence_runs_several_angles(monkeypatch, tavily_key):
+def _recorder() -> tuple[list[str], object]:
     queries: list[str] = []
 
     async def fake_search(ctx, query):
         queries.append(query)
         return "results"
 
+    return queries, fake_search
+
+
+async def test_find_disconfirming_evidence_runs_several_angles(monkeypatch, tavily_key):
+    queries, fake_search = _recorder()
     monkeypatch.setattr(tools, "search_web", fake_search)
-    out = await tools.find_disconfirming_evidence(make_ctx(ForecastDeps()), "X happens")
+    out = await tools.find_disconfirming_evidence(
+        make_ctx(ForecastDeps(as_of=AS_OF)), "X happens"
+    )
 
     assert len(queries) == 3
     assert any("against" in q for q in queries)
     assert any("will not happen" in q for q in queries)
     assert "results" in out
+
+
+async def test_find_disconfirming_evidence_uses_the_clamped_tool_in_a_backtest(
+    monkeypatch, tavily_key
+):
+    """It must pick the same path `web_search_toolset` picks, or a backtest leaks.
+
+    The MCP server cannot filter undated results, so an `as_of` run has to reach
+    `search_web` here even though the model never calls it directly.
+    """
+    queries, fake_search = _recorder()
+    monkeypatch.setattr(tools, "search_web", fake_search)
+    monkeypatch.setattr(tavily_mcp, "mcp_search", _unreachable)
+
+    await tools.find_disconfirming_evidence(
+        make_ctx(ForecastDeps(as_of=AS_OF)), "X happens"
+    )
+    assert len(queries) == 3
+
+
+async def test_find_disconfirming_evidence_uses_the_mcp_server_when_live(
+    monkeypatch, tavily_key
+):
+    queries, fake_search = _recorder()
+    monkeypatch.setattr(tavily_mcp, "mcp_search", fake_search)
+    monkeypatch.setattr(tools, "search_web", _unreachable)
+
+    await tools.find_disconfirming_evidence(make_ctx(ForecastDeps()), "X happens")
+    assert len(queries) == 3
+
+
+async def _unreachable(ctx, query):
+    raise AssertionError("the wrong search path was taken")

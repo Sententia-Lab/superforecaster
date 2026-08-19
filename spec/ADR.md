@@ -2606,3 +2606,87 @@ no return.
 runs on. If that ever changes, the write routes above need real authentication again —
 this decision should be reversed, not worked around, the same way ADR 35 itself
 documents its own reasoning for a future reader to weigh.
+
+---
+
+## ADR 75 — Live search runs on Tavily's MCP server; a backtest does not
+
+**Status:** Accepted (2026-08-19)
+
+**Decision.** `tavily_mcp.web_search_toolset` picks the web tools per run:
+
+| `deps.as_of` | Toolset | Tools offered |
+|---|---|---|
+| None (live) | `RenamedToolset(MCPToolset(mcp.tavily.com))` | `search_web`, `tavily_extract`, `tavily_crawl`, `tavily_map`, `tavily_research` |
+| set (backtest) | `FunctionToolset([tools.search_web])` | `search_web` |
+| — (no key) | None | none |
+
+`tavily_search` is renamed to `search_web` so the prompts, `SourceRef.tool`, the frontend,
+and `attach_budget`'s wording all keep the one tool name they already know.
+
+**Rationale.** The MCP server accepts `start_date` and `end_date`, so the date clamp itself
+survives — and `process_tool_call` sets `end_date` from our own code rather than leaving it
+to the model, which makes it no weaker than `_tavily_body`.
+
+What does not survive is the *verification* of the clamp. Every tool answers with JSON that
+carries `url`, `title`, and `content` per result and no publication date, and search accepts
+only `topic="general"` — the server rejects `"news"`, which is the mode that would carry
+dates. `_drop_leaked` — clamp 1 of ADR 17 — has nothing left to check, and
+`SourceRef.published_date` would be None on every web source. A backtest whose leak audit
+cannot detect a leak is a backtest that reports green either way.
+
+So ADR 17 is not superseded. The audited HTTP path stays, and the branch above is what keeps
+it reachable. Live forecasts, which have no `as_of` and no leak to detect, get the MCP server
+and the three tools that come with it.
+
+**Extract, crawl, and map are live-only** for the same reason, stated the other way round:
+none of them takes a date filter at all, so each is an uncontrolled leak in a backtest.
+
+**Cost.** `config.BUDGETS` counts tool calls, not tokens, so one uncapped crawl could spend a
+cell's whole token budget on a single call. `tavily_mcp._capped` bounds `max_results`,
+`limit`, `search_depth`, and `include_raw_content` before the arguments reach the server —
+in `process_tool_call`, where the model cannot raise them back.
+
+**What this rules out.** Deleting `tools.search_web`, `_tavily_body`, `_drop_leaked`, or
+`_parse_published`. They are not dead code kept for sentiment; they are the only search path
+a backtest may use. Reversing this decision means first showing that the MCP server returns a
+publication date per result.
+
+
+---
+
+## ADR 76 — Search depth is our decision, not the agent's
+
+**Status:** Accepted (2026-08-19)
+
+**Decision.** `tavily_mcp._FORCED` and `_BOUNDED` overwrite the model's arguments in
+`process_tool_call`, before the call reaches the server:
+
+| Tool | Forced | Bounded |
+|---|---|---|
+| `tavily_search` | `search_depth="basic"`, no raw content, no images | `max_results` ≤ 5 |
+| `tavily_research` | `model="mini"` | — |
+| `tavily_crawl` | `extract_depth="basic"` | `limit` ≤ 10, `max_depth` ≤ 1, `max_breadth` ≤ 10 |
+| `tavily_map` | — | same as crawl |
+| `tavily_extract` | `extract_depth="basic"`, no images | — |
+
+**Rationale.** `config.BUDGETS` counts tool calls. It does not count seconds, and it does not
+count the tokens a single call returns. Both are ways one call can cost what the budget was
+written to prevent:
+
+- `tavily_research` defaults to `model="auto"`. Auto picked a tier that ran **176 seconds**
+  against the 180-second agent timeout — one call from killing the step, and it did kill the
+  first run. `model="mini"` answered the same question in **37**.
+- `tavily_crawl` defaults to `limit=50`. Fifty pages of extracted markdown is far more than
+  the five search results a tool call is priced against.
+
+Raising the timeout does not fix either one; it only makes the symptom survivable. The
+ceiling has to sit where the model cannot raise it back, which is `process_tool_call`.
+
+**What this rules out.** An agent escalating its own research depth mid-run. If a stage
+genuinely needs the `pro` tier, that is a per-agent decision recorded here and in `_FORCED`,
+not something a prompt asks for.
+
+**Related.** ADR 69 withdraws the search tools when the *count* runs out. This bounds what a
+single call may spend before the count moves at all. Both are needed: one caps how often, the
+other how much.

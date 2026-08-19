@@ -104,13 +104,91 @@ def test_every_agent_has_a_budget():
     assert set(BUDGETS) == expected
 
 
-def test_no_tool_agents_are_capped_at_zero_tool_calls():
-    """decompose, choose-lenses, reflect, synthesize and draft are built with no tools.
-    A ceiling of zero is what makes that a fact the runtime enforces rather than a
-    property of how the agent happened to be constructed. Pydantic AI does not charge the
-    structured answer as a tool call, so zero does not block the run from ending."""
-    for name in ("decompose", "lenses", "reflect", "synthesize", "draft"):
-        assert get_budget(name).tool_calls == 0
+def test_every_tool_ceiling_matches_how_its_agent_was_built():
+    """An agent with no tools gets a ceiling of zero, and one with tools gets a real one.
+
+    Zero is what makes "this agent does not search" a fact the runtime enforces rather than
+    a property of how the agent happened to be constructed. Pydantic AI does not charge the
+    structured answer as a tool call, so zero never blocks a run from ending.
+
+    Read off the constructors rather than listed here on purpose. The list version had to be
+    edited every time an agent gained a search toolset, and editing the list *is* the bug it
+    was written to catch — a ceiling of zero on an agent that can now search silently
+    withdraws its tools before the first call (ADR 69), and the agent answers from nothing.
+    """
+    mismatched = []
+    for name, armed in _agent_tool_use().items():
+        ceiling = get_budget(name).tool_calls
+        if armed and ceiling == 0:
+            mismatched.append(f"{name} has tools but a ceiling of 0")
+        if not armed and ceiling != 0:
+            mismatched.append(f"{name} has no tools but a ceiling of {ceiling}")
+
+    assert mismatched == []
+
+
+def test_a_searching_agent_is_still_bounded():
+    """A real ceiling, not an open one. `tavily_research` runs about 40 seconds a call."""
+    for name, armed in _agent_tool_use().items():
+        if armed:
+            assert 0 < get_budget(name).tool_calls <= 8, name
+
+
+def _agent_tool_use() -> dict[str, bool]:
+    """Every agent by its `Budget` name, mapped to whether it was built with any tools.
+
+    Reads the `Agent(...)` constructors, because the budget name is the `name=` argument
+    there — `outside_view.py` builds `base_rate_cell`, so the filename cannot be trusted.
+    """
+    import ast
+    import pathlib
+
+    agents_dir = (
+        pathlib.Path(__file__).resolve().parent.parent / "superforecaster" / "agents"
+    )
+    found: dict[str, bool] = {}
+    for path in sorted(agents_dir.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            is_agent = (isinstance(fn, ast.Name) and fn.id == "Agent") or (
+                isinstance(fn, ast.Subscript)
+                and isinstance(fn.value, ast.Name)
+                and fn.value.id == "Agent"
+            )
+            if not is_agent:
+                continue
+            kwargs = {kw.arg: kw.value for kw in node.keywords}
+            name = kwargs.get("name")
+            if not isinstance(name, ast.Constant):
+                continue
+            # `build_base_rate_cell_agent` names its agent "base_rate_cell_agent" while its
+            # budget row is "base_rate_cell".
+            key = name.value.removesuffix("_agent")
+            if key not in BUDGETS:
+                continue
+            found[key] = _is_armed(kwargs.get("tools")) or _is_armed(
+                kwargs.get("toolsets")
+            )
+
+    assert set(found) == set(BUDGETS), f"missed {set(BUDGETS) - set(found)}"
+    return found
+
+
+def _is_armed(value) -> bool:
+    """Whether a `tools=` or `toolsets=` argument gives the agent anything to call.
+
+    Absent or `[]` is none. Anything else — a populated literal, a name, a call — counts,
+    because this cannot see what it holds and the safe reading of "unknown" is "armed".
+    """
+    import ast
+
+    if value is None:
+        return False
+    if isinstance(value, ast.List):
+        return bool(value.elts)
+    return True
 
 
 # ---------- scaling and overrides ----------

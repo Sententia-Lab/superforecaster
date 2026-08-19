@@ -18,7 +18,8 @@ from pydantic_ai import Agent
 from ..deps import ForecastDeps
 from ..models import ForecastRecord, ResolutionCheckResult
 from ..runner import run_agent
-from ..tools import search_web, search_wikipedia
+from ..tavily_mcp import web_search_toolset
+from ..tools import search_wikipedia
 from . import with_model
 
 INSTRUCTIONS = """You are checking whether a forecast question has ALREADY RESOLVED.
@@ -62,7 +63,8 @@ def build_resolution_agent(
         deps_type=ForecastDeps,
         output_type=ResolutionCheckResult,
         system_prompt=INSTRUCTIONS,
-        tools=[search_web, search_wikipedia],
+        tools=[search_wikipedia],
+        toolsets=[web_search_toolset],
         retries=1,
     )
 
