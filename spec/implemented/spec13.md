@@ -10,7 +10,7 @@ A straight swap does not work. `search_web` does three jobs and the MCP server d
 
 | Job | `tools.search_web` | Tavily MCP |
 |---|---|---|
-| Clamp results to `as_of` | `_tavily_body` sets `end_date` + `topic="news"` | `tavily-search` takes `start_date`/`end_date` |
+| Clamp results to `as_of` | `_tavily_body` sets `end_date` + `topic="news"` | `tavily_search` takes `start_date`/`end_date` |
 | Prove the clamp held | `_drop_leaked` drops results newer or undated | impossible — the server discards `published_date` |
 | Record every URL seen | `deps.sources_seen.extend(refs)` | nothing |
 
@@ -34,7 +34,7 @@ untouched.
 
 ```
 model calls search_web(query="fed rate cut odds")
-  -> RenamedToolset.call_tool                    "search_web" -> "tavily-search"
+  -> RenamedToolset.call_tool                    "search_web" -> "tavily_search"
   -> MCPToolset.call_tool
   -> tavily_mcp.process_tool_call(ctx, call_tool, name, args) -> ToolResult
 ```
@@ -110,7 +110,7 @@ def _capped(name: str, args: dict) -> dict
 
 ## Decisions
 
-- **`tavily-search` is renamed to `search_web`.** Every prompt names that tool, `SourceRef.tool`
+- **`tavily_search` is renamed to `search_web`.** Every prompt names that tool, `SourceRef.tool`
   carries it to the frontend, and `attach_budget` tells the agent to stop calling it by name.
   One `RenamedToolset` keeps all of them true.
 - **Extract, crawl, and map are live-only.** None takes a date filter, so each is an

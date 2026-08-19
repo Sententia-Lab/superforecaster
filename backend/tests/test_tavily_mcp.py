@@ -11,6 +11,7 @@ argument capping to `sources_seen` runs for real against a fake server.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -27,19 +28,42 @@ from superforecaster.deps import ForecastDeps
 
 AS_OF = datetime(2022, 2, 1, tzinfo=timezone.utc)
 
-# What `formatResults()` in the Tavily MCP server prints. Titles and URLs on their own
-# lines, and no publication date anywhere — which is the whole reason a backtest cannot
-# use this path.
-RESULT_TEXT = """Detailed Results:
+# Every name here is the literal the live server serves, never `tavily_mcp.SEARCH_TOOL`.
+# The constant said "tavily-search" for a while, the server has always said "tavily_search",
+# and a fixture named from the constant agreed with the bug: the suite was green while
+# production renamed nothing, capped nothing, and recorded no sources at all.
+SEARCH = "tavily_search"
+RESEARCH = "tavily_research"
+CRAWL = "tavily_crawl"
 
-Title: Fed holds rates steady
-URL: https://example.com/fed-holds
-Content: The committee left the target range unchanged.
+# The real response shape, taken from a live call: a JSON object with the hits under
+# `results`, and no `published_date` on any of them.
+SEARCH_RESULT = {
+    "query": "fed rate cut odds",
+    "answer": None,
+    "images": [],
+    "results": [
+        {
+            "url": "https://example.com/fed-holds",
+            "title": "Fed holds rates steady",
+            "content": "The committee left the target range unchanged.",
+            "score": 0.9,
+        },
+        {
+            "url": "https://example.org/analysts",
+            "title": "Analysts split on timing",
+            "content": "Forecasters disagree about the first cut.",
+            "score": 0.7,
+        },
+    ],
+}
 
-Title: Analysts split on timing
-URL: https://example.org/analysts
-Content: Forecasters disagree about the first cut.
-"""
+# `tavily_research` puts its citations under `sources` instead.
+RESEARCH_RESULT = {
+    "content": "# OpenAI IPO Overview\n\nThe filing landed in June [1].",
+    "sources": [{"url": "https://example.net/ipo", "title": "OpenAI files S-1"}],
+    "status": "completed",
+}
 
 
 @pytest.fixture
@@ -53,22 +77,28 @@ def fake_server(monkeypatch):
     captured: dict = {}
     server = FastMCP("fake-tavily")
 
-    @server.tool(name=tavily_mcp.SEARCH_TOOL)
+    @server.tool(name=SEARCH)
     def search(
         query: str,
         max_results: int = 5,
         search_depth: str = "basic",
         include_raw_content: bool = False,
         include_images: bool = False,
-    ) -> str:
+    ) -> dict:
         captured.update(
+            tool=SEARCH,
             query=query,
             max_results=max_results,
             search_depth=search_depth,
             include_raw_content=include_raw_content,
             include_images=include_images,
         )
-        return RESULT_TEXT
+        return SEARCH_RESULT
+
+    @server.tool(name=RESEARCH)
+    def research(input: str, model: str = "auto") -> dict:
+        captured.update(tool=RESEARCH, input=input, model=model)
+        return RESEARCH_RESULT
 
     toolset = MCPToolset[ForecastDeps](
         server, id="tavily", process_tool_call=tavily_mcp.process_tool_call
@@ -84,8 +114,8 @@ def context(deps: ForecastDeps) -> RunContext[ForecastDeps]:
 # ---------- parse_sources ----------
 
 
-def test_parse_sources_pairs_every_title_with_its_url():
-    refs = tavily_mcp.parse_sources(RESULT_TEXT, query="fed", tool="search_web")
+def test_parse_sources_reads_the_results_array():
+    refs = tavily_mcp.parse_sources(SEARCH_RESULT, query="fed", tool="search_web")
     assert [r.url for r in refs] == [
         "https://example.com/fed-holds",
         "https://example.org/analysts",
@@ -94,9 +124,22 @@ def test_parse_sources_pairs_every_title_with_its_url():
     assert refs[0].query == "fed"
 
 
+def test_parse_sources_reads_the_sources_array_that_research_returns():
+    """Research names the same idea `sources`, so one parser has to read both."""
+    refs = tavily_mcp.parse_sources(RESEARCH_RESULT, query="ipo", tool=RESEARCH)
+    assert [r.url for r in refs] == ["https://example.net/ipo"]
+
+
+def test_parse_sources_accepts_a_json_string_as_well_as_a_dict():
+    refs = tavily_mcp.parse_sources(
+        json.dumps(SEARCH_RESULT), query="fed", tool="search_web"
+    )
+    assert len(refs) == 2
+
+
 def test_parse_sources_leaves_published_date_unset():
-    """The server discards it, so nothing here may invent one."""
-    refs = tavily_mcp.parse_sources(RESULT_TEXT, query="fed", tool="search_web")
+    """No MCP tool returns one, so nothing here may invent one."""
+    refs = tavily_mcp.parse_sources(SEARCH_RESULT, query="fed", tool="search_web")
     assert all(r.published_date is None for r in refs)
 
 
@@ -106,11 +149,10 @@ def test_parse_sources_survives_a_body_it_cannot_read():
     )
 
 
-def test_parse_sources_keeps_a_url_that_has_no_title():
-    refs = tavily_mcp.parse_sources(
-        "URL: https://example.com/a", query="q", tool="search_web"
-    )
-    assert len(refs) == 1 and refs[0].title == ""
+def test_parse_sources_skips_a_result_with_no_url():
+    body = {"results": [{"title": "no link"}, {"url": "https://example.com/a"}]}
+    refs = tavily_mcp.parse_sources(body, query="q", tool="search_web")
+    assert [r.url for r in refs] == ["https://example.com/a"]
 
 
 # ---------- argument capping ----------
@@ -118,19 +160,38 @@ def test_parse_sources_keeps_a_url_that_has_no_title():
 
 def test_search_arguments_are_capped_whatever_the_model_asks_for():
     args = tavily_mcp._capped(
-        tavily_mcp.SEARCH_TOOL,
-        {"query": "q", "max_results": 20, "search_depth": "advanced"},
+        SEARCH, {"query": "q", "max_results": 20, "search_depth": "advanced"}
     )
-    assert args["max_results"] == tavily_mcp.MAX_RESULTS
+    assert args["max_results"] == 5
     assert args["search_depth"] == "basic"
     assert args["include_raw_content"] is False
 
 
-def test_crawl_depth_is_capped():
+def test_a_smaller_request_is_left_alone():
+    """`_BOUNDED` is a ceiling, not an assignment — an agent may still ask for less."""
     assert (
-        tavily_mcp._capped("tavily-crawl", {"url": "https://x", "limit": 500})["limit"]
-        == tavily_mcp.MAX_CRAWL
+        tavily_mcp._capped(SEARCH, {"query": "q", "max_results": 2})["max_results"] == 2
     )
+
+
+def test_research_depth_is_pinned_not_left_to_the_model():
+    """`model="auto"` once ran 176s against a 180s timeout. The tier is our choice."""
+    assert (
+        tavily_mcp._capped(RESEARCH, {"input": "q", "model": "pro"})["model"] == "mini"
+    )
+    assert tavily_mcp._capped(RESEARCH, {"input": "q"})["model"] == "mini"
+
+
+def test_crawl_is_capped_on_every_axis_that_multiplies():
+    args = tavily_mcp._capped(
+        CRAWL, {"url": "https://x", "limit": 500, "max_depth": 5, "max_breadth": 99}
+    )
+    assert (args["limit"], args["max_depth"], args["max_breadth"]) == (10, 1, 10)
+
+
+def test_capping_an_unknown_tool_changes_nothing():
+    args = {"whatever": 1}
+    assert tavily_mcp._capped("tavily_unknown", args) == args
 
 
 # ---------- process_tool_call, against the fake server ----------
@@ -149,7 +210,7 @@ async def test_a_search_records_every_result_on_deps(tavily_key, fake_server):
 
 async def test_the_server_is_sent_the_capped_arguments(tavily_key, fake_server):
     await tavily_mcp.mcp_search(context(ForecastDeps()), "fed rate cut")
-    assert fake_server["max_results"] == tavily_mcp.MAX_RESULTS
+    assert fake_server["max_results"] == 5
     assert fake_server["include_raw_content"] is False
 
 
@@ -165,17 +226,33 @@ async def test_a_search_error_is_not_an_exception(tavily_key, monkeypatch):
     assert "Web search error" in result
 
 
-async def test_a_url_tool_records_what_it_was_pointed_at(tavily_key):
+async def test_research_records_its_citations_and_is_sent_the_mini_tier(
+    tavily_key, fake_server
+):
+    deps = ForecastDeps()
+    await tavily_mcp.process_tool_call(
+        context(deps),
+        tavily_mcp._toolset("tvly-test").direct_call_tool,
+        RESEARCH,
+        {"input": "OpenAI IPO"},
+    )
+    assert fake_server["model"] == "mini"
+    assert [s.url for s in deps.sources_seen] == ["https://example.net/ipo"]
+    assert deps.sources_seen[0].query == "OpenAI IPO"
+
+
+async def test_a_url_tool_falls_back_to_what_it_was_pointed_at(tavily_key):
+    """A body with no source array still leaves an audit trail."""
     deps = ForecastDeps()
 
     async def call_tool(name, args, *, metadata=None):
         return "extracted text"
 
     await tavily_mcp.process_tool_call(
-        context(deps), call_tool, "tavily-extract", {"urls": ["https://example.com/a"]}
+        context(deps), call_tool, "tavily_extract", {"urls": ["https://example.com/a"]}
     )
     assert [s.url for s in deps.sources_seen] == ["https://example.com/a"]
-    assert deps.sources_seen[0].tool == "tavily-extract"
+    assert deps.sources_seen[0].tool == "tavily_extract"
 
 
 # ---------- which toolset a run gets ----------

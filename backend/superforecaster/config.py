@@ -53,7 +53,7 @@ DEFAULT_AGENT_MAX_TOKENS = 16384
 # The stage ceiling sits above the per-agent one: a gated stage is at most a handful of
 # agent calls (synthesis worst case is reflect + two synthesize attempts), so a stage
 # that outlives this is stuck, not thorough.
-DEFAULT_AGENT_TIMEOUT_SECONDS = 180
+DEFAULT_AGENT_TIMEOUT_SECONDS = 360
 DEFAULT_STAGE_TIMEOUT_SECONDS = 600
 
 DEFAULT_TAVILY_MCP_URL = "https://mcp.tavily.com/mcp/"
@@ -210,8 +210,6 @@ class Budget:
 BUDGETS: dict[str, Budget] = {
     b.name: b
     for b in (
-        # The two research cells. Fanned out per column per stage, so these are the
-        # numbers a whole run multiplies by: five columns of three lenses is fifteen.
         Budget(
             "base_rate_cell", cost_usd=0.40, tokens=200_000, tool_calls=8, iterations=11
         ),
@@ -222,19 +220,12 @@ BUDGETS: dict[str, Budget] = {
             tool_calls=8,
             iterations=11,
         ),
-        # Bounded lookups outside the forecast. Each answers one question: is this
-        # resolvable, has it resolved, what happened in the last two days, what did the
-        # reasoning get wrong.
         Budget("critic", cost_usd=0.10, tokens=60_000, tool_calls=3, iterations=6),
         Budget("resolution", cost_usd=0.10, tokens=60_000, tool_calls=4, iterations=7),
         Budget("update", cost_usd=0.10, tokens=60_000, tool_calls=4, iterations=7),
         Budget("postmortem", cost_usd=0.10, tokens=60_000, tool_calls=4, iterations=7),
-        # No-tool steps. `tool_calls=0` is the point: these agents are built with no
-        # tools, and a ceiling of zero makes that a fact the runtime enforces rather
-        # than a property of how the agent happened to be constructed. The structured
-        # answer is not counted — Pydantic AI does not charge the output tool.
-        Budget("decompose", cost_usd=0.15, tokens=80_000, tool_calls=0, iterations=4),
-        Budget("lenses", cost_usd=0.15, tokens=80_000, tool_calls=0, iterations=4),
+        Budget("decompose", cost_usd=0.15, tokens=80_000, tool_calls=4, iterations=8),
+        Budget("lenses", cost_usd=0.15, tokens=80_000, tool_calls=2, iterations=4),
         Budget("reflect", cost_usd=0.20, tokens=100_000, tool_calls=0, iterations=4),
         Budget(
             "synthesize",

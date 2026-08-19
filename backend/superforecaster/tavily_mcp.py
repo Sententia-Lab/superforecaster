@@ -3,20 +3,30 @@
 This is the production search path. It replaces the hand-rolled Tavily HTTP call in
 `tools.search_web` for every run where `deps.as_of` is None.
 
-A backtest still uses `tools.search_web`. The MCP server formats its results as text and
-drops each result's `published_date`, so `tools._drop_leaked` — clamp 1 of ADR 17 — would
-have nothing left to check. `web_search_toolset` picks the path per run, so a backtest
-never reaches this module.
+A backtest still uses `tools.search_web`. No MCP tool returns a publication date, and search
+accepts only `topic="general"` — the server rejects `"news"`, which is the mode that would
+carry dates — so `tools._drop_leaked`, clamp 1 of ADR 17, would have nothing to check.
+`web_search_toolset` picks the path per run, so a backtest never reaches this module.
 
-The server offers four tools. `tavily-search` is renamed to `search_web` so the prompts,
-`SourceRef.tool`, and the frontend keep the one name they already know. Extract, map, and
-crawl keep their own names and are offered on the live path only: none of them takes a date
-filter, so each is an uncontrolled leak in a backtest.
+The server offers five tools: `tavily_search`, `tavily_extract`, `tavily_crawl`,
+`tavily_map`, and `tavily_research`. Search is renamed to `search_web` so the prompts,
+`SourceRef.tool`, and the frontend keep the one name they already know. The other four keep
+their own names and are offered on the live path only: none of them takes a date filter, so
+each is an uncontrolled leak in a backtest.
+
+**The names are underscored, and every one must match what the server serves.** A name that
+does not match fails silently in three directions at once — the rename does not happen,
+`_capped` does not cap, and `process_tool_call` records no sources — and nothing raises. Pin
+them in tests against the literal string, never against the constant, or the test agrees with
+the bug.
+
+Every tool returns a JSON object, not text. Search puts its hits under `results`, research
+puts its citations under `sources`. Neither carries a publication date.
 """
 
 from __future__ import annotations
 
-import re
+import json
 from typing import Any
 from urllib.parse import urlencode
 
@@ -27,17 +37,40 @@ from pydantic_ai.toolsets import AbstractToolset, FunctionToolset, RenamedToolse
 from .config import get_settings
 from .deps import ForecastDeps
 from .models import SourceRef
+from .tools import _parse_published, search_web
 
-SEARCH_TOOL = "tavily-search"
+SEARCH_TOOL = "tavily_search"
+RESEARCH_TOOL = "tavily_research"
 
-MAX_RESULTS = 5
-MAX_CRAWL = 10
-"""Ceilings imposed on the model's arguments.
+_FORCED: dict[str, dict[str, Any]] = {
+    SEARCH_TOOL: {
+        "search_depth": "basic",
+        "include_raw_content": False,
+        "include_images": False,
+    },
+    # `model` defaults to "auto" on the server, and auto picked a tier that ran for 176
+    # seconds against a 180-second agent timeout — one call from killing the step. "mini"
+    # answered the same question in 37. Depth is our decision to make, not the model's:
+    # a research tier is not something an agent should be able to escalate mid-run.
+    RESEARCH_TOOL: {"model": "mini"},
+    "tavily_extract": {"extract_depth": "basic", "include_images": False},
+    "tavily_crawl": {"extract_depth": "basic"},
+}
 
-The budget in `config.BUDGETS` counts tool calls, not tokens. One uncapped crawl returns
-far more text than the five search results a call is priced against, so a single call could
-spend a cell's whole token budget. The caps are applied in `process_tool_call`, where the
-model cannot argue with them.
+_BOUNDED: dict[str, dict[str, int]] = {
+    SEARCH_TOOL: {"max_results": 5},
+    "tavily_crawl": {"limit": 10, "max_depth": 1, "max_breadth": 10},
+    "tavily_map": {"limit": 10, "max_depth": 1, "max_breadth": 10},
+}
+"""Ceilings imposed on the model's arguments, applied in `process_tool_call`.
+
+The budget in `config.BUDGETS` counts tool calls, not tokens or seconds. One crawl left at
+its server default of `limit=50` returns far more text than the five search results a call is
+priced against, and one research call at `model="auto"` can outlast the agent timeout. Both
+are one tool call as far as the budget is concerned, so the ceiling has to live here.
+
+`_FORCED` overwrites whatever the model asked for. `_BOUNDED` takes the smaller of the two,
+so an agent may still ask for less.
 """
 
 _toolsets: dict[str, MCPToolset[ForecastDeps]] = {}
@@ -70,40 +103,70 @@ def _toolset(api_key: str) -> MCPToolset[ForecastDeps]:
     return _toolsets[api_key]
 
 
-# ---------- reading sources back out of a text result ----------
+# ---------- reading sources back out of a result ----------
 
-_TITLE = re.compile(r"^\s*Title:\s*(.+?)\s*$", re.MULTILINE)
-_URL = re.compile(r"^\s*URL:\s*(\S+)\s*$", re.MULTILINE)
+_SOURCE_KEYS = ("results", "sources")
+"""Where each tool puts the pages it saw. Search uses `results`, research uses `sources`."""
 
 
 def _as_text(result: ToolResult) -> str:
+    """The result as something a model can read.
+
+    Every Tavily tool answers with a JSON object, so this is `json.dumps` in practice.
+    `str()` on a dict would hand the model a Python repr with single quotes.
+    """
     if isinstance(result, str):
         return result
     if isinstance(result, (list, tuple)):
         return "\n".join(_as_text(part) for part in result)  # type: ignore[arg-type]
+    if isinstance(result, dict):
+        return json.dumps(result, ensure_ascii=False, default=str)
     return str(result)
 
 
-def parse_sources(text: str, *, query: str, tool: str) -> list[SourceRef]:
-    """Recover one `SourceRef` per result from the server's formatted output.
+def _as_dict(result: ToolResult) -> dict[str, Any]:
+    """The result as a mapping, or an empty one when it is not JSON at all."""
+    if isinstance(result, dict):
+        return result
+    try:
+        parsed = json.loads(_as_text(result))
+    except (ValueError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
-    The server prints `Title:` and `URL:` on their own lines and prints no publication
-    date, so `published_date` is None for every source this returns. Titles are matched to
-    URLs by position, and a URL with no title ahead of it still gets a ref — an unnamed
-    source that `check_citations` can verify beats a named one it cannot.
+
+def parse_sources(result: ToolResult, *, query: str, tool: str) -> list[SourceRef]:
+    """One `SourceRef` per page the tool reports having read.
+
+    `published_date` is read rather than assumed absent. No Tavily MCP tool returns one
+    today — search only accepts `topic="general"`, and the server rejects `"news"`, which is
+    the mode that would carry dates — but reading the field costs nothing and stops this
+    from being a second place to fix if that changes.
+
+    Returns an empty list for a body with no recognizable sources. The caller falls back to
+    the URLs the call was pointed at, so a crawl still records something.
     """
-    urls = _URL.findall(text)
-    titles = _TITLE.findall(text)
-    return [
-        SourceRef(
-            url=url,
-            title=titles[i] if i < len(titles) else "",
-            query=query,
-            published_date=None,
-            tool=tool,
+    data = _as_dict(result)
+    items = next(
+        (data[key] for key in _SOURCE_KEYS if isinstance(data.get(key), list)), []
+    )
+    refs: list[SourceRef] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url") or ""
+        if not url:
+            continue
+        refs.append(
+            SourceRef(
+                url=url,
+                title=item.get("title") or "",
+                query=query,
+                published_date=_parse_published(item.get("published_date")),
+                tool=tool,
+            )
         )
-        for i, url in enumerate(urls)
-    ]
+    return refs
 
 
 def _requested_urls(args: dict[str, Any]) -> list[str]:
@@ -114,19 +177,15 @@ def _requested_urls(args: dict[str, Any]) -> list[str]:
 
 
 def _capped(name: str, args: dict[str, Any]) -> dict[str, Any]:
-    if name == SEARCH_TOOL:
-        return {
-            **args,
-            "max_results": min(
-                int(args.get("max_results") or MAX_RESULTS), MAX_RESULTS
-            ),
-            "search_depth": "basic",
-            "include_raw_content": False,
-            "include_images": False,
-        }
-    if name in ("tavily-crawl", "tavily-map"):
-        return {**args, "limit": min(int(args.get("limit") or MAX_CRAWL), MAX_CRAWL)}
-    return args
+    """The arguments the server is actually sent."""
+    bounded = {}
+    for key, ceiling in _BOUNDED.get(name, {}).items():
+        try:
+            asked = int(args.get(key) or ceiling)
+        except (TypeError, ValueError):
+            asked = ceiling
+        bounded[key] = min(asked, ceiling)
+    return {**args, **_FORCED.get(name, {}), **bounded}
 
 
 async def process_tool_call(
@@ -145,13 +204,14 @@ async def process_tool_call(
     result = await call_tool(name, _capped(name, args))
 
     display_name = "search_web" if name == SEARCH_TOOL else name
-    if name == SEARCH_TOOL:
-        refs = parse_sources(
-            _as_text(result), query=str(args.get("query", "")), tool=display_name
-        )
-    else:
+    query = str(args.get("query") or args.get("input") or "")
+    refs = parse_sources(result, query=query, tool=display_name)
+    if not refs:
+        # A crawl or map reports its pages in a shape this does not read. The URLs it was
+        # pointed at are still sources the agent saw, and an approximate audit trail beats
+        # an empty one.
         refs = [
-            SourceRef(url=url, query=str(args.get("query", "")), tool=display_name)
+            SourceRef(url=url, query=query, tool=display_name)
             for url in _requested_urls(args)
         ]
     ctx.deps.sources_seen.extend(refs)
@@ -170,8 +230,6 @@ def web_search_toolset(
     call a tool it is not offered, so it spends nothing discovering the key is missing.
     `GET /config` already reports `search_enabled` to the operator.
     """
-    from .tools import search_web
-
     api_key = get_settings().tavily_api_key
     if not api_key:
         return None

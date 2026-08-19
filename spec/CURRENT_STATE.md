@@ -313,12 +313,16 @@ carry `toolsets=[tavily_mcp.web_search_toolset]`, which resolves once per run st
 ```
 web_search_toolset(ctx)
   deps.as_of is None  -> RenamedToolset(MCPToolset("https://mcp.tavily.com/mcp/?tavilyApiKey=..."),
-                                        {"search_web": "tavily-search"})
-                         model calls search_web / tavily-extract / tavily-crawl / tavily-map
+                                        {"search_web": "tavily_search"})
+                         model calls search_web / tavily_extract / tavily_crawl /
+                                     tavily_map / tavily_research
                            -> tavily_mcp.process_tool_call
-                                _capped(name, args)            caps max_results, limit, search_depth
-                                await call_tool(...)  -> text
-                                parse_sources(text)   -> list[SourceRef]   published_date is None
+                                _capped(name, args)   forces model="mini", search_depth,
+                                                      bounds max_results/limit/max_depth (ADR 76)
+                                await call_tool(...)  -> dict  {"results": [...]}  search
+                                                              {"sources": [...]}  research
+                                parse_sources(result) -> list[SourceRef]   published_date is None
+                                  (falls back to the requested URLs for crawl and map)
                                 deps.sources_seen.extend(refs)
   deps.as_of is set   -> FunctionToolset([tools.search_web])
                          POST api.tavily.com/search with end_date + topic="news"
@@ -332,6 +336,11 @@ Both paths end on the same list, so everything downstream — the `source` frame
 by which one ran. The one visible difference: a live web source has no `published_date`, so
 the frontend shows no date on its chip. A Wikipedia source, and every source in a backtest,
 still carries one. ADR 75 explains why.
+
+The five MCP tool names are `tavily_search`, `tavily_extract`, `tavily_crawl`, `tavily_map`,
+and `tavily_research` — **underscores**. A name that does not match what the server serves
+fails silently three ways at once: the rename does not happen, `_capped` does not cap, and
+`process_tool_call` records no sources. Tests pin the literal names, never `SEARCH_TOOL`.
 
 `api.streamStep` splits the byte stream on `/\r?\n\r?\n/` and flushes whatever is still
 buffered when the reader finishes. `sse_starlette` writes **CRLF**, so a split on `"\n\n"`

@@ -105,12 +105,22 @@ def test_every_agent_has_a_budget():
 
 
 def test_no_tool_agents_are_capped_at_zero_tool_calls():
-    """decompose, choose-lenses, reflect, synthesize and draft are built with no tools.
+    """choose-lenses, reflect, synthesize and draft are built with no tools.
     A ceiling of zero is what makes that a fact the runtime enforces rather than a
     property of how the agent happened to be constructed. Pydantic AI does not charge the
-    structured answer as a tool call, so zero does not block the run from ending."""
-    for name in ("decompose", "lenses", "reflect", "synthesize", "draft"):
+    structured answer as a tool call, so zero does not block the run from ending.
+
+    `decompose` is deliberately not in this list — it searches, so it has a real ceiling.
+    """
+    for name in ("lenses", "reflect", "synthesize", "draft"):
         assert get_budget(name).tool_calls == 0
+
+
+def test_decompose_can_search_but_not_indefinitely():
+    """It reads the question before splitting it, so a ceiling is the only thing bounding
+    how long that takes. `tavily_research` averages about a minute and a half a call."""
+    budget = get_budget("decompose")
+    assert 0 < budget.tool_calls <= 4
 
 
 # ---------- scaling and overrides ----------
