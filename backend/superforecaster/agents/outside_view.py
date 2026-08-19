@@ -35,7 +35,8 @@ from ..models import (
 )
 from ..events import Exhausted
 from ..runner import run_agent
-from ..tools import search_web, search_wikipedia
+from ..tavily_mcp import web_search_toolset
+from ..tools import search_wikipedia
 from . import (
     as_of_note,
     attach_budget,
@@ -102,7 +103,8 @@ def build_base_rate_cell_agent(
         deps_type=ForecastDeps,
         output_type=SubQuestionBaseRates,
         system_prompt=INSTRUCTIONS,
-        tools=[search_web, search_wikipedia],
+        tools=[search_wikipedia],
+        toolsets=[web_search_toolset],
         capabilities=[Hooks(prepare_tools=withdraw_spent_tools)],
         retries=1,
     )

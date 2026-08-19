@@ -2606,3 +2606,47 @@ no return.
 runs on. If that ever changes, the write routes above need real authentication again —
 this decision should be reversed, not worked around, the same way ADR 35 itself
 documents its own reasoning for a future reader to weigh.
+
+---
+
+## ADR 75 — Live search runs on Tavily's MCP server; a backtest does not
+
+**Status:** Accepted (2026-08-19)
+
+**Decision.** `tavily_mcp.web_search_toolset` picks the web tools per run:
+
+| `deps.as_of` | Toolset | Tools offered |
+|---|---|---|
+| None (live) | `RenamedToolset(MCPToolset(mcp.tavily.com))` | `search_web`, `tavily-extract`, `tavily-crawl`, `tavily-map` |
+| set (backtest) | `FunctionToolset([tools.search_web])` | `search_web` |
+| — (no key) | None | none |
+
+`tavily-search` is renamed to `search_web` so the prompts, `SourceRef.tool`, the frontend,
+and `attach_budget`'s wording all keep the one tool name they already know.
+
+**Rationale.** The MCP server accepts `start_date` and `end_date`, so the date clamp itself
+survives — and `process_tool_call` sets `end_date` from our own code rather than leaving it
+to the model, which makes it no weaker than `_tavily_body`.
+
+What does not survive is the *verification* of the clamp. The server runs results through
+`formatResults()`, which prints `Title:`, `URL:`, and `Content:` and discards
+`published_date`. `_drop_leaked` — clamp 1 of ADR 17 — has nothing left to check, and
+`SourceRef.published_date` would be None on every web source. A backtest whose leak audit
+cannot detect a leak is a backtest that reports green either way.
+
+So ADR 17 is not superseded. The audited HTTP path stays, and the branch above is what keeps
+it reachable. Live forecasts, which have no `as_of` and no leak to detect, get the MCP server
+and the three tools that come with it.
+
+**Extract, crawl, and map are live-only** for the same reason, stated the other way round:
+none of them takes a date filter at all, so each is an uncontrolled leak in a backtest.
+
+**Cost.** `config.BUDGETS` counts tool calls, not tokens, so one uncapped crawl could spend a
+cell's whole token budget on a single call. `tavily_mcp._capped` bounds `max_results`,
+`limit`, `search_depth`, and `include_raw_content` before the arguments reach the server —
+in `process_tool_call`, where the model cannot raise them back.
+
+**What this rules out.** Deleting `tools.search_web`, `_tavily_body`, `_drop_leaked`, or
+`_parse_published`. They are not dead code kept for sentiment; they are the only search path
+a backtest may use. Reversing this decision means first showing that the MCP server returns a
+publication date per result.

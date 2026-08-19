@@ -33,9 +33,11 @@ from .config import Budget, get_agent_timeout
 from .errors import AgentTimeout
 from .events import Query, Sink, Source, Thought
 
-# The single human-meaningful argument of each search tool. Three parameter names for
-# the same idea, so a subscriber would otherwise have to know each tool's signature.
-_QUERY_ARG_NAMES = ("query", "topic", "claim")
+# The single human-meaningful argument of each search tool, in the order it is preferred.
+# One idea under several parameter names, so a subscriber would otherwise have to know each
+# tool's signature. `url` and `urls` are what the Tavily MCP extract, crawl, and map tools
+# take instead of a query.
+_QUERY_ARG_NAMES = ("query", "topic", "claim", "url", "urls")
 
 
 def preview(value: Any, limit: int | None = 240) -> str:
@@ -69,6 +71,10 @@ def _tool_query_arg(args: Any) -> str:
             value = args.get(name)
             if isinstance(value, str) and value:
                 return value
+            # `urls` arrives as a list, and a list of one URL reads better as that URL
+            # than as the JSON dump the fallback below would print.
+            if isinstance(value, list) and value:
+                return ", ".join(str(v) for v in value)
         return preview(args, 200)
     return preview(args, 200)
 
