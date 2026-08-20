@@ -42,7 +42,7 @@ MAX_CHUNKS_PER_SOURCE = 3
 MAX_EXTRACT_URLS = 5
 MAX_CRAWL_PAGES = 10
 MAX_MAP_LINKS = 20
-CRAWL_DEPTH = 1
+CRAWL_DEPTH = 5
 _PAGE_CHARS = 2000
 BACKTEST_WINDOW_DAYS = 3650
 
@@ -118,12 +118,18 @@ async def search_web(
     )
 
 
-async def extract_pages(ctx: RunContext[ForecastDeps], urls: list[str]) -> str:
+async def extract_pages(
+    ctx: RunContext[ForecastDeps], urls: list[str], query: str
+) -> str:
     """Read the full text of pages you have already found.
 
     Use this when a search snippet is not enough to judge a claim — a report's actual
     numbers, the wording of a resolution criterion, what a filing really says. Pass the URLs
     a search returned, not URLs you guessed.
+
+    args:
+        urls: List of urls to extract data from.
+        query: User intent for reranking extracted content chunks. When provided, chunks are reranked based on relevance to this query.
     """
     if ctx.deps.forecast_date is not None:
         return _not_in_a_backtest("extract_pages", ctx.deps.forecast_date)
@@ -137,7 +143,13 @@ async def extract_pages(ctx: RunContext[ForecastDeps], urls: list[str]) -> str:
 
     try:
         payload = await client.extract(
-            wanted, extract_depth="basic", format="markdown", timeout=_SLOW_TIMEOUT
+            wanted,
+            extract_depth="basic",
+            format="markdown",
+            timeout=_SLOW_TIMEOUT,
+            include_favicon=True,
+            include_usage=True,
+            query=query,
         )
     except Exception as e:
         return f"Page extraction error: {e}"
@@ -182,6 +194,8 @@ async def crawl_site(
             instructions=instructions or None,
             format="markdown",
             timeout=_SLOW_TIMEOUT,
+            include_favicon=True,
+            include_usage=True,
         )
     except Exception as e:
         return f"Site crawl error: {e}"
@@ -198,11 +212,17 @@ async def crawl_site(
     )
 
 
-async def map_site(ctx: RunContext[ForecastDeps], url: str) -> str:
+async def map_site(
+    ctx: RunContext[ForecastDeps], url: str, instructions: str | None = None
+) -> str:
     """List the pages a site has, without reading any of them.
 
     Cheap reconnaissance: use it to find the right page before spending an `extract_pages`
     call, when a site's structure is not obvious from search results.
+
+    args:
+        url: the website to find all links in
+        instructions: Natural language instructions for the crawler. Used to rank and prioritize the URLs. Use sparingly
     """
     if ctx.deps.forecast_date is not None:
         return _not_in_a_backtest("map_site", ctx.deps.forecast_date)
@@ -212,7 +232,12 @@ async def map_site(ctx: RunContext[ForecastDeps], url: str) -> str:
 
     try:
         payload = await client.map(
-            url, max_depth=CRAWL_DEPTH, limit=MAX_MAP_LINKS, timeout=_SLOW_TIMEOUT
+            url,
+            max_depth=CRAWL_DEPTH,
+            limit=MAX_MAP_LINKS,
+            timeout=_SLOW_TIMEOUT,
+            include_usage=True,
+            instructions=instructions,
         )
     except Exception as e:
         return f"Site map error: {e}"
