@@ -2,7 +2,11 @@
 
 With `ctx.deps.forecast_date` set this fetches the newest revision at or before that timestamp
 rather than the current article, so the agent reads the page as it stood on the day the
-question was asked. That is the Wikipedia half of ADR 17 clamp 1.
+question was asked.
+
+This is the only date clamp left. The Tavily one was removed once measurement showed its
+filter did nothing on a `general` search (ADR 17); the revisions API here is checked by
+the response itself, which carries the revision timestamp.
 """
 
 from __future__ import annotations

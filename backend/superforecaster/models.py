@@ -700,14 +700,15 @@ class PostMortem(BaseModel):
     lesson: str
 
 
-# ---------- Leakage audit ----------
+# ---------- Sources ----------
 
 
 class SourceRef(BaseModel):
-    """One external source an agent saw, recorded so leakage is auditable.
+    """One external source an agent saw.
 
-    A backtest run whose `leaked_sources` is non-empty has a bug in the tool clamp —
-    the agent read something published after the question was asked.
+    `checks.check_citations` fails a forecast that cites a URL absent from this list, and
+    the run tree draws its source chips by diffing it — so an unrecorded search is a
+    search that never happened as far as the rest of the system is concerned.
     """
 
     url: str
@@ -719,14 +720,8 @@ class SourceRef(BaseModel):
     """The search that returned this result. Makes "which search found this base rate"
     answerable: a claim cites a URL, and the URL knows the query it came from."""
     published_date: Optional[datetime] = None
+    """Only ever set on a `news` search. Tavily returns no date on any other topic."""
     tool: str
-    forecast_date: Optional[datetime] = None
-
-    @property
-    def is_leak(self) -> bool:
-        if self.forecast_date is None or self.published_date is None:
-            return False
-        return self.published_date > self.forecast_date
 
 
 # ---------- DB record types ----------
