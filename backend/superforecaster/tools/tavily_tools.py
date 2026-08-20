@@ -48,6 +48,8 @@ BACKTEST_WINDOW_DAYS = 3650
 
 _TIMEOUT = 15.0
 _SLOW_TIMEOUT = 60.0
+SEARCH_DEPTH = "basic"
+INCLUDE_RAW_CONTENT = "markdown"
 """Extract, crawl, and map fetch whole pages, so they are slower than a search. Both sit
 inside `DEFAULT_AGENT_TIMEOUT_SECONDS` — a tool that outlives the agent kills the step."""
 
@@ -81,12 +83,12 @@ async def search_web(
         payload = await client.search(
             query,
             timeout=_TIMEOUT,
-            search_depth="basic",
+            search_depth=SEARCH_DEPTH,
             max_results=MAX_RESULTS,
             chunks_per_source=MAX_CHUNKS_PER_SOURCE,
             include_favicon=True,
             include_usage=True,
-            include_raw_content="markdown",
+            include_raw_content=INCLUDE_RAW_CONTENT,
             topic=topic,
             exact_match=exact_match,
             **_search_kwargs(forecast_date),
@@ -121,7 +123,7 @@ async def search_web(
 
 
 async def extract_pages(
-    ctx: RunContext[ForecastDeps], urls: list[str], query: str
+    ctx: RunContext[ForecastDeps], urls: list[str], query: str | None = None
 ) -> str:
     """Read the full text of pages you have already found.
 
