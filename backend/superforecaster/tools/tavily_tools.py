@@ -58,6 +58,7 @@ async def search_web(
     ctx: RunContext[ForecastDeps],
     query: str,
     topic: Literal["general", "news", "finance"] = "general",
+    exact_match: bool = False,
 ) -> str:
     """Search the web for current information and reporting.
 
@@ -68,6 +69,7 @@ async def search_web(
     Args:
         query: What to search for. Write it the way you would type it into a search engine. Wrap target phrases in quotes within your query (e.g. "John Smith" CEO Acme Corp) to get exact matches on those strings. Punctuation is typically ignored inside quotes.
         topic: The category of the search. News is useful for retrieving real-time updates, particularly about politics, sports, and major current events covered by mainstream media sources. General is for broader, more general-purpose searches that may include a wide range of sources.
+        exact_match: when set to True, tool expects a quoted string in the query. If True but no quoted string, it will throw an error
 
     """
     forecast_date = ctx.deps.forecast_date
@@ -86,7 +88,7 @@ async def search_web(
             include_usage=True,
             include_raw_content="markdown",
             topic=topic,
-            exact_match=True,
+            exact_match=exact_match,
             **_search_kwargs(forecast_date),
         )
     except Exception as e:
