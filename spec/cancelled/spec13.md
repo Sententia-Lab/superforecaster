@@ -1,3 +1,8 @@
+> **Cancelled.** Shipped 2026-08-19 and reverted the same week. The MCP server bought no
+> capability the REST API does not already offer, the extract/crawl/map tools it added were
+> never called once, and it never replaced the HTTP path because ADR 17 requires that one for
+> backtests. `superforecaster/tools.py` is the only search path again. See ADR 77.
+
 # Spec 13 — Search through Tavily's MCP server
 
 ## The problem

@@ -29,7 +29,7 @@ from superforecaster.agents import (
     SEARCH_RESERVE,
     attach_budget,
     spent_usd,
-    withdraw_spent_tools,
+    withdraw_tools,
 )
 from superforecaster.deps import ForecastDeps
 
@@ -187,7 +187,7 @@ async def test_every_band_that_says_stop_names_searching_and_not_tools():
 
 
 def _ctx(deps: ForecastDeps, tool_calls: int):
-    """The bit of `RunContext` `withdraw_spent_tools` reads: deps and usage."""
+    """The bit of `RunContext` `withdraw_tools` reads: deps and usage."""
 
     class Ctx:
         pass
@@ -226,7 +226,7 @@ def _spender(batch: int, *, withdraw: bool) -> Agent:
         FunctionModel(_greedy(batch)),
         deps_type=ForecastDeps,
         output_type=_Answer,
-        capabilities=[Hooks(prepare_tools=withdraw_spent_tools)] if withdraw else [],
+        capabilities=[Hooks(prepare_tools=withdraw_tools)] if withdraw else [],
     )
 
     @agent.tool
@@ -274,7 +274,7 @@ async def test_the_enforced_ceiling_leaves_room_for_one_overshooting_batch():
 
 async def test_an_agent_with_no_budget_keeps_every_tool():
     """A direct call or a test that passes no budget must behave as it always did."""
-    offered = await withdraw_spent_tools(
+    offered = await withdraw_tools(
         _ctx(ForecastDeps(budget=None), tool_calls=99), ["search"]
     )
     assert offered == ["search"]
@@ -310,3 +310,42 @@ def test_an_unpriced_model_costs_nothing():
         system = "nowhere"
 
     assert spent_usd(Model(), RunUsage(input_tokens=1_000_000, output_tokens=0)) == 0.0
+
+
+# ---------- a tool that cannot work is not offered ----------
+
+
+async def test_the_tavily_tools_go_away_without_a_key(monkeypatch):
+    """Every Tavily tool answers "no TAVILY_API_KEY set", and an agent with a 3-call budget
+    can spend all three learning that. It cannot call a tool it is not offered."""
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+
+    offered = await withdraw_tools(
+        _ctx(ForecastDeps(budget=CELL), tool_calls=0),
+        ["search_web", "extract_pages", "crawl_site", "map_site", "search_wikipedia"],
+    )
+
+    assert offered == ["search_wikipedia"], "Wikipedia needs no Tavily key"
+
+
+async def test_every_tool_is_offered_when_the_key_is_set(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+
+    offered = await withdraw_tools(
+        _ctx(ForecastDeps(budget=CELL), tool_calls=0),
+        ["search_web", "search_wikipedia"],
+    )
+
+    assert offered == ["search_web", "search_wikipedia"]
+
+
+async def test_a_spent_budget_withdraws_wikipedia_too(monkeypatch):
+    """The two reasons compose. A spent budget takes everything, key or no key."""
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+
+    offered = await withdraw_tools(
+        _ctx(ForecastDeps(budget=CELL), tool_calls=CELL.tool_calls),
+        ["search_web", "search_wikipedia"],
+    )
+
+    assert offered == []

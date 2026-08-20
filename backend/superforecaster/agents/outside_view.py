@@ -35,13 +35,18 @@ from ..models import (
 )
 from ..events import Exhausted
 from ..runner import run_agent
-from ..tavily_mcp import web_search_toolset
-from ..tools import search_wikipedia
+from ..tools import (
+    crawl_site,
+    extract_pages,
+    map_site,
+    search_web,
+    search_wikipedia,
+)
 from . import (
-    as_of_note,
+    forecast_date_note,
     attach_budget,
     format_question,
-    withdraw_spent_tools,
+    withdraw_tools,
     with_model,
 )
 
@@ -103,9 +108,8 @@ def build_base_rate_cell_agent(
         deps_type=ForecastDeps,
         output_type=SubQuestionBaseRates,
         system_prompt=INSTRUCTIONS,
-        tools=[search_wikipedia],
-        toolsets=[web_search_toolset],
-        capabilities=[Hooks(prepare_tools=withdraw_spent_tools)],
+        tools=[search_web, extract_pages, crawl_site, map_site, search_wikipedia],
+        capabilities=[Hooks(prepare_tools=withdraw_tools)],
         retries=1,
     )
     attach_budget(agent)
@@ -145,7 +149,7 @@ async def run_research_lens(
     """Measure exactly one population. Searches; budget-limited."""
     prompt = f"""Measure ONE population.
 
-{format_question(input)}{as_of_note(deps)}
+{format_question(input)}{forecast_date_note(deps)}
 
 THE PART OF THE QUESTION THIS BEARS ON — {sub_question.id}: {sub_question.question}
 

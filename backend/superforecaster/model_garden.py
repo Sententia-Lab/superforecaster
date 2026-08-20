@@ -69,14 +69,14 @@ def resolve_id(entry: ModelEntry) -> str:
 
 
 def pick_clean_model(
-    as_of: datetime | date,
+    forecast_date: datetime | date,
     *,
     margin_days: int | None = None,
     path: Path = GARDEN_PATH,
 ) -> ModelEntry | None:
-    """The most capable available model whose training predates `as_of`.
+    """The most capable available model whose training predates `forecast_date`.
 
-    Eligible means `training_cutoff + margin_days <= as_of`. "Most capable" means
+    Eligible means `training_cutoff + margin_days <= forecast_date`. "Most capable" means
     the newest eligible cutoff, on the assumption that a later cutoff tracks a
     better model.
 
@@ -90,7 +90,9 @@ def pick_clean_model(
     if margin_days is None:
         margin_days = get_model_garden_margin_days()
 
-    asked = as_of.date() if isinstance(as_of, datetime) else as_of
+    asked = (
+        forecast_date.date() if isinstance(forecast_date, datetime) else forecast_date
+    )
     latest_allowed = asked - timedelta(days=margin_days)
 
     eligible = [

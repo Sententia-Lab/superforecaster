@@ -34,7 +34,7 @@ from ..models import (
     Reflection,
 )
 from ..runner import run_agent
-from . import as_of_note, format_question, with_model
+from . import forecast_date_note, format_question, with_model
 
 INSTRUCTIONS = """You review a forecast that has already been researched, and supply the
 two things nobody looking at one piece of it could see. You do not adjust anything and
@@ -111,7 +111,7 @@ async def run_reflect(
 
     prompt = f"""Review this forecast's inside view.
 
-{format_question(input)}{as_of_note(deps)}
+{format_question(input)}{forecast_date_note(deps)}
 
 BASE RATE THE ADJUSTMENTS MOVE FROM: {outside.aggregate_base_rate:.3f}
 How the sub-questions combine: {decomposition.chain_rule} — {decomposition.chain_note}

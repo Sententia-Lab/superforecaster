@@ -16,16 +16,16 @@ not see.
 
 from __future__ import annotations
 
-from superforecaster.tavily_mcp import web_search_toolset
 
 from ..config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
 from pydantic_ai.capabilities.hooks import Hooks
 
 from ..deps import ForecastDeps
+from ..tools import crawl_site, extract_pages, map_site, search_web
 from ..models import Decomposition, ForecastInput, SubQuestionLenses, SubPrediction
 from ..runner import run_agent
-from . import as_of_note, format_question, with_model, withdraw_spent_tools
+from . import forecast_date_note, format_question, with_model, withdraw_tools
 
 INSTRUCTIONS = """You choose reference populations for ONE part of a forecasting question.
 You do not look anything up and you do not estimate any probability. Another step
@@ -104,8 +104,8 @@ def build_lenses_agent(
         output_type=SubQuestionLenses,
         system_prompt=INSTRUCTIONS,
         retries=1,
-        toolsets=[web_search_toolset],
-        capabilities=[Hooks(prepare_tools=withdraw_spent_tools)],
+        tools=[search_web, extract_pages, crawl_site, map_site],
+        capabilities=[Hooks(prepare_tools=withdraw_tools)],
     )
 
 
@@ -134,7 +134,7 @@ async def run_choose_lenses(
 
     prompt = f"""Choose reference populations for ONE part of this question.
 
-{format_question(input)}{as_of_note(deps)}
+{format_question(input)}{forecast_date_note(deps)}
 
 YOUR PART — {sub_question.id}: {sub_question.question}
 Why the decomposition split it out: {sub_question.rationale}

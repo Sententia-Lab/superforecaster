@@ -37,13 +37,19 @@ from ..models import (
     SubPrediction,
 )
 from ..runner import run_agent
-from ..tavily_mcp import web_search_toolset
-from ..tools import find_disconfirming_evidence, search_wikipedia
+from ..tools import (
+    crawl_site,
+    extract_pages,
+    find_disconfirming_evidence,
+    map_site,
+    search_web,
+    search_wikipedia,
+)
 from . import (
-    as_of_note,
+    forecast_date_note,
     attach_budget,
     format_question,
-    withdraw_spent_tools,
+    withdraw_tools,
     with_model,
 )
 
@@ -135,9 +141,15 @@ def build_inside_view_agent(
         deps_type=ForecastDeps,
         output_type=SubQuestionAdjustments,
         system_prompt=INSTRUCTIONS,
-        tools=[search_wikipedia, find_disconfirming_evidence],
-        toolsets=[web_search_toolset],
-        capabilities=[Hooks(prepare_tools=withdraw_spent_tools)],
+        tools=[
+            search_web,
+            extract_pages,
+            crawl_site,
+            map_site,
+            search_wikipedia,
+            find_disconfirming_evidence,
+        ],
+        capabilities=[Hooks(prepare_tools=withdraw_tools)],
         retries=1,
     )
     attach_budget(agent)
@@ -175,7 +187,7 @@ async def run_adjust_lens(
 
     prompt = f"""Adjust the measured rate for ONE population.
 
-{format_question(input)}{as_of_note(deps)}
+{format_question(input)}{forecast_date_note(deps)}
 
 THE PART OF THE QUESTION THIS BEARS ON — {sub_question.id}: {sub_question.question}
 

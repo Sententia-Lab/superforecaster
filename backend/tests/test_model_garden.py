@@ -105,7 +105,7 @@ def test_accepts_a_datetime_as_well_as_a_date(garden):
 
 
 def test_boundary_is_inclusive(garden):
-    """cutoff == as_of is eligible: training ended the day the question was asked."""
+    """cutoff == forecast_date is eligible: training ended the day the question was asked."""
     assert (
         mg.pick_clean_model(date(2025, 7, 31), margin_days=0, path=garden).id == "p:mid"
     )

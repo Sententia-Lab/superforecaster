@@ -1,4 +1,4 @@
-"""Tests for clamp 1 — the tools may not return anything published after `as_of`.
+"""Tests for clamp 1 — the tools may not return anything published after `forecast_date`.
 
 These earn their place because a bug here is silent. If `end_date` quietly stops
 reaching Tavily, every backtest still runs, still prints a scorecard, and still looks
@@ -11,47 +11,40 @@ do I/O are driven through a stubbed httpx client.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
-import httpx
 import pytest
 from pydantic_ai import RunContext
 
-from superforecaster import tavily_mcp, tools
 from superforecaster.deps import ForecastDeps
+from superforecaster.tools import dates, tavily_tools, wikipedia_tools
 
 AS_OF = datetime(2022, 2, 1, tzinfo=timezone.utc)
 
 
-# ---------- _tavily_body ----------
+# ---------- _search_kwargs ----------
 
 
-def test_tavily_body_carries_end_date_when_clamped():
-    body = tools._tavily_body("russia ukraine", AS_OF)
-    assert body["end_date"] == "2022-02-01"
+def test_search_kwargs_carries_end_date_when_clamped():
+    assert tavily_tools._search_kwargs(AS_OF)["end_date"] == "2022-02-01"
 
 
-def test_tavily_body_switches_to_news_topic_when_clamped():
+def test_search_kwargs_switches_to_news_topic_when_clamped():
     """Tavily only returns published_date on news results, and _drop_leaked needs it."""
-    assert tools._tavily_body("q", AS_OF)["topic"] == "news"
+    assert tavily_tools._search_kwargs(AS_OF)["topic"] == "news"
 
 
-def test_tavily_body_omits_date_params_when_unclamped():
-    body = tools._tavily_body("q", None)
-    assert "end_date" not in body
-    assert "topic" not in body
-
-
-def test_tavily_body_carries_no_secret():
-    """The api_key is merged in at call time so this dict is safe to assert on."""
-    assert "api_key" not in tools._tavily_body("q", AS_OF)
+def test_search_kwargs_is_empty_when_unclamped():
+    """No date arguments at all on a live run, so Tavily applies no filter."""
+    assert tavily_tools._search_kwargs(None) == {}
 
 
 # ---------- _wikipedia_params ----------
 
 
 def test_wikipedia_params_requests_a_historical_revision_when_clamped():
-    params = tools._wikipedia_params("Ukraine", AS_OF)
+    params = wikipedia_tools._wikipedia_params("Ukraine", AS_OF)
     assert params["prop"] == "revisions"
     assert params["rvstart"] == "2022-02-01T00:00:00Z"
     assert params["rvdir"] == "older"
@@ -59,7 +52,7 @@ def test_wikipedia_params_requests_a_historical_revision_when_clamped():
 
 
 def test_wikipedia_params_requests_the_current_article_when_unclamped():
-    params = tools._wikipedia_params("Ukraine", None)
+    params = wikipedia_tools._wikipedia_params("Ukraine", None)
     assert params["prop"] == "extracts"
     assert "rvstart" not in params
 
@@ -77,14 +70,14 @@ def test_wikipedia_params_requests_the_current_article_when_unclamped():
 )
 def test_parse_published_accepts_both_formats(raw):
     """Tavily returns ISO 8601 in most responses and RFC 2822 in some."""
-    parsed = tools._parse_published(raw)
+    parsed = dates._parse_published(raw)
     assert parsed is not None
     assert parsed.year == 2022 and parsed.month == 1 and parsed.day == 15
 
 
 @pytest.mark.parametrize("raw", [None, "", "not a date"])
 def test_parse_published_returns_none_on_junk(raw):
-    assert tools._parse_published(raw) is None
+    assert dates._parse_published(raw) is None
 
 
 # ---------- _drop_leaked ----------
@@ -95,14 +88,16 @@ def result(url: str, published: str | None) -> dict:
 
 
 def test_drop_leaked_keeps_results_published_before_as_of():
-    kept, refs = tools._drop_leaked([result("a", "2022-01-15T00:00:00Z")], AS_OF)
+    kept, refs = tavily_tools._drop_leaked([result("a", "2022-01-15T00:00:00Z")], AS_OF)
     assert [r["url"] for r in kept] == ["a"]
     assert refs[0].is_leak is False
 
 
 def test_drop_leaked_removes_results_published_after_as_of():
     """The whole point: a 2024 article must never reach a 2022 question."""
-    kept, refs = tools._drop_leaked([result("late", "2024-03-01T00:00:00Z")], AS_OF)
+    kept, refs = tavily_tools._drop_leaked(
+        [result("late", "2024-03-01T00:00:00Z")], AS_OF
+    )
     assert kept == []
     assert len(refs) == 1
     assert refs[0].is_leak is True
@@ -110,7 +105,7 @@ def test_drop_leaked_removes_results_published_after_as_of():
 
 def test_drop_leaked_drops_undated_results_when_clamped():
     """An undated article cannot be shown to predate the question, so it goes."""
-    kept, _ = tools._drop_leaked([result("undated", None)], AS_OF)
+    kept, _ = tavily_tools._drop_leaked([result("undated", None)], AS_OF)
     assert kept == []
 
 
@@ -120,7 +115,7 @@ def test_drop_leaked_records_every_result_it_considered():
         result("keep", "2022-01-01T00:00:00Z"),
         result("drop", "2023-01-01T00:00:00Z"),
     ]
-    kept, refs = tools._drop_leaked(raw, AS_OF)
+    kept, refs = tavily_tools._drop_leaked(raw, AS_OF)
     assert len(kept) == 1
     assert {r.url for r in refs} == {"keep", "drop"}
 
@@ -128,7 +123,7 @@ def test_drop_leaked_records_every_result_it_considered():
 def test_drop_leaked_is_a_passthrough_when_unclamped():
     """Production keeps undated results — the clamp only applies to backtests."""
     raw = [result("a", None), result("b", "2026-01-01T00:00:00Z")]
-    kept, refs = tools._drop_leaked(raw, None)
+    kept, refs = tavily_tools._drop_leaked(raw, None)
     assert kept == raw
     assert all(r.is_leak is False for r in refs)
 
@@ -146,45 +141,40 @@ def tavily_key(monkeypatch):
 
 
 def stub_tavily(monkeypatch, results: list[dict]) -> dict:
-    """Capture the request body and return canned results without any network."""
+    """Capture the search arguments and return canned results without any network."""
     captured: dict = {}
 
     class StubClient:
-        def __init__(self, *a, **kw):
-            pass
+        def __init__(self, api_key=None):
+            captured["api_key"] = api_key
 
-        async def __aenter__(self):
-            return self
+        async def search(self, query, **kw):
+            captured["query"] = query
+            captured.update(kw)
+            return {"results": results}
 
-        async def __aexit__(self, *a):
-            return False
-
-        async def post(self, url, json=None, **kw):
-            captured["url"] = url
-            captured["json"] = json
-            return httpx.Response(
-                200, json={"results": results}, request=httpx.Request("POST", url)
-            )
-
-    monkeypatch.setattr(tools.httpx, "AsyncClient", StubClient)
+    monkeypatch.setattr(tavily_tools, "AsyncTavilyClient", StubClient)
     return captured
 
 
 async def test_search_web_sends_end_date_to_tavily(monkeypatch, tavily_key):
     captured = stub_tavily(monkeypatch, [result("a", "2022-01-05T00:00:00Z")])
-    ctx = make_ctx(ForecastDeps(as_of=AS_OF))
+    ctx = make_ctx(ForecastDeps(forecast_date=AS_OF))
 
-    await tools.search_web(ctx, "russia ukraine")
+    await tavily_tools.search_web(ctx, "russia ukraine")
 
-    assert captured["json"]["end_date"] == "2022-02-01"
-    assert captured["json"]["api_key"] == "tvly-test"
+    assert captured["end_date"] == "2022-02-01"
+    # The key is the client's, not the call's, so `_search_kwargs` stays free of secrets
+    # and can be asserted on directly.
+    assert captured["api_key"] == "tvly-test"
+    assert "api_key" not in tavily_tools._search_kwargs(AS_OF)
 
 
 async def test_search_web_withholds_leaked_results(monkeypatch, tavily_key):
     stub_tavily(monkeypatch, [result("late", "2024-06-01T00:00:00Z")])
-    ctx = make_ctx(ForecastDeps(as_of=AS_OF))
+    ctx = make_ctx(ForecastDeps(forecast_date=AS_OF))
 
-    out = await tools.search_web(ctx, "q")
+    out = await tavily_tools.search_web(ctx, "q")
 
     assert "withheld" in out
     assert "late" not in out
@@ -192,9 +182,9 @@ async def test_search_web_withholds_leaked_results(monkeypatch, tavily_key):
 
 async def test_search_web_records_sources_on_deps(monkeypatch, tavily_key):
     stub_tavily(monkeypatch, [result("a", "2022-01-05T00:00:00Z")])
-    deps = ForecastDeps(as_of=AS_OF)
+    deps = ForecastDeps(forecast_date=AS_OF)
 
-    await tools.search_web(make_ctx(deps), "q")
+    await tavily_tools.search_web(make_ctx(deps), "q")
 
     assert [s.url for s in deps.sources_seen] == ["a"]
     assert deps.leaked_sources == []
@@ -203,16 +193,38 @@ async def test_search_web_records_sources_on_deps(monkeypatch, tavily_key):
 async def test_leaked_sources_surfaces_a_clamp_failure(monkeypatch, tavily_key):
     """If filtering ever regresses, this is the property that catches it."""
     stub_tavily(monkeypatch, [result("late", "2024-06-01T00:00:00Z")])
-    deps = ForecastDeps(as_of=AS_OF)
+    deps = ForecastDeps(forecast_date=AS_OF)
 
-    await tools.search_web(make_ctx(deps), "q")
+    await tavily_tools.search_web(make_ctx(deps), "q")
 
     assert [s.url for s in deps.leaked_sources] == ["late"]
 
 
+async def test_search_web_clamps_what_one_call_may_spend(monkeypatch, tavily_key):
+    """The model chooses the query and nothing else. Breadth and timeout are the tool's."""
+    captured = stub_tavily(monkeypatch, [result("a", "2022-01-05T00:00:00Z")])
+
+    await tavily_tools.search_web(make_ctx(ForecastDeps()), "q")
+
+    assert captured["max_results"] == tavily_tools.MAX_RESULTS
+    assert captured["chunks_per_source"] == tavily_tools.MAX_CHUNKS_PER_SOURCE
+    assert captured["timeout"] == tavily_tools._TIMEOUT
+
+
+async def test_backtest_clamp_beats_the_tools_own_defaults(monkeypatch, tavily_key):
+    """`_search_kwargs` is applied last, so no default above it can widen the clamp."""
+    captured = stub_tavily(monkeypatch, [result("a", "2022-01-05T00:00:00Z")])
+
+    await tavily_tools.search_web(make_ctx(ForecastDeps(forecast_date=AS_OF)), "q")
+
+    assert captured["end_date"] == "2022-02-01"
+    assert captured["start_date"] < "2022-02-01"
+    assert captured["topic"] == "news"
+
+
 async def test_search_web_without_key_is_not_an_error(monkeypatch):
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-    out = await tools.search_web(make_ctx(ForecastDeps()), "q")
+    out = await tavily_tools.search_web(make_ctx(ForecastDeps()), "q")
     assert "unavailable" in out
 
 
@@ -221,7 +233,7 @@ async def test_search_web_without_key_is_not_an_error(monkeypatch):
 
 def test_extract_page_text_reads_the_current_extract_when_unclamped():
     page = {"extract": "current intro text"}
-    text, revision_date = tools._extract_page_text(page, None)
+    text, revision_date = wikipedia_tools._extract_page_text(page, None)
     assert text == "current intro text"
     assert revision_date is None
 
@@ -236,14 +248,14 @@ def test_extract_page_text_reads_the_historical_revision_when_clamped():
             }
         ]
     }
-    text, revision_date = tools._extract_page_text(page, AS_OF)
+    text, revision_date = wikipedia_tools._extract_page_text(page, AS_OF)
     assert text == "text as of January 2022"
     assert revision_date is not None
     assert revision_date.date().isoformat() == "2022-01-20"
 
 
 def test_extract_page_text_is_empty_when_the_article_did_not_exist_yet():
-    text, revision_date = tools._extract_page_text({"revisions": []}, AS_OF)
+    text, revision_date = wikipedia_tools._extract_page_text({"revisions": []}, AS_OF)
     assert text == ""
     assert revision_date is None
 
@@ -251,28 +263,23 @@ def test_extract_page_text_is_empty_when_the_article_did_not_exist_yet():
 def test_extract_page_text_falls_back_to_the_unslotted_shape():
     """Older MediaWiki responses put content directly on the revision."""
     page = {"revisions": [{"timestamp": "2022-01-20T10:00:00Z", "*": "legacy shape"}]}
-    text, _ = tools._extract_page_text(page, AS_OF)
+    text, _ = wikipedia_tools._extract_page_text(page, AS_OF)
     assert text == "legacy shape"
 
 
 # ---------- find_disconfirming_evidence ----------
 
 
-def _recorder() -> tuple[list[str], object]:
+async def test_find_disconfirming_evidence_runs_several_angles(monkeypatch, tavily_key):
     queries: list[str] = []
 
     async def fake_search(ctx, query):
         queries.append(query)
         return "results"
 
-    return queries, fake_search
-
-
-async def test_find_disconfirming_evidence_runs_several_angles(monkeypatch, tavily_key):
-    queries, fake_search = _recorder()
-    monkeypatch.setattr(tools, "search_web", fake_search)
-    out = await tools.find_disconfirming_evidence(
-        make_ctx(ForecastDeps(as_of=AS_OF)), "X happens"
+    monkeypatch.setattr(tavily_tools, "search_web", fake_search)
+    out = await tavily_tools.find_disconfirming_evidence(
+        make_ctx(ForecastDeps()), "X happens"
     )
 
     assert len(queries) == 3
@@ -281,34 +288,112 @@ async def test_find_disconfirming_evidence_runs_several_angles(monkeypatch, tavi
     assert "results" in out
 
 
-async def test_find_disconfirming_evidence_uses_the_clamped_tool_in_a_backtest(
-    monkeypatch, tavily_key
-):
-    """It must pick the same path `web_search_toolset` picks, or a backtest leaks.
+def test_search_kwargs_always_sends_a_start_date_with_the_end_date():
+    """The one that looks redundant and is not.
 
-    The MCP server cannot filter undated results, so an `as_of` run has to reach
-    `search_web` here even though the model never calls it directly.
+    Tavily silently ignores `end_date` when it arrives without `start_date` — measured at
+    15 of 15 results published after the cutoff, versus 0 of 15 once `start_date` was added.
+    Nothing errors, so the only thing that would catch a regression is this assertion.
     """
-    queries, fake_search = _recorder()
-    monkeypatch.setattr(tools, "search_web", fake_search)
-    monkeypatch.setattr(tavily_mcp, "mcp_search", _unreachable)
+    kwargs = tavily_tools._search_kwargs(AS_OF)
 
-    await tools.find_disconfirming_evidence(
-        make_ctx(ForecastDeps(as_of=AS_OF)), "X happens"
-    )
-    assert len(queries) == 3
+    assert kwargs["end_date"] == "2022-02-01"
+    assert kwargs["start_date"] < kwargs["end_date"]
+    assert kwargs["topic"] == "news"
 
 
-async def test_find_disconfirming_evidence_uses_the_mcp_server_when_live(
+async def test_the_clamp_overrides_the_topic_the_agent_asked_for(
     monkeypatch, tavily_key
 ):
-    queries, fake_search = _recorder()
-    monkeypatch.setattr(tavily_mcp, "mcp_search", fake_search)
-    monkeypatch.setattr(tools, "search_web", _unreachable)
+    """The one the three `_search_kwargs` tests above cannot catch.
 
-    await tools.find_disconfirming_evidence(make_ctx(ForecastDeps()), "X happens")
-    assert len(queries) == 3
+    They assert on the dict. This asserts on what reached Tavily, which is the only place
+    the override can be bypassed — `search_web` also takes `topic` from the agent, and
+    whichever of the two is applied last wins.
+    """
+    captured = stub_tavily(monkeypatch, [result("a", "2022-01-05T00:00:00Z")])
+
+    await tavily_tools.search_web(
+        make_ctx(ForecastDeps(forecast_date=AS_OF)), "q", topic="general"
+    )
+
+    assert captured["topic"] == "news"
 
 
-async def _unreachable(ctx, query):
-    raise AssertionError("the wrong search path was taken")
+async def test_the_agent_picks_the_topic_on_a_live_run(monkeypatch, tavily_key):
+    """The contrast that makes the override meaningful. Nothing to clamp, so nothing is."""
+    captured = stub_tavily(monkeypatch, [result("a", None)])
+
+    await tavily_tools.search_web(make_ctx(ForecastDeps()), "q", topic="finance")
+
+    assert captured["topic"] == "finance"
+    assert "end_date" not in captured
+
+
+async def test_search_web_answers_with_json(monkeypatch, tavily_key):
+    """Every tool passes Tavily's own dicts through, so there is no format to keep in step."""
+    stub_tavily(monkeypatch, [result("https://a.example", "2022-01-05T00:00:00Z")])
+
+    out = json.loads(await tavily_tools.search_web(make_ctx(ForecastDeps()), "q"))
+
+    assert out["query"] == "q"
+    assert out["published_on_or_before"] is None
+    assert out["results"] == [
+        {
+            "title": "t",
+            "url": "https://a.example",
+            "content": "c",
+            "published_date": "2022-01-05T00:00:00Z",
+        }
+    ]
+
+
+async def test_search_web_does_not_hand_over_whole_pages(monkeypatch, tavily_key):
+    """`raw_content` is the whole page. `extract_pages` is the tool for that, on the pages
+    the agent chose to spend a call on — five per search would spend a cell's token budget.
+    """
+    stub_tavily(
+        monkeypatch,
+        [{**result("https://a.example", None), "raw_content": "the entire page"}],
+    )
+
+    out = json.loads(await tavily_tools.search_web(make_ctx(ForecastDeps()), "q"))
+
+    assert "raw_content" not in out["results"][0]
+
+
+# ---------- exact_match is read off the query, not asked for ----------
+
+
+async def test_a_quoted_phrase_turns_on_exact_match(monkeypatch, tavily_key):
+    """The `query` description tells the agent that quoting requires a phrase verbatim.
+
+    It only did that when a separate flag was also set, which the agent had no reason to
+    connect — one real run quoted three figures, got no exact filter, and came back with an
+    unrelated company. Reading the flag off the query is what makes the description true.
+    """
+    captured = stub_tavily(monkeypatch, [result("a", None)])
+
+    await tavily_tools.search_web(make_ctx(ForecastDeps()), 'Alphabet "annual revenue"')
+
+    assert captured["exact_match"] is True
+
+
+async def test_an_unquoted_query_leaves_exact_match_off(monkeypatch, tavily_key):
+    """Tavily rejects `exact_match` without a quoted phrase, so this is not just a default —
+    sending True here would make every ordinary search a BadRequestError."""
+    captured = stub_tavily(monkeypatch, [result("a", None)])
+
+    await tavily_tools.search_web(make_ctx(ForecastDeps()), "Alphabet annual revenue")
+
+    assert captured["exact_match"] is False
+
+
+async def test_the_agent_cannot_set_exact_match(monkeypatch, tavily_key):
+    """It is not a parameter. A value in the signature is one the model can contradict."""
+    import inspect
+
+    params = inspect.signature(tavily_tools.search_web).parameters
+
+    assert "exact_match" not in params
+    assert set(params) == {"ctx", "query", "topic"}

@@ -93,7 +93,7 @@ def get_draft_agent() -> Agent[ForecastDeps, DraftedQuestion]:
 async def run_draft(text: str, deps: ForecastDeps | None = None) -> DraftedQuestion:
     """Split freeform text into the fields a forecast needs. No tools, one call."""
     deps = deps or ForecastDeps()
-    today = (deps.as_of or _utc_now()).date().isoformat()
+    today = (deps.forecast_date or _utc_now()).date().isoformat()
 
     prompt = f"""Extract a structured question from this text.
 

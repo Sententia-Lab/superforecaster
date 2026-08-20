@@ -22,6 +22,7 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.usage import RunUsage
 
+from ..config import get_settings
 from ..deps import ForecastDeps
 
 
@@ -64,13 +65,38 @@ deeper retry buys more attempts at the same plan, not a longer one.
 """
 
 
-async def withdraw_spent_tools(ctx: RunContext[ForecastDeps], tool_defs: list) -> list:
-    """Stop offering the search tools once the search budget is spent.
+_TAVILY_TOOLS = frozenset(
+    {
+        "search_web",
+        "extract_pages",
+        "crawl_site",
+        "map_site",
+        "find_disconfirming_evidence",
+    }
+)
+"""The tools that need `TAVILY_API_KEY`. `search_wikipedia` is not one of them."""
+
+
+async def withdraw_tools(ctx: RunContext[ForecastDeps], tool_defs: list) -> list:
+    """The one place a tool stops being offered, for whatever reason.
+
+    | Reason | What goes |
+    |---|---|
+    | no `TAVILY_API_KEY` | the Tavily tools. `search_wikipedia` stays — it needs no key |
+    | the search budget is spent | everything left |
+
+    One function rather than one per reason, because `Hooks(prepare_tools=)` takes a
+    single callable, and because "may the agent still call this" is one question however
+    many things can answer no. A new reason is a new clause here.
 
     Pass as `capabilities=[Hooks(prepare_tools=...)]` to any agent built with tools.
     Pydantic AI re-prepares the
     toolset before every model request, so this is re-evaluated at each point the agent
     could spend another call.
+
+    **A missing key is not an error the agent should pay to discover.** Every Tavily tool
+    answers with the same "unavailable" string, and `critic` has three calls. It could
+    spend all three learning the same thing. Withdrawing them costs it nothing.
 
     **Asking was not enough.** `attach_budget` tells the agent how many searches remain
     and, near the end, to stop and write up. Both messages arrive correctly — that was
@@ -90,6 +116,11 @@ async def withdraw_spent_tools(ctx: RunContext[ForecastDeps], tool_defs: list) -
     Returns `tool_defs` unchanged when there is no budget, so a direct call or a test
     without one behaves as it always did.
     """
+    if not get_settings().tavily_api_key:
+        # `getattr` because a tool def carries its name, and a test may pass the name
+        # itself.
+        tool_defs = [t for t in tool_defs if getattr(t, "name", t) not in _TAVILY_TOOLS]
+
     b = getattr(ctx.deps, "budget", None)
     if b is None or b.tool_calls - ctx.usage.tool_calls > 0:
         return tool_defs
@@ -201,17 +232,17 @@ RESOLUTION DATE: {input.resolution_date.isoformat()}
 CATEGORY: {input.category}"""
 
 
-def as_of_note(deps: ForecastDeps) -> str:
+def forecast_date_note(deps: ForecastDeps) -> str:
     """Tell the agent it is forecasting from a point in the past, when it is.
 
     Without this the model narrates in the present tense about a date years gone and
     treats an empty search as "nothing is happening" rather than "I am looking at an
     older world."
     """
-    if deps.as_of is None:
+    if deps.forecast_date is None:
         return ""
     return (
-        f"\n\nIMPORTANT — YOU ARE FORECASTING AS OF {deps.as_of.date().isoformat()}.\n"
+        f"\n\nIMPORTANT — YOU ARE FORECASTING AS OF {deps.forecast_date.date().isoformat()}.\n"
         "Your search tools return nothing published after that date. Reason only from "
         "what was knowable then. Do not use knowledge of what happened afterwards, and "
         "do not treat sparse results as evidence that nothing was happening."

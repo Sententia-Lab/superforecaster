@@ -20,10 +20,10 @@ from pydantic_ai.exceptions import UsageLimitExceeded
 
 from ..deps import ForecastDeps
 from ..errors import AgentTimeout
+from ..tools import crawl_site, extract_pages, map_site, search_web
 from ..models import CriteriaCritique
 from ..runner import run_agent
-from ..tavily_mcp import web_search_toolset
-from . import attach_budget, withdraw_spent_tools, with_model
+from . import attach_budget, withdraw_tools, with_model
 
 INSTRUCTIONS = """You review forecast questions for resolvability. You do not forecast
 them — you decide whether they COULD be scored fairly once the date arrives.
@@ -104,9 +104,8 @@ def build_critic_agent(
         deps_type=ForecastDeps,
         output_type=CriteriaCritique,
         system_prompt=INSTRUCTIONS,
-        tools=[],
-        toolsets=[web_search_toolset],
-        capabilities=[Hooks(prepare_tools=withdraw_spent_tools)],
+        tools=[search_web, extract_pages, crawl_site, map_site],
+        capabilities=[Hooks(prepare_tools=withdraw_tools)],
         retries=1,
     )
     attach_budget(agent)

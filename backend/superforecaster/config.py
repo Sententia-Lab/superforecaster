@@ -56,16 +56,12 @@ DEFAULT_AGENT_MAX_TOKENS = 16384
 DEFAULT_AGENT_TIMEOUT_SECONDS = 360
 DEFAULT_STAGE_TIMEOUT_SECONDS = 600
 
-DEFAULT_TAVILY_MCP_URL = "https://mcp.tavily.com/mcp/"
-"""Tavily's hosted MCP server. Overridable so a test can point at a local server."""
-
 
 @dataclass(frozen=True, slots=True)
 class Settings:
     pydantic_ai_gateway_api_key: str | None
     anthropic_api_key: str | None
     tavily_api_key: str | None
-    tavily_mcp_url: str
     wikipedia_api_key: str | None
     logfire_token: str | None
     agent_model: str | None
@@ -104,7 +100,6 @@ def get_settings() -> Settings:
         pydantic_ai_gateway_api_key=os.getenv("PYDANTIC_AI_GATEWAY_API_KEY"),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
         tavily_api_key=os.getenv("TAVILY_API_KEY"),
-        tavily_mcp_url=os.getenv("TAVILY_MCP_URL", DEFAULT_TAVILY_MCP_URL),
         wikipedia_api_key=os.getenv("WIKIPEDIA_API_KEY"),
         logfire_token=os.getenv("LOGFIRE_TOKEN"),
         agent_model=os.getenv("AGENT_MODEL"),
@@ -172,7 +167,7 @@ class Budget:
         """The ceilings Pydantic AI enforces.
 
         `tool_calls_limit` is deliberately **double** `tool_calls`, because it is no
-        longer what stops the searching — `agents.withdraw_spent_tools` is. That hook
+        longer what stops the searching — `agents.withdraw_tools` is. That hook
         stops offering the search tools the moment `tool_calls` is spent, which a model
         cannot argue with, so the real cap is exact.
 

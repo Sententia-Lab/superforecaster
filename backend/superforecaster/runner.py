@@ -35,8 +35,9 @@ from .events import Query, Sink, Source, Thought
 
 # The single human-meaningful argument of each search tool, in the order it is preferred.
 # One idea under several parameter names, so a subscriber would otherwise have to know each
-# tool's signature. `url` and `urls` are what the Tavily MCP extract, crawl, and map tools
-# take instead of a query.
+# tool's signature. `url` and `urls` are what `extract_pages`, `crawl_site`, and `map_site`
+# take instead of a query. `query` stays first, so `search_web` labels by its query rather
+# than by its `topic`.
 _QUERY_ARG_NAMES = ("query", "topic", "claim", "url", "urls")
 
 
@@ -145,7 +146,7 @@ async def run_agent(
     """Run an agent with tracing, a budget, and a deadline.
 
     `deps` is forwarded to `agent.run` so tools can read the contamination clamps
-    (`ForecastDeps.as_of`) and append to the leakage audit trail. The budget is attached
+    (`ForecastDeps.forecast_date`) and append to the leakage audit trail. The budget is attached
     to that copy so `agents.attach_budget`'s instruction can read it back off `ctx.deps`
     on every model request — one place puts it there, rather than every call site.
 

@@ -307,40 +307,18 @@ FastAPI  stream_step ── preflight ──► generate()
 | `run` | `machine.detail(run_id)` | `setRun(payload)`, and `start` resolves to it — whole tree swap |
 | `error` | any exception, via `_failure_hint` | sets `failure = {stepId, message}`, which outlives the request — the card shows the message next to its Retry button |
 
-Where a `source` frame comes from depends on which search path the run took. The agents
-carry `toolsets=[tavily_mcp.web_search_toolset]`, which resolves once per run step:
+A `source` frame is a URL a tool recorded. `search_web` appends a `SourceRef` for every
+result Tavily returned — including the ones `_drop_leaked` withheld — `extract_pages` and
+`crawl_site` append one per page they read, and `search_wikipedia` appends one per article.
+`map_site` appends none: it lists what a site has without reading any of it, so recording
+those would let `check_citations` accept a URL the agent never opened. `runner._make_event_handler` diffs
+`deps.sources_seen` after each tool result, so nothing in the tool has to know the stream
+exists. A backtest's refs carry a real `published_date`; a live run's carry whatever Tavily
+returned, which is usually nothing.
 
-```
-web_search_toolset(ctx)
-  deps.as_of is None  -> RenamedToolset(MCPToolset("https://mcp.tavily.com/mcp/?tavilyApiKey=..."),
-                                        {"search_web": "tavily_search"})
-                         model calls search_web / tavily_extract / tavily_crawl /
-                                     tavily_map / tavily_research
-                           -> tavily_mcp.process_tool_call
-                                _capped(name, args)   forces model="mini", search_depth,
-                                                      bounds max_results/limit/max_depth (ADR 76)
-                                await call_tool(...)  -> dict  {"results": [...]}  search
-                                                              {"sources": [...]}  research
-                                parse_sources(result) -> list[SourceRef]   published_date is None
-                                  (falls back to the requested URLs for crawl and map)
-                                deps.sources_seen.extend(refs)
-  deps.as_of is set   -> FunctionToolset([tools.search_web])
-                         POST api.tavily.com/search with end_date + topic="news"
-                           -> _drop_leaked(raw, as_of, query)  -> kept, refs   published_date is real
-                           -> deps.sources_seen.extend(refs)
-  no TAVILY_API_KEY   -> None                                  no web tool is offered
-```
-
-Both paths end on the same list, so everything downstream — the `source` frame,
-`BaseRateStepPayload.sources`, `checks.check_citations`, `deps.leaked_sources` — is unchanged
-by which one ran. The one visible difference: a live web source has no `published_date`, so
-the frontend shows no date on its chip. A Wikipedia source, and every source in a backtest,
-still carries one. ADR 75 explains why.
-
-The five MCP tool names are `tavily_search`, `tavily_extract`, `tavily_crawl`, `tavily_map`,
-and `tavily_research` — **underscores**. A name that does not match what the server serves
-fails silently three ways at once: the rename does not happen, `_capped` does not cap, and
-`process_tool_call` records no sources. Tests pin the literal names, never `SEARCH_TOOL`.
+In a backtest only `search_web` and `search_wikipedia` run. `extract_pages`, `crawl_site`,
+and `map_site` return an explanatory string instead, because no Tavily endpoint but
+`/search` accepts a date and the other three would serve today's page (ADR 78).
 
 `api.streamStep` splits the byte stream on `/\r?\n\r?\n/` and flushes whatever is still
 buffered when the reader finishes. `sse_starlette` writes **CRLF**, so a split on `"\n\n"`
@@ -674,11 +652,13 @@ scheduler, and no side effects on import.
 | `deps.py` | `ForecastDeps` — the `as_of`/`model` clamps, the column tag, the run's `Budget`, `sources_seen`, the `emit` sink |
 | `events.py` | `Query`, `Source`, `Thought`, `Exhausted`, and the `Sink` type `deps.emit` takes |
 | `runner.py` | `run_agent` — attaches the budget, applies the deadline, opens the span, translates timeouts. Emits Logfire spans; never configures Logfire |
-| `tools.py` | `search_web` (Tavily over HTTP — the backtest path), `search_wikipedia` (optional bearer key), `find_disconfirming_evidence`, `as_of` backdating clamps |
-| `tavily_mcp.py` | the live search path: `web_search_toolset` (picks MCP or HTTP by `deps.as_of`), `process_tool_call` (caps arguments, records sources), `parse_sources`, `mcp_search` |
+| `tools/` | the tools an agent may call, one module per upstream. `__init__.py` re-exports all six so a caller writes `from ..tools import search_web` |
+| `tools/tavily_tools.py` | `search_web`, `extract_pages`, `crawl_site`, `map_site`, `find_disconfirming_evidence` — one per `AsyncTavilyClient` method; `_search_kwargs` and `_drop_leaked` are the `as_of` clamp |
+| `tools/wikipedia_tools.py` | `search_wikipedia`, and the revision-as-of request builders |
+| `tools/dates.py` | `_as_utc`, `_parse_published` — timestamp parsing both upstreams need |
 | `errors.py` | `AgentTimeout`, `StageTimeout` |
 | `model_garden.py` | model registry with published training cutoffs (backtest clamp). Reads its bundled JSON; never writes it |
-| `agents/` | eleven agents, one module each: `decompose`, `lenses`, `outside_view`, `inside_view`, `reflect`, `synthesize`, `critic`, `draft`, `resolution`, `update`, `postmortem`. `__init__.py` holds `attach_budget` — the per-iteration budget instruction, in three bands so the order to stop arrives while a search is still legal (ADR 68) — `withdraw_spent_tools`, which stops offering the search tools once the budget is spent (ADR 69), plus `SEARCH_RESERVE` and `spent_usd` |
+| `agents/` | eleven agents, one module each: `decompose`, `lenses`, `outside_view`, `inside_view`, `reflect`, `synthesize`, `critic`, `draft`, `resolution`, `update`, `postmortem`. `__init__.py` holds `attach_budget` — the per-iteration budget instruction, in three bands so the order to stop arrives while a search is still legal (ADR 68) — `withdraw_tools`, which stops offering a tool the agent cannot spend a call on — the Tavily tools when there is no `TAVILY_API_KEY`, everything once the budget is spent (ADR 69), plus `SEARCH_RESERVE` and `spent_usd` |
 
 **Backend — `backend/app/`** — everything that runs it.
 

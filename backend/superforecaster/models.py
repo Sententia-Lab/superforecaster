@@ -720,13 +720,13 @@ class SourceRef(BaseModel):
     answerable: a claim cites a URL, and the URL knows the query it came from."""
     published_date: Optional[datetime] = None
     tool: str
-    as_of: Optional[datetime] = None
+    forecast_date: Optional[datetime] = None
 
     @property
     def is_leak(self) -> bool:
-        if self.as_of is None or self.published_date is None:
+        if self.forecast_date is None or self.published_date is None:
             return False
-        return self.published_date > self.as_of
+        return self.published_date > self.forecast_date
 
 
 # ---------- DB record types ----------
@@ -1096,7 +1096,7 @@ class ComponentCase(BaseModel):
     agent: str
     input: dict[str, Any]
     expect: dict[str, Any] = Field(default_factory=dict)
-    as_of: Optional[datetime] = None
+    forecast_date: Optional[datetime] = None
 
 
 class ComponentScore(BaseModel):

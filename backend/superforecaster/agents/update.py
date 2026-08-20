@@ -13,13 +13,19 @@ from __future__ import annotations
 
 from ..config import get_budget, get_model_settings, get_settings, resolve_agent_model
 from pydantic_ai import Agent
+from pydantic_ai.capabilities.hooks import Hooks
 
 from ..deps import ForecastDeps
 from ..models import ForecastRecord, UpdateDecision
 from ..runner import run_agent
-from ..tavily_mcp import web_search_toolset
-from ..tools import find_disconfirming_evidence
-from . import with_model
+from ..tools import (
+    crawl_site,
+    extract_pages,
+    find_disconfirming_evidence,
+    map_site,
+    search_web,
+)
+from . import with_model, withdraw_tools
 
 INSTRUCTIONS = """You are deciding whether new evidence should move an existing
 probability forecast. You are not producing a fresh forecast — you have a prior and
@@ -86,8 +92,14 @@ def build_update_agent(model: str | None = None) -> Agent[ForecastDeps, UpdateDe
         deps_type=ForecastDeps,
         output_type=UpdateDecision,
         system_prompt=INSTRUCTIONS,
-        tools=[find_disconfirming_evidence],
-        toolsets=[web_search_toolset],
+        tools=[
+            search_web,
+            extract_pages,
+            crawl_site,
+            map_site,
+            find_disconfirming_evidence,
+        ],
+        capabilities=[Hooks(prepare_tools=withdraw_tools)],
         retries=1,
     )
 
