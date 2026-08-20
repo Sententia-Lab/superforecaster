@@ -26,7 +26,6 @@ leakage rather than trusted.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Literal
 
@@ -45,83 +44,77 @@ MAX_CRAWL_PAGES = 10
 MAX_MAP_LINKS = 20
 CRAWL_DEPTH = 1
 _PAGE_CHARS = 2000
-"""Ceilings the model cannot raise, because they are not arguments it can pass."""
+BACKTEST_WINDOW_DAYS = 3650
 
 _TIMEOUT = 15.0
 _SLOW_TIMEOUT = 60.0
 """Extract, crawl, and map fetch whole pages, so they are slower than a search. Both sit
 inside `DEFAULT_AGENT_TIMEOUT_SECONDS` — a tool that outlives the agent kills the step."""
 
+# Tools
 
-def _client() -> AsyncTavilyClient | None:
-    """A client for the key that is set right now, or None when there is none.
 
-    Built per call rather than cached, because `get_settings()` re-reads the environment on
-    every call and that is what makes the runtime key panel work without a restart.
+async def search_web(
+    ctx: RunContext[ForecastDeps],
+    query: str,
+    topic: Literal["general", "news", "finance"] = "general",
+) -> str:
+    """Search the web for current information and reporting.
+
+    Returns the top results as text, or a message explaining why none are available.
+    Missing results mean missing information, not an error — say so in your reasoning
+    rather than treating it as a failure.
+
+    Args:
+        query: What to search for. Write it the way you would type it into a search engine. Wrap target phrases in quotes within your query (e.g. "John Smith" CEO Acme Corp) to get exact matches on those strings. Punctuation is typically ignored inside quotes.
+        topic: The category of the search. News is useful for retrieving real-time updates, particularly about politics, sports, and major current events covered by mainstream media sources. General is for broader, more general-purpose searches that may include a wide range of sources.
+
     """
-    key = get_settings().tavily_api_key
-    return AsyncTavilyClient(api_key=key) if key else None
+    forecast_date = ctx.deps.forecast_date
+    client = _client()
+    if client is None:
+        return _unavailable("Web search", query)
 
-
-def _drop_leaked(
-    results: list[dict], forecast_date: datetime | None, query: str = ""
-) -> tuple[list[dict], list[SourceRef]]:
-    """Second guard on top of Tavily's own `end_date` filter.
-
-    Undated results are dropped when `forecast_date` is set. That is deliberate and it does
-    cost recall: an article with no publication date cannot be shown to predate the
-    question, and for a backtest "probably fine" is not good enough. Setting
-    `topic="news"` means most results carry a date, so the loss is bounded.
-
-    The guard is not theoretical. Asking Tavily for `end_date=2023-06-01` has been observed
-    returning articles dated 2024 and 2026, so this is the only thing standing between a
-    backtest and the answer.
-
-    Returns the surviving results and a SourceRef for every result considered, including the
-    dropped ones, so the audit trail shows what was filtered.
-    """
-    cutoff = _as_utc(forecast_date) if forecast_date is not None else None
-    kept: list[dict] = []
-    refs: list[SourceRef] = []
-    for r in results:
-        published = _parse_published(r.get("published_date"))
-        refs.append(
-            SourceRef(
-                url=r.get("url", ""),
-                title=r.get("title", "") or "",
-                query=query,
-                published_date=published,
-                tool="search_web",
-                forecast_date=cutoff,
-            )
+    try:
+        payload = await client.search(
+            query,
+            timeout=_TIMEOUT,
+            search_depth="basic",
+            max_results=MAX_RESULTS,
+            chunks_per_source=MAX_CHUNKS_PER_SOURCE,
+            include_favicon=True,
+            include_usage=True,
+            include_raw_content="markdown",
+            topic=topic,
+            exact_match=True,
+            **_search_kwargs(forecast_date),
         )
-        if cutoff is None or (published is not None and published <= cutoff):
-            kept.append(r)
-    return kept, refs
+    except Exception as e:
+        return f"Web search error: {e}"
 
+    raw = payload.get("results", [])
+    results, refs = _drop_leaked(raw, forecast_date, query)
+    ctx.deps.sources_seen.extend(refs)
 
-def _sources(results: list[dict], *, query: str, tool: str) -> list[SourceRef]:
-    return [
-        SourceRef(url=r["url"], title=r.get("title") or "", query=query, tool=tool)
+    if not results:
+        if forecast_date is not None and raw:
+            return (
+                f"No web results for '{query}' published on or before "
+                f"{forecast_date.date().isoformat()}. {len(raw)} newer or undated results were "
+                "withheld — treat this as an absence of contemporaneous evidence."
+            )
+        return f"No web results for: {query}"
+
+    header = (
+        f"Results published on or before {forecast_date.date().isoformat()}:\n\n"
+        if forecast_date is not None
+        else ""
+    )
+    return header + "\n\n".join(
+        f"- {r.get('title', 'Untitled')} ({r.get('url', '')})"
+        + (f" [{r['published_date']}]" if r.get("published_date") else "")
+        + f"\n  {r.get('content', '')[:400]}"
         for r in results
-        if r.get("url")
-    ]
-
-
-def _unavailable(tool: str, subject: str) -> str:
-    return f"[{tool} unavailable — no TAVILY_API_KEY set. Asked about: {subject}]"
-
-
-def _not_in_a_backtest(tool: str, forecast_date: datetime) -> str:
-    """Why extract, crawl, and map do not run against a past date.
-
-    Phrased for the agent rather than for a log: it needs to know the door is shut on
-    purpose and that searching is still open, or it will retry the same call.
-    """
-    return (
-        f"[{tool} is disabled for this run. You are forecasting as of "
-        f"{forecast_date.date().isoformat()}, and this tool returns pages as they stand today, "
-        "which would show you the future. Use search_web, which is filtered to that date.]"
     )
 
 
@@ -253,13 +246,79 @@ async def find_disconfirming_evidence(ctx: RunContext[ForecastDeps], claim: str)
     return "\n\n".join(sections)
 
 
-BACKTEST_WINDOW_DAYS = 3650
-"""How far before `forecast_date` a clamped search may look.
+# Helpers
 
-Ten years, because a reference class wants depth — the width is not what makes the clamp
-work, `start_date` merely being present is. Verified from 2 to 10 years with identical
-results.
-"""
+
+def _client() -> AsyncTavilyClient | None:
+    """A client for the key that is set right now, or None when there is none.
+
+    Built per call rather than cached, because `get_settings()` re-reads the environment on
+    every call and that is what makes the runtime key panel work without a restart.
+    """
+    key = get_settings().tavily_api_key
+    return AsyncTavilyClient(api_key=key) if key else None
+
+
+def _drop_leaked(
+    results: list[dict], forecast_date: datetime | None, query: str = ""
+) -> tuple[list[dict], list[SourceRef]]:
+    """Second guard on top of Tavily's own `end_date` filter.
+
+    Undated results are dropped when `forecast_date` is set. That is deliberate and it does
+    cost recall: an article with no publication date cannot be shown to predate the
+    question, and for a backtest "probably fine" is not good enough. Setting
+    `topic="news"` means most results carry a date, so the loss is bounded.
+
+    The guard is not theoretical. Asking Tavily for `end_date=2023-06-01` has been observed
+    returning articles dated 2024 and 2026, so this is the only thing standing between a
+    backtest and the answer.
+
+    Returns the surviving results and a SourceRef for every result considered, including the
+    dropped ones, so the audit trail shows what was filtered.
+    """
+    cutoff = _as_utc(forecast_date) if forecast_date is not None else None
+    kept: list[dict] = []
+    refs: list[SourceRef] = []
+    for r in results:
+        published = _parse_published(r.get("published_date"))
+        refs.append(
+            SourceRef(
+                url=r.get("url", ""),
+                title=r.get("title", "") or "",
+                query=query,
+                published_date=published,
+                tool="search_web",
+                forecast_date=cutoff,
+            )
+        )
+        if cutoff is None or (published is not None and published <= cutoff):
+            kept.append(r)
+    return kept, refs
+
+
+def _sources(results: list[dict], *, query: str, tool: str) -> list[SourceRef]:
+    return [
+        SourceRef(url=r["url"], title=r.get("title") or "", query=query, tool=tool)
+        for r in results
+        if r.get("url")
+    ]
+
+
+def _unavailable(tool: str, subject: str) -> str:
+    return f"[{tool} unavailable — no TAVILY_API_KEY set. Asked about: {subject}]"
+
+
+def _not_in_a_backtest(tool: str, forecast_date: datetime) -> str:
+    """Why extract, crawl, and map do not run against a past date.
+
+    Phrased for the agent rather than for a log: it needs to know the door is shut on
+    purpose and that searching is still open, or it will retry the same call.
+    """
+    return (
+        f"[{tool} is disabled for this run. You are forecasting as of "
+        f"{forecast_date.date().isoformat()}, and this tool returns pages as they stand today, "
+        "which would show you the future. Use search_web, which is filtered to that date.]"
+    )
 
 
 def _search_kwargs(forecast_date: datetime | None) -> dict:
@@ -271,67 +330,3 @@ def _search_kwargs(forecast_date: datetime | None) -> dict:
         .isoformat(),
         "end_date": forecast_date.date().isoformat(),
     }
-
-
-async def search_web(
-    ctx: RunContext[ForecastDeps],
-    query: str,
-    topic: Literal["general", "news", "finance"] = "general",
-) -> str:
-    """Search the web for current information and reporting.
-
-    Returns the top results as text, or a message explaining why none are available.
-    Missing results mean missing information, not an error — say so in your reasoning
-    rather than treating it as a failure.
-
-    Args:
-        query: What to search for. Write it the way you would type it into a search engine. Wrap target phrases in quotes within your query (e.g. "John Smith" CEO Acme Corp) to get exact matches on those strings. Punctuation is typically ignored inside quotes.
-        topic: The category of the search. News is useful for retrieving real-time updates, particularly about politics, sports, and major current events covered by mainstream media sources. General is for broader, more general-purpose searches that may include a wide range of sources.
-
-    """
-    forecast_date = ctx.deps.forecast_date
-    client = _client()
-    if client is None:
-        return _unavailable("Web search", query)
-
-    try:
-        payload = await client.search(
-            query,
-            timeout=_TIMEOUT,
-            search_depth="basic",
-            max_results=MAX_RESULTS,
-            chunks_per_source=MAX_CHUNKS_PER_SOURCE,
-            include_favicon=True,
-            include_usage=True,
-            include_raw_content="markdown",
-            topic=topic,
-            exact_match=True,
-            **_search_kwargs(forecast_date),
-        )
-    except Exception as e:
-        return f"Web search error: {e}"
-
-    raw = payload.get("results", [])
-    results, refs = _drop_leaked(raw, forecast_date, query)
-    ctx.deps.sources_seen.extend(refs)
-
-    if not results:
-        if forecast_date is not None and raw:
-            return (
-                f"No web results for '{query}' published on or before "
-                f"{forecast_date.date().isoformat()}. {len(raw)} newer or undated results were "
-                "withheld — treat this as an absence of contemporaneous evidence."
-            )
-        return f"No web results for: {query}"
-
-    header = (
-        f"Results published on or before {forecast_date.date().isoformat()}:\n\n"
-        if forecast_date is not None
-        else ""
-    )
-    return header + "\n\n".join(
-        f"- {r.get('title', 'Untitled')} ({r.get('url', '')})"
-        + (f" [{r['published_date']}]" if r.get("published_date") else "")
-        + f"\n  {r.get('content', '')[:400]}"
-        for r in results
-    )
