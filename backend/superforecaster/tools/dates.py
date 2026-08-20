@@ -1,7 +1,8 @@
 """Date parsing shared by every tool.
 
 Its own module because both Tavily and Wikipedia hand back timestamps in more than one
-shape, and `_drop_leaked` — clamp 1 of ADR 17 — is only as good as the parse behind it.
+shape: ISO 8601 in most Tavily responses, RFC 2822 in some, and a third form on a
+MediaWiki revision.
 """
 
 from __future__ import annotations

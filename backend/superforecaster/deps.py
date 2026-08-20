@@ -20,8 +20,8 @@ from .models import SourceRef
 class ForecastDeps:
     """The two contamination clamps, plus the audit trail that proves they worked.
 
-    In production both clamps are off: `forecast_date` is None so tools return current
-    results, and `model` is None so agents use `resolve_agent_model()`.
+    In production both are off: `forecast_date` is None so `search_wikipedia` fetches the
+    current article, and `model` is None so agents use `resolve_agent_model()`.
 
     In a backtest both are set from the question's `asked_at`, so the agent can
     neither read a source published after the question was asked nor run on a model
@@ -29,6 +29,10 @@ class ForecastDeps:
     """
 
     forecast_date: datetime | None = None
+    """The date the agent is forecasting from. `search_wikipedia` fetches the revision as
+    of this date, `agents.forecast_date_note` tells the model it is in the past, and
+    `model_garden.pick_clean_model` picks a model trained before it. The Tavily tools
+    ignore it — ADR 17 records why their clamp was removed rather than repaired."""
     model: str | None = None
     sources_seen: list[SourceRef] = field(default_factory=list)
     """Every source a tool recorded, in the order the tools recorded it.
@@ -70,9 +74,3 @@ class ForecastDeps:
     instruction reads it from `ctx.deps` on every model request — which is what makes
     the remaining budget a live number rather than a sentence written once.
     """
-
-    @property
-    def leaked_sources(self) -> list[SourceRef]:
-        """Sources dated after `forecast_date`. Should always be empty — a non-empty list
-        means the tool clamp has a bug, not that the forecast is merely suspect."""
-        return [s for s in self.sources_seen if s.is_leak]

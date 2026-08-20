@@ -396,13 +396,13 @@ carries weight and the probability did not move at all.
 
 ## ADR 17 — Two clamps for contamination-free backtesting
 
-**Status:** Accepted (v4, spec3)
+**Status:** Clamp 1 (tools) superseded by ADR 79 (2026-08-20). Clamp 2 (model) still accepted.
 
 **Decision.** Scoring against resolved questions clamps both the tools and the model.
 
 | Clamp | Mechanism |
 |---|---|
-| 1 — tools | Tavily `start_date` + `end_date` + `topic="news"`, then `_drop_leaked` removes anything newer or undated. Wikipedia fetches the revision as of the date. `extract_pages`/`crawl_site`/`map_site` refuse to run (ADR 78) |
+| 1 — tools | **Removed for Tavily (ADR 79)** — the filter is inert on a `general` search and only `news` returns a date. Wikipedia still fetches the revision as of the date |
 | 2 — model | `pick_clean_model(asked_at)` selects a model whose *training* cutoff predates the question |
 
 **Rationale.** Contamination has two doors. Clamping only the tools leaves the model reciting
@@ -2809,3 +2809,59 @@ constructor, so no call argument carries a secret and `_search_kwargs` stays ass
 **Cost note.** `critic` has a 3-call budget and now has crawl available. One crawl returns up
 to 10 pages. If that proves to be a bad trade in practice, the fix is a narrower tool list for
 that agent, not a smaller ceiling — a ceiling of zero withdraws its tools entirely (ADR 69).
+
+
+---
+
+## ADR 79 — The Tavily date clamp is removed, not repaired
+
+**Status:** Accepted (2026-08-20). Supersedes ADR 17 clamp 1 for the Tavily tools.
+
+**Decision.** `_drop_leaked`, `_search_kwargs`, `BACKTEST_WINDOW_DAYS`, and the
+`extract_pages` / `crawl_site` / `map_site` backtest refusals are deleted, along with
+`SourceRef.forecast_date`, `SourceRef.is_leak`, and `ForecastDeps.leaked_sources`. The
+Tavily tools return the web as it stands today and ignore `ctx.deps.forecast_date`.
+
+`search_wikipedia` keeps its clamp. `model_garden.pick_clean_model` — clamp 2 — is
+untouched.
+
+**Rationale.** Measured 2026-08-20, one query across four date ranges, five results each:
+
+| topic | results dated | results inside the range | URLs shared with the adjacent range |
+|---|---|---|---|
+| `news` | 20/20 | 20/20 | 0/5 |
+| `general` | 0/20 | — | **5/5, 5/5, 4/5** |
+
+A 2012 window and a 2024 window return **the same five URLs** on `general`. The filter is
+not weak there, it is inert. And no topic but `news` returns a `published_date`, so
+`_drop_leaked` has nothing to check on any other topic and drops every result.
+
+So the clamp had exactly one working configuration: force `topic="news"`, which restricts
+a backtest to news articles — no filings, no statistics agencies, no company reports. That
+is the wrong research surface for base rates, and it was bought with a guard that starves
+the run the moment the topic changes.
+
+**Why remove rather than keep forcing `news`.** Nothing sets `forecast_date`. Not
+`app/cli.py`, not `api/forecasts.py`, and neither eval suite — `decompose_eval.py` and
+`critic_eval.py` contain no occurrence of it. The clamp was unreachable code defending a
+capability that was never wired up, and `GoldenQuestion` / `QuestionScore` in `models.py`
+are referenced nowhere at all.
+
+**The failure mode this avoids.** Leaving `forecast_date` in place with its guards removed
+is worse than either extreme: a future backtest would run on `general`, where the filter
+does nothing, with nothing checking the results, and still print a clean scorecard. A
+capability that is absent is safer than one that lies.
+
+**What this rules out.** Backtesting against resolved questions through Tavily, until
+something replaces the date filter. Rebuilding it means an upstream that returns a
+publication date on general web results, or a per-URL dating step — not a flag on
+`POST /search`.
+
+**What would reverse this.** Tavily returning `published_date` outside `news`, or its
+`start_date`/`end_date` filter actually applying to a `general` search. Both are one
+measurement away; the script is in ADR 17's history.
+
+**The general finding.** A guard whose only evidence is the vendor's documentation is not
+a guard. This is the third time Tavily's date handling has been measured doing something
+other than what it says — `end_date` alone ignored (ADR 17), `end_date=2023-06-01`
+returning 2024 and 2026 articles (ADR 78), and now the `general` filter being inert.
