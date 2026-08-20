@@ -17,9 +17,9 @@ from ..config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
 
 from ..deps import ForecastDeps
+from ..tools import crawl_site, extract_pages, map_site, search_web
 from ..models import ForecastRecord, PostMortem
 from ..runner import run_agent
-from ..tavily_mcp import web_search_toolset
 from . import with_model
 
 INSTRUCTIONS = """You review resolved forecasts to find process errors. You are not
@@ -69,8 +69,7 @@ def build_postmortem_agent(model: str | None = None) -> Agent[ForecastDeps, Post
         deps_type=ForecastDeps,
         output_type=PostMortem,
         system_prompt=INSTRUCTIONS,
-        tools=[],
-        toolsets=[web_search_toolset],
+        tools=[search_web, extract_pages, crawl_site, map_site],
         retries=1,
     )
 

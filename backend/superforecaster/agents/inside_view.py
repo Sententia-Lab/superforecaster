@@ -37,8 +37,14 @@ from ..models import (
     SubPrediction,
 )
 from ..runner import run_agent
-from ..tavily_mcp import web_search_toolset
-from ..tools import find_disconfirming_evidence, search_wikipedia
+from ..tools import (
+    crawl_site,
+    extract_pages,
+    find_disconfirming_evidence,
+    map_site,
+    search_web,
+    search_wikipedia,
+)
 from . import (
     as_of_note,
     attach_budget,
@@ -135,8 +141,14 @@ def build_inside_view_agent(
         deps_type=ForecastDeps,
         output_type=SubQuestionAdjustments,
         system_prompt=INSTRUCTIONS,
-        tools=[search_wikipedia, find_disconfirming_evidence],
-        toolsets=[web_search_toolset],
+        tools=[
+            search_web,
+            extract_pages,
+            crawl_site,
+            map_site,
+            search_wikipedia,
+            find_disconfirming_evidence,
+        ],
         capabilities=[Hooks(prepare_tools=withdraw_spent_tools)],
         retries=1,
     )

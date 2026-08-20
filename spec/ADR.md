@@ -402,7 +402,7 @@ carries weight and the probability did not move at all.
 
 | Clamp | Mechanism |
 |---|---|
-| 1 — tools | Tavily `end_date` + `topic="news"`, then `_drop_leaked` removes anything newer or undated. Wikipedia fetches the revision as of the date |
+| 1 — tools | Tavily `start_date` + `end_date` + `topic="news"`, then `_drop_leaked` removes anything newer or undated. Wikipedia fetches the revision as of the date. `extract_pages`/`crawl_site`/`map_site` refuse to run (ADR 78) |
 | 2 — model | `pick_clean_model(asked_at)` selects a model whose *training* cutoff predates the question |
 
 **Rationale.** Contamination has two doors. Clamping only the tools leaves the model reciting
@@ -415,6 +415,17 @@ leakage rather than trusted.
 
 **Undated results are dropped**, which costs recall on purpose: an article with no publication
 date cannot be shown to predate the question, and "probably fine" is not good enough.
+
+**`start_date` is not optional, and it is not there for recall.** Tavily silently ignores
+`end_date` when it arrives alone. Measured 2026-08-19 across three queries: with `end_date`
+only, 15 of 15 results were published after the cutoff; with `start_date` added, 0 of 15
+were. Nothing errors either way. For as long as only `end_date` was sent, `_drop_leaked`
+discarded every result, so a clamped run was not protected but *starved* — the agent saw
+"no contemporaneous evidence" for every search and fell back to a pre-research guess.
+`tavily_tools._search_kwargs` now always sends both, and a test pins it.
+
+That is also the case for keeping `_drop_leaked` rather than trusting the filter: this is the
+second time Tavily's own date handling has been found not to do what it says.
 
 ---
 
@@ -2611,7 +2622,7 @@ documents its own reasoning for a future reader to weigh.
 
 ## ADR 75 — Live search runs on Tavily's MCP server; a backtest does not
 
-**Status:** Accepted (2026-08-19)
+**Status:** Superseded by ADR 77 (2026-08-19)
 
 **Decision.** `tavily_mcp.web_search_toolset` picks the web tools per run:
 
@@ -2657,7 +2668,7 @@ publication date per result.
 
 ## ADR 76 — Search depth is our decision, not the agent's
 
-**Status:** Accepted (2026-08-19)
+**Status:** Superseded by ADR 77 (2026-08-19)
 
 **Decision.** `tavily_mcp._FORCED` and `_BOUNDED` overwrite the model's arguments in
 `process_tool_call`, before the call reaches the server:
@@ -2690,3 +2701,111 @@ not something a prompt asks for.
 **Related.** ADR 69 withdraws the search tools when the *count* runs out. This bounds what a
 single call may spend before the count moves at all. Both are needed: one caps how often, the
 other how much.
+
+
+---
+
+## ADR 77 — The Tavily MCP toolset is removed; the search tools are ours
+
+**Status:** Accepted (2026-08-19). Supersedes ADR 75 and ADR 76.
+
+**Decision.** `superforecaster/tavily_mcp.py` is deleted. Every agent goes back to
+`tools=[search_web, ...]`, and `tools.search_web` serves live runs and backtests alike.
+`tavily_research`, `tavily_extract`, `tavily_crawl`, and `tavily_map` are not replaced.
+
+**Rationale.** Three findings, in the order they mattered.
+
+*It bought no capability.* Every tool the MCP server exposes is a documented REST endpoint —
+`POST /search`, `/extract`, `/crawl`, `/map`, `/research`. Nothing was reachable only through
+MCP. The one genuine convenience was that the server hides `/research`'s polling behind a
+synchronous call.
+
+*Nothing used it.* Across every run on record: `search_web` 800 calls, `search_wikipedia` 173,
+`find_disconfirming_evidence` 71, `tavily_search` 2, `tavily_research` 2, and
+`tavily_extract` / `tavily_crawl` / `tavily_map` **zero**. The three tools that justified
+taking the whole server were never called.
+
+*It never replaced anything.* ADR 17 requires the HTTP path for backtests, so both paths were
+maintained at once. MCP was 586 lines duplicating a working capability.
+
+**The general finding, which is the part worth keeping.** Most of `tavily_mcp.py` existed to
+undo what MCP introduced:
+
+| The code | Why it was needed | A local function |
+|---|---|---|
+| `_capped`, `_FORCED`, `_BOUNDED` | the model saw the server's schema and could set `model="auto"` or `limit=50` | leave them out of the signature |
+| `parse_sources`, `_as_dict`, `_as_text` | rebuild which URLs were seen from a JSON blob | `sources_seen.extend(refs)` beside the parse you already did |
+| `RenamedToolset` | the server names the tools, so `search_web` came to mean two different things in one log | the function name *is* the definition |
+
+An MCP toolset moves the tool contract to a remote server, and every one of those lines is the
+contract being clawed back. The failure mode is the one it produced here: `SEARCH_TOOL` read
+`"tavily-search"` while the server served `tavily_search`, and the mismatch broke the rename,
+the argument caps, and source recording **silently and all at once** — with a green test suite,
+because the test fixture took its tool name from the same wrong constant.
+
+That is worth paying for a server whose tools you could not otherwise reach. It is not worth
+paying for one endpoint you already call with `httpx`.
+
+**`tavily_research` is dropped on methodology grounds too.** It returns a synthesized cited
+report. The 16 principles require the agent to read primary sources and grade the evidence
+itself, and `checks.aggregate_source_confidence` grades what the agent retrieved. A tool that
+hands over a finished narrative bypasses the work the checks exist to audit.
+
+**What this rules out.** Reaching for MCP because a vendor offers a server. The question is
+whether the tools are reachable any other way. When the answer is "there is a REST endpoint and
+we already have a client", write the function.
+
+**What would reverse this.** Several MCP servers in play at once, where `MCPToolset` becomes
+shared infrastructure rather than one vendor's glue — or a Tavily capability that never gets a
+REST endpoint.
+
+---
+
+## ADR 78 — One tool per Tavily endpoint, and three of them refuse in a backtest
+
+**Status:** Accepted (2026-08-19)
+
+**Decision.** `superforecaster/tools.py` becomes `superforecaster/tools/`, one module per
+upstream, and Tavily gets a tool per endpoint:
+
+| Tool | Endpoint | Answers | Runs in a backtest |
+|---|---|---|---|
+| `search_web` | `POST /search` | which pages discuss this | **yes** |
+| `extract_pages` | `POST /extract` | what a page you already found says | no |
+| `crawl_site` | `POST /crawl` | what a site says across several pages | no |
+| `map_site` | `POST /map` | what pages a site has | no |
+
+All four go to all eight searching agents. `find_disconfirming_evidence` is unchanged.
+
+**Why three of them refuse.** `/search` takes `end_date`, and `_drop_leaked` re-checks every
+result against `ctx.deps.as_of`. No other Tavily endpoint accepts a date in any form, so each
+returns the page as it stands today. In a backtest that is reading the future, and it would
+not show up as an error — the run completes and the scorecard prints. Each returns a string
+naming the `as_of` date and pointing at `search_web`, so the agent stops rather than retrying.
+
+That keeps ADR 17 clamp 1 true for every path, which matters more than it sounds: asking
+Tavily for `end_date=2023-06-01` has been observed returning articles dated 2024 and 2026.
+The server-side filter does not work, and `_drop_leaked` is the only thing behind it.
+
+**`map_site` records no `SourceRef`.** Mapping lists what a site has without reading any of
+it. Recording those URLs would let `check_citations` accept a citation the agent never
+opened, which is the one thing that check exists to prevent.
+
+**Depth and breadth are constants, not parameters** — `MAX_EXTRACT_URLS`, `MAX_CRAWL_PAGES`,
+`MAX_MAP_LINKS`, `CRAWL_DEPTH`. `config.BUDGETS` counts tool calls, not tokens, so one call
+left at Tavily's own `limit=50` default would spend a cell's whole token budget. Keeping them
+out of the signature is the enforcement; ADR 76 recorded the same lesson when the numbers had
+to be clawed back from an MCP schema, and a local function gets it for free.
+
+**The transport is the `tavily-python` SDK**, not hand-rolled `httpx` calls.
+`AsyncTavilyClient` exposes exactly these four methods and returns the same dicts, so it
+removes the URL constants, the auth header, and the shared `_post` helper, and it replaces
+`httpx.HTTPError` with typed errors like `InvalidAPIKeyError`. It does not shrink the module
+much, because the transport was never the bulk — `_drop_leaked`, the refusals, the source
+recording, and the result formatting are, and no SDK does any of those. It is worth having
+anyway: one fewer thing to keep in step with Tavily's API. The key goes to the client's
+constructor, so no call argument carries a secret and `_search_kwargs` stays assertable.
+
+**Cost note.** `critic` has a 3-call budget and now has crawl available. One crawl returns up
+to 10 pages. If that proves to be a bad trade in practice, the fix is a narrower tool list for
+that agent, not a smaller ceiling — a ceiling of zero withdraws its tools entirely (ADR 69).
