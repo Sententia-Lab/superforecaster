@@ -11,6 +11,7 @@ are asserted against the real code path.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -117,11 +118,13 @@ async def test_extract_records_a_source_per_page_and_returns_the_text(
     )
     deps = ForecastDeps()
 
-    out = await tavily_tools.extract_pages(make_ctx(deps), [URL])
+    out = json.loads(await tavily_tools.extract_pages(make_ctx(deps), [URL]))
 
     assert captured["method"] == "extract"
     assert captured["target"] == [URL]
-    assert "Revenue rose 4%." in out
+    assert out["pages"] == [
+        {"title": "Q3 Report", "url": URL, "text": "Revenue rose 4%."}
+    ]
     assert [(s.url, s.tool) for s in deps.sources_seen] == [(URL, "extract_pages")]
 
 
@@ -143,8 +146,8 @@ async def test_extract_reports_pages_it_could_not_read(tavily_key, monkeypatch):
             "failed_results": [{"url": "https://example.com/dead"}],
         },
     )
-    out = await tavily_tools.extract_pages(make_ctx(ForecastDeps()), [URL])
-    assert "Could not read: https://example.com/dead" in out
+    out = json.loads(await tavily_tools.extract_pages(make_ctx(ForecastDeps()), [URL]))
+    assert out["could_not_read"] == ["https://example.com/dead"]
 
 
 async def test_extract_with_no_urls_does_not_call_tavily(tavily_key, monkeypatch):

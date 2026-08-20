@@ -2320,7 +2320,7 @@ was never shown.
 Either way the cost is the whole cell: `UsageLimitExceeded` is raised *before* the tool
 runs, so nothing gathered is returned and the column falls back to a pre-research guess.
 
-**Decision.** `agents.withdraw_spent_tools`, passed as `prepare_tools` to every agent
+**Decision.** `agents.withdraw_tools`, passed as `prepare_tools` to every agent
 built with search tools, stops offering them once `budget.tool_calls` is spent. Pydantic
 AI re-prepares the toolset before every model request, so this is re-evaluated wherever the
 agent could spend another call.
@@ -2498,7 +2498,7 @@ one the model can apply to cases the rule did not anticipate.
 change — the countability test in `agents.lenses` — stays and is the right home. If cells
 keep failing to measure, that is a lens problem.
 
-**The self-budgeting section is deleted too.** `withdraw_spent_tools` (ADR 69) and
+**The self-budgeting section is deleted too.** `withdraw_tools` (ADR 69) and
 `attach_budget`'s three bands (ADR 68) enforce it, and prose exhorting a model to converge
 cannot beat removing the tools. What replaces it is one line saying what the deadline
 means: the tools are withdrawn and whatever you hold becomes the answer, so land

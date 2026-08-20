@@ -46,7 +46,7 @@ from . import (
     forecast_date_note,
     attach_budget,
     format_question,
-    withdraw_spent_tools,
+    withdraw_tools,
     with_model,
 )
 
@@ -109,7 +109,7 @@ def build_base_rate_cell_agent(
         output_type=SubQuestionBaseRates,
         system_prompt=INSTRUCTIONS,
         tools=[search_web, extract_pages, crawl_site, map_site, search_wikipedia],
-        capabilities=[Hooks(prepare_tools=withdraw_spent_tools)],
+        capabilities=[Hooks(prepare_tools=withdraw_tools)],
         retries=1,
     )
     attach_budget(agent)

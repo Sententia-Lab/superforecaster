@@ -72,7 +72,7 @@ def test_the_setting_is_one_pydantic_ai_actually_reads():
 
 
 def test_the_enforced_tool_ceiling_is_double_the_budgeted_one():
-    """`agents.withdraw_spent_tools` is what actually caps searching — it stops offering
+    """`agents.withdraw_tools` is what actually caps searching — it stops offering
     the search tools once `tool_calls` is spent, which a model cannot argue with.
 
     Pydantic AI's ceiling is a backstop, and it is doubled so that one over-eager batch

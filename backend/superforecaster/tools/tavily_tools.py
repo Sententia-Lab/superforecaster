@@ -12,13 +12,17 @@ every result against `ctx.deps.forecast_date`. The other three take no date of a
 the page as it stands today, so in a backtest each is an uncontrolled leak. They refuse
 instead of running, which keeps ADR 17 clamp 1 true for every path.
 
-`search_web` takes a query and nothing else. Every other `POST /search` parameter is set
-here, because `config.BUDGETS` counts calls rather than tokens and one call must not spend
-a cell's whole budget: `max_results` is `MAX_RESULTS`, `chunks_per_source` is
-`MAX_CHUNKS_PER_SOURCE`, and `timeout` is `_TIMEOUT`. `_search_kwargs` is applied last, so
-no default above it can loosen the backtest clamp.
+The agent chooses `query`, `topic`, and `exact_match`. Every other `POST /search`
+parameter is set here, because `config.BUDGETS` counts calls rather than tokens and one
+call must not spend a cell's whole budget: `max_results` is `MAX_RESULTS`,
+`chunks_per_source` is `MAX_CHUNKS_PER_SOURCE`, and `timeout` is `_TIMEOUT`.
+`_search_kwargs` is applied last, so nothing the agent asked for can loosen the backtest
+clamp — including `topic`, which a clamped run forces to `"news"`.
 
 `extract_pages`, `crawl_site`, and `map_site` keep constant depth and breadth.
+
+Every tool answers with JSON, built by `_json` from the dicts Tavily already returned.
+None of them renders text, so there is no format to keep in step with the API.
 
 Every URL an agent sees is recorded on `ctx.deps.sources_seen`, so a run can be audited for
 leakage rather than trusted.
@@ -26,6 +30,7 @@ leakage rather than trusted.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from typing import Literal
 
@@ -46,10 +51,10 @@ CRAWL_DEPTH = 5
 _PAGE_CHARS = 2000
 BACKTEST_WINDOW_DAYS = 3650
 
+SEARCH_DEPTH = "basic"
+
 _TIMEOUT = 15.0
 _SLOW_TIMEOUT = 60.0
-SEARCH_DEPTH = "basic"
-INCLUDE_RAW_CONTENT = "markdown"
 """Extract, crawl, and map fetch whole pages, so they are slower than a search. Both sit
 inside `DEFAULT_AGENT_TIMEOUT_SECONDS` — a tool that outlives the agent kills the step."""
 
@@ -79,20 +84,21 @@ async def search_web(
     if client is None:
         return _unavailable("Web search", query)
 
+    # One dict rather than keyword arguments, because `_search_kwargs` also carries `topic`
+    # and passing it both ways raises TypeError. Applied last, so the clamp wins.
+    options = {
+        "search_depth": SEARCH_DEPTH,
+        "max_results": MAX_RESULTS,
+        "chunks_per_source": MAX_CHUNKS_PER_SOURCE,
+        "include_favicon": True,
+        "include_usage": True,
+        "topic": topic,
+        "exact_match": exact_match,
+    }
+    options.update(_search_kwargs(forecast_date))
+
     try:
-        payload = await client.search(
-            query,
-            timeout=_TIMEOUT,
-            search_depth=SEARCH_DEPTH,
-            max_results=MAX_RESULTS,
-            chunks_per_source=MAX_CHUNKS_PER_SOURCE,
-            include_favicon=True,
-            include_usage=True,
-            include_raw_content=INCLUDE_RAW_CONTENT,
-            topic=topic,
-            exact_match=exact_match,
-            **_search_kwargs(forecast_date),
-        )
+        payload = await client.search(query, timeout=_TIMEOUT, **options)
     except Exception as e:
         return f"Web search error: {e}"
 
@@ -109,16 +115,12 @@ async def search_web(
             )
         return f"No web results for: {query}"
 
-    header = (
-        f"Results published on or before {forecast_date.date().isoformat()}:\n\n"
-        if forecast_date is not None
-        else ""
-    )
-    return header + "\n\n".join(
-        f"- {r.get('title', 'Untitled')} ({r.get('url', '')})"
-        + (f" [{r['published_date']}]" if r.get("published_date") else "")
-        + f"\n  {r.get('content', '')[:400]}"
-        for r in results
+    return _json(
+        query=query,
+        published_on_or_before=(
+            forecast_date.date().isoformat() if forecast_date is not None else None
+        ),
+        results=[{k: r[k] for k in _RESULT_FIELDS if k in r} for r in results],
     )
 
 
@@ -165,13 +167,19 @@ async def extract_pages(
     if not results:
         return f"Could not extract any of: {', '.join(wanted)}"
 
-    body = "\n\n".join(
-        f"## {r.get('title') or r.get('url', '')}\n{r.get('url', '')}\n\n"
-        f"{(r.get('raw_content') or '')[:_PAGE_CHARS]}"
-        for r in results
+    return _json(
+        pages=[
+            {
+                "title": r.get("title") or "",
+                "url": r.get("url", ""),
+                "text": (r.get("raw_content") or "")[:_PAGE_CHARS],
+            }
+            for r in results
+        ],
+        could_not_read=[
+            f.get("url", "") for f in (payload.get("failed_results") or [])
+        ],
     )
-    failed = [f.get("url", "") for f in (payload.get("failed_results") or [])]
-    return body + (f"\n\nCould not read: {', '.join(failed)}" if failed else "")
 
 
 async def crawl_site(
@@ -210,9 +218,15 @@ async def crawl_site(
     )
     if not results:
         return f"Crawling {url} returned no pages."
-    return f"Crawled {len(results)} pages of {url}:\n\n" + "\n\n".join(
-        f"## {r.get('url', '')}\n{(r.get('raw_content') or '')[:_PAGE_CHARS]}"
-        for r in results
+    return _json(
+        site=url,
+        pages=[
+            {
+                "url": r.get("url", ""),
+                "text": (r.get("raw_content") or "")[:_PAGE_CHARS],
+            }
+            for r in results
+        ],
     )
 
 
@@ -276,6 +290,22 @@ async def find_disconfirming_evidence(ctx: RunContext[ForecastDeps], claim: str)
 
 
 # Helpers
+
+_RESULT_FIELDS = ("title", "url", "content", "published_date", "score")
+"""The fields of a Tavily search result an agent is given.
+
+`raw_content` is left out. It is the whole page rather than the matching excerpt, and
+`extract_pages` is the tool for that, on the pages the agent chose to spend a call on.
+"""
+
+
+def _json(**fields) -> str:
+    """A tool result as JSON.
+
+    Tavily already answers with parsed dicts, so a tool passes them through rather than
+    rendering text. Nothing to keep in step when a field is added or renamed.
+    """
+    return json.dumps(fields, ensure_ascii=False, default=str)
 
 
 def _client() -> AsyncTavilyClient | None:
@@ -351,9 +381,21 @@ def _not_in_a_backtest(tool: str, forecast_date: datetime) -> str:
 
 
 def _search_kwargs(forecast_date: datetime | None) -> dict:
+    """The backtest clamp, as keyword arguments. All three, or none.
+
+    `topic="news"` because Tavily returns `published_date` only on news results, and
+    `_drop_leaked` drops every result that has none. Measured 2026-08-20 against a
+    2022-02-01 cutoff: `news` returned 10 of 10 results with a date, `general` 0 of 10. A
+    clamped run on `general` therefore keeps nothing, however well the server filtered.
+
+    `start_date` because Tavily silently ignores `end_date` when it arrives alone —
+    measured at 15 of 15 results published after the cutoff, against 0 of 15 once
+    `start_date` was added (ADR 17).
+    """
     if forecast_date is None:
         return {}
     return {
+        "topic": "news",
         "start_date": (forecast_date - timedelta(days=BACKTEST_WINDOW_DAYS))
         .date()
         .isoformat(),

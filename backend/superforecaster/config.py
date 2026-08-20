@@ -167,7 +167,7 @@ class Budget:
         """The ceilings Pydantic AI enforces.
 
         `tool_calls_limit` is deliberately **double** `tool_calls`, because it is no
-        longer what stops the searching — `agents.withdraw_spent_tools` is. That hook
+        longer what stops the searching — `agents.withdraw_tools` is. That hook
         stops offering the search tools the moment `tool_calls` is spent, which a model
         cannot argue with, so the real cap is exact.
 

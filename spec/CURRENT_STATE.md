@@ -658,7 +658,7 @@ scheduler, and no side effects on import.
 | `tools/dates.py` | `_as_utc`, `_parse_published` — timestamp parsing both upstreams need |
 | `errors.py` | `AgentTimeout`, `StageTimeout` |
 | `model_garden.py` | model registry with published training cutoffs (backtest clamp). Reads its bundled JSON; never writes it |
-| `agents/` | eleven agents, one module each: `decompose`, `lenses`, `outside_view`, `inside_view`, `reflect`, `synthesize`, `critic`, `draft`, `resolution`, `update`, `postmortem`. `__init__.py` holds `attach_budget` — the per-iteration budget instruction, in three bands so the order to stop arrives while a search is still legal (ADR 68) — `withdraw_spent_tools`, which stops offering the search tools once the budget is spent (ADR 69), plus `SEARCH_RESERVE` and `spent_usd` |
+| `agents/` | eleven agents, one module each: `decompose`, `lenses`, `outside_view`, `inside_view`, `reflect`, `synthesize`, `critic`, `draft`, `resolution`, `update`, `postmortem`. `__init__.py` holds `attach_budget` — the per-iteration budget instruction, in three bands so the order to stop arrives while a search is still legal (ADR 68) — `withdraw_tools`, which stops offering a tool the agent cannot spend a call on — the Tavily tools when there is no `TAVILY_API_KEY`, everything once the budget is spent (ADR 69), plus `SEARCH_RESERVE` and `spent_usd` |
 
 **Backend — `backend/app/`** — everything that runs it.
 

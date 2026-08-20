@@ -11,6 +11,7 @@ do I/O are driven through a stubbed httpx client.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -299,3 +300,63 @@ def test_search_kwargs_always_sends_a_start_date_with_the_end_date():
     assert kwargs["end_date"] == "2022-02-01"
     assert kwargs["start_date"] < kwargs["end_date"]
     assert kwargs["topic"] == "news"
+
+
+async def test_the_clamp_overrides_the_topic_the_agent_asked_for(
+    monkeypatch, tavily_key
+):
+    """The one the three `_search_kwargs` tests above cannot catch.
+
+    They assert on the dict. This asserts on what reached Tavily, which is the only place
+    the override can be bypassed — `search_web` also takes `topic` from the agent, and
+    whichever of the two is applied last wins.
+    """
+    captured = stub_tavily(monkeypatch, [result("a", "2022-01-05T00:00:00Z")])
+
+    await tavily_tools.search_web(
+        make_ctx(ForecastDeps(forecast_date=AS_OF)), "q", topic="general"
+    )
+
+    assert captured["topic"] == "news"
+
+
+async def test_the_agent_picks_the_topic_on_a_live_run(monkeypatch, tavily_key):
+    """The contrast that makes the override meaningful. Nothing to clamp, so nothing is."""
+    captured = stub_tavily(monkeypatch, [result("a", None)])
+
+    await tavily_tools.search_web(make_ctx(ForecastDeps()), "q", topic="finance")
+
+    assert captured["topic"] == "finance"
+    assert "end_date" not in captured
+
+
+async def test_search_web_answers_with_json(monkeypatch, tavily_key):
+    """Every tool passes Tavily's own dicts through, so there is no format to keep in step."""
+    stub_tavily(monkeypatch, [result("https://a.example", "2022-01-05T00:00:00Z")])
+
+    out = json.loads(await tavily_tools.search_web(make_ctx(ForecastDeps()), "q"))
+
+    assert out["query"] == "q"
+    assert out["published_on_or_before"] is None
+    assert out["results"] == [
+        {
+            "title": "t",
+            "url": "https://a.example",
+            "content": "c",
+            "published_date": "2022-01-05T00:00:00Z",
+        }
+    ]
+
+
+async def test_search_web_does_not_hand_over_whole_pages(monkeypatch, tavily_key):
+    """`raw_content` is the whole page. `extract_pages` is the tool for that, on the pages
+    the agent chose to spend a call on — five per search would spend a cell's token budget.
+    """
+    stub_tavily(
+        monkeypatch,
+        [{**result("https://a.example", None), "raw_content": "the entire page"}],
+    )
+
+    out = json.loads(await tavily_tools.search_web(make_ctx(ForecastDeps()), "q"))
+
+    assert "raw_content" not in out["results"][0]

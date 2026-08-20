@@ -15,12 +15,13 @@ from __future__ import annotations
 
 from ..config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
+from pydantic_ai.capabilities.hooks import Hooks
 
 from ..deps import ForecastDeps
 from ..tools import crawl_site, extract_pages, map_site, search_web
 from ..models import ForecastRecord, PostMortem
 from ..runner import run_agent
-from . import with_model
+from . import with_model, withdraw_tools
 
 INSTRUCTIONS = """You review resolved forecasts to find process errors. You are not
 grading the outcome.
@@ -70,6 +71,7 @@ def build_postmortem_agent(model: str | None = None) -> Agent[ForecastDeps, Post
         output_type=PostMortem,
         system_prompt=INSTRUCTIONS,
         tools=[search_web, extract_pages, crawl_site, map_site],
+        capabilities=[Hooks(prepare_tools=withdraw_tools)],
         retries=1,
     )
 

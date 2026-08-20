@@ -23,7 +23,7 @@ from ..errors import AgentTimeout
 from ..tools import crawl_site, extract_pages, map_site, search_web
 from ..models import CriteriaCritique
 from ..runner import run_agent
-from . import attach_budget, withdraw_spent_tools, with_model
+from . import attach_budget, withdraw_tools, with_model
 
 INSTRUCTIONS = """You review forecast questions for resolvability. You do not forecast
 them — you decide whether they COULD be scored fairly once the date arrives.
@@ -105,7 +105,7 @@ def build_critic_agent(
         output_type=CriteriaCritique,
         system_prompt=INSTRUCTIONS,
         tools=[search_web, extract_pages, crawl_site, map_site],
-        capabilities=[Hooks(prepare_tools=withdraw_spent_tools)],
+        capabilities=[Hooks(prepare_tools=withdraw_tools)],
         retries=1,
     )
     attach_budget(agent)

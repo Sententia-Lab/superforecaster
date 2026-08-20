@@ -49,7 +49,7 @@ from . import (
     forecast_date_note,
     attach_budget,
     format_question,
-    withdraw_spent_tools,
+    withdraw_tools,
     with_model,
 )
 
@@ -149,7 +149,7 @@ def build_inside_view_agent(
             search_wikipedia,
             find_disconfirming_evidence,
         ],
-        capabilities=[Hooks(prepare_tools=withdraw_spent_tools)],
+        capabilities=[Hooks(prepare_tools=withdraw_tools)],
         retries=1,
     )
     attach_budget(agent)
