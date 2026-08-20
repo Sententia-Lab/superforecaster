@@ -76,7 +76,7 @@ def stub(monkeypatch, payload: dict) -> dict:
 )
 async def test_page_reading_tools_refuse_in_a_backtest(call, tavily_key, monkeypatch):
     captured = stub(monkeypatch, {"results": []})
-    deps = ForecastDeps(as_of=AS_OF)
+    deps = ForecastDeps(forecast_date=AS_OF)
 
     out = await call(make_ctx(deps))
 
@@ -93,7 +93,7 @@ async def test_search_web_still_runs_in_a_backtest(tavily_key, monkeypatch):
         monkeypatch,
         {"results": [{"url": "a", "published_date": "2022-01-05T00:00:00Z"}]},
     )
-    deps = ForecastDeps(as_of=AS_OF)
+    deps = ForecastDeps(forecast_date=AS_OF)
 
     await tavily_tools.search_web(make_ctx(deps), "q")
 

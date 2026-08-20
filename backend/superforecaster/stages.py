@@ -330,7 +330,7 @@ async def run_synthesis_stage(
 async def run_all(
     input: ForecastInput,
     *,
-    as_of: datetime | None = None,
+    forecast_date: datetime | None = None,
     model: str | None = None,
     emit=None,
 ) -> tuple[Forecast, list[CheckViolation]]:
@@ -343,7 +343,7 @@ async def run_all(
     Returns the forecast plus any violations that survived the retry, so a caller can
     tell a clean forecast from one that never satisfied its own methodology.
     """
-    deps = ForecastDeps(as_of=as_of, model=model, emit=emit)
+    deps = ForecastDeps(forecast_date=forecast_date, model=model, emit=emit)
 
     decomposition = await run_decompose_stage(input, deps)
     researchable = [

@@ -139,7 +139,7 @@ async def run_agent(
     """Run an agent with tracing, a budget, and a deadline.
 
     `deps` is forwarded to `agent.run` so tools can read the contamination clamps
-    (`ForecastDeps.as_of`) and append to the leakage audit trail. The budget is attached
+    (`ForecastDeps.forecast_date`) and append to the leakage audit trail. The budget is attached
     to that copy so `agents.attach_budget`'s instruction can read it back off `ctx.deps`
     on every model request — one place puts it there, rather than every call site.
 

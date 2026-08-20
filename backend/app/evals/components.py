@@ -202,7 +202,7 @@ def score_critic(out: Any, expect: dict) -> ComponentScore:
 def score_resolution(out: Any, expect: dict) -> ComponentScore:
     """Binary classification against real ground truth — the strongest scorer here.
 
-    expect: appears_resolved (bool, the label at this as_of).
+    expect: appears_resolved (bool, the label at this forecast_date).
 
     A false positive closes a forecast permanently and is weighted accordingly: the
     case fails outright on one, whereas a false negative merely means it gets
@@ -425,23 +425,23 @@ async def _dispatch(case: ComponentCase, deps: ForecastDeps) -> Any:
 async def run_case(case: ComponentCase, *, mode: str = "clean") -> ComponentScore:
     """Run one case and score it.
 
-    In clean mode a case carrying `as_of` needs a model trained before that date;
+    In clean mode a case carrying `forecast_date` needs a model trained before that date;
     without one the case is skipped rather than scored against a contaminated model.
     """
     model = None
-    if mode == "clean" and case.as_of is not None:
-        entry = pick_clean_model(case.as_of)
+    if mode == "clean" and case.forecast_date is not None:
+        entry = pick_clean_model(case.forecast_date)
         if entry is None:
             return ComponentScore(
                 case_id=case.id,
                 skipped=(
                     f"no available model with a training cutoff before "
-                    f"{case.as_of.date().isoformat()}"
+                    f"{case.forecast_date.date().isoformat()}"
                 ),
             )
         model = entry.id
 
-    deps = ForecastDeps(as_of=case.as_of, model=model)
+    deps = ForecastDeps(forecast_date=case.forecast_date, model=model)
     try:
         output = await _dispatch(case, deps)
     except Exception as exc:  # noqa: BLE001 — one bad case must not abort the run

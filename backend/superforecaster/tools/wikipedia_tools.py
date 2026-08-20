@@ -1,6 +1,6 @@
 """Wikipedia lookup, clamped to a point in time.
 
-With `ctx.deps.as_of` set this fetches the newest revision at or before that timestamp
+With `ctx.deps.forecast_date` set this fetches the newest revision at or before that timestamp
 rather than the current article, so the agent reads the page as it stood on the day the
 question was asked. That is the Wikipedia half of ADR 17 clamp 1.
 """
@@ -35,14 +35,14 @@ def _wikipedia_search_params(topic: str, limit: int = 3) -> dict:
     }
 
 
-def _wikipedia_params(title: str, as_of: datetime | None) -> dict:
+def _wikipedia_params(title: str, forecast_date: datetime | None) -> dict:
     """Build the Wikipedia content request for one article.
 
-    With `as_of` set we ask for the newest revision at or before that timestamp
+    With `forecast_date` set we ask for the newest revision at or before that timestamp
     rather than the current article, so the agent reads the page as it stood on the
     day the question was asked.
     """
-    if as_of is None:
+    if forecast_date is None:
         return {
             "action": "query",
             "format": "json",
@@ -56,7 +56,7 @@ def _wikipedia_params(title: str, as_of: datetime | None) -> dict:
         "format": "json",
         "titles": title,
         "prop": "revisions",
-        "rvstart": _as_utc(as_of).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "rvstart": _as_utc(forecast_date).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "rvdir": "older",
         "rvlimit": 1,
         "rvprop": "content|timestamp",
@@ -75,14 +75,14 @@ def _wikipedia_headers() -> dict[str, str]:
 
 
 def _extract_page_text(
-    page: dict, as_of: datetime | None
+    page: dict, forecast_date: datetime | None
 ) -> tuple[str, datetime | None]:
     """Pull article text out of either response shape.
 
     Current articles come back under `extract`; historical revisions come back under
     `revisions[0].slots.main['*']` with a timestamp.
     """
-    if as_of is None:
+    if forecast_date is None:
         return page.get("extract", ""), None
 
     revisions = page.get("revisions") or []
@@ -102,7 +102,7 @@ async def search_wikipedia(ctx: RunContext[ForecastDeps], topic: str) -> str:
 
     The API key is optional — set it to raise the rate limit, or leave it unset.
     """
-    as_of = ctx.deps.as_of
+    forecast_date = ctx.deps.forecast_date
     headers = _wikipedia_headers()
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -117,7 +117,7 @@ async def search_wikipedia(ctx: RunContext[ForecastDeps], topic: str) -> str:
             top_title = hits[0]["title"]
             content_resp = await client.get(
                 WIKIPEDIA_URL,
-                params=_wikipedia_params(top_title, as_of),
+                params=_wikipedia_params(top_title, forecast_date),
                 headers=headers,
             )
             content_resp.raise_for_status()
@@ -129,12 +129,12 @@ async def search_wikipedia(ctx: RunContext[ForecastDeps], topic: str) -> str:
         return f"Wikipedia article '{top_title}' had no content"
 
     page = next(iter(pages.values()))
-    text, revision_date = _extract_page_text(page, as_of)
+    text, revision_date = _extract_page_text(page, forecast_date)
     if not text:
-        if as_of is not None:
+        if forecast_date is not None:
             return (
                 f"Wikipedia article '{top_title}' has no revision from on or before "
-                f"{as_of.date().isoformat()} — the article did not exist yet."
+                f"{forecast_date.date().isoformat()} — the article did not exist yet."
             )
         return f"Wikipedia article '{top_title}' had no content"
 
@@ -145,7 +145,7 @@ async def search_wikipedia(ctx: RunContext[ForecastDeps], topic: str) -> str:
             query=topic,
             published_date=revision_date,
             tool="search_wikipedia",
-            as_of=_as_utc(as_of) if as_of else None,
+            forecast_date=_as_utc(forecast_date) if forecast_date else None,
         )
     )
 

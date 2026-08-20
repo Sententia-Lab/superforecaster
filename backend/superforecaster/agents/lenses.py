@@ -25,7 +25,7 @@ from ..deps import ForecastDeps
 from ..tools import crawl_site, extract_pages, map_site, search_web
 from ..models import Decomposition, ForecastInput, SubQuestionLenses, SubPrediction
 from ..runner import run_agent
-from . import as_of_note, format_question, with_model, withdraw_spent_tools
+from . import forecast_date_note, format_question, with_model, withdraw_spent_tools
 
 INSTRUCTIONS = """You choose reference populations for ONE part of a forecasting question.
 You do not look anything up and you do not estimate any probability. Another step
@@ -134,7 +134,7 @@ async def run_choose_lenses(
 
     prompt = f"""Choose reference populations for ONE part of this question.
 
-{format_question(input)}{as_of_note(deps)}
+{format_question(input)}{forecast_date_note(deps)}
 
 YOUR PART — {sub_question.id}: {sub_question.question}
 Why the decomposition split it out: {sub_question.rationale}

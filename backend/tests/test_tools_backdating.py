@@ -1,4 +1,4 @@
-"""Tests for clamp 1 — the tools may not return anything published after `as_of`.
+"""Tests for clamp 1 — the tools may not return anything published after `forecast_date`.
 
 These earn their place because a bug here is silent. If `end_date` quietly stops
 reaching Tavily, every backtest still runs, still prints a scorecard, and still looks
@@ -158,7 +158,7 @@ def stub_tavily(monkeypatch, results: list[dict]) -> dict:
 
 async def test_search_web_sends_end_date_to_tavily(monkeypatch, tavily_key):
     captured = stub_tavily(monkeypatch, [result("a", "2022-01-05T00:00:00Z")])
-    ctx = make_ctx(ForecastDeps(as_of=AS_OF))
+    ctx = make_ctx(ForecastDeps(forecast_date=AS_OF))
 
     await tavily_tools.search_web(ctx, "russia ukraine")
 
@@ -171,7 +171,7 @@ async def test_search_web_sends_end_date_to_tavily(monkeypatch, tavily_key):
 
 async def test_search_web_withholds_leaked_results(monkeypatch, tavily_key):
     stub_tavily(monkeypatch, [result("late", "2024-06-01T00:00:00Z")])
-    ctx = make_ctx(ForecastDeps(as_of=AS_OF))
+    ctx = make_ctx(ForecastDeps(forecast_date=AS_OF))
 
     out = await tavily_tools.search_web(ctx, "q")
 
@@ -181,7 +181,7 @@ async def test_search_web_withholds_leaked_results(monkeypatch, tavily_key):
 
 async def test_search_web_records_sources_on_deps(monkeypatch, tavily_key):
     stub_tavily(monkeypatch, [result("a", "2022-01-05T00:00:00Z")])
-    deps = ForecastDeps(as_of=AS_OF)
+    deps = ForecastDeps(forecast_date=AS_OF)
 
     await tavily_tools.search_web(make_ctx(deps), "q")
 
@@ -192,7 +192,7 @@ async def test_search_web_records_sources_on_deps(monkeypatch, tavily_key):
 async def test_leaked_sources_surfaces_a_clamp_failure(monkeypatch, tavily_key):
     """If filtering ever regresses, this is the property that catches it."""
     stub_tavily(monkeypatch, [result("late", "2024-06-01T00:00:00Z")])
-    deps = ForecastDeps(as_of=AS_OF)
+    deps = ForecastDeps(forecast_date=AS_OF)
 
     await tavily_tools.search_web(make_ctx(deps), "q")
 
@@ -237,7 +237,7 @@ async def test_backtest_clamp_beats_the_models_dates(monkeypatch, tavily_key):
     captured = stub_tavily(monkeypatch, [result("a", "2022-01-05T00:00:00Z")])
 
     await tavily_tools.search_web(
-        make_ctx(ForecastDeps(as_of=AS_OF)),
+        make_ctx(ForecastDeps(forecast_date=AS_OF)),
         "q",
         topic="general",
         start_date="2026-01-01",

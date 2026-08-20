@@ -201,17 +201,17 @@ RESOLUTION DATE: {input.resolution_date.isoformat()}
 CATEGORY: {input.category}"""
 
 
-def as_of_note(deps: ForecastDeps) -> str:
+def forecast_date_note(deps: ForecastDeps) -> str:
     """Tell the agent it is forecasting from a point in the past, when it is.
 
     Without this the model narrates in the present tense about a date years gone and
     treats an empty search as "nothing is happening" rather than "I am looking at an
     older world."
     """
-    if deps.as_of is None:
+    if deps.forecast_date is None:
         return ""
     return (
-        f"\n\nIMPORTANT — YOU ARE FORECASTING AS OF {deps.as_of.date().isoformat()}.\n"
+        f"\n\nIMPORTANT — YOU ARE FORECASTING AS OF {deps.forecast_date.date().isoformat()}.\n"
         "Your search tools return nothing published after that date. Reason only from "
         "what was knowable then. Do not use knowledge of what happened afterwards, and "
         "do not treat sparse results as evidence that nothing was happening."

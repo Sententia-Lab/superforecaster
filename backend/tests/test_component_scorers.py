@@ -313,7 +313,7 @@ async def test_case_is_skipped_when_no_clean_model_exists(tmp_path):
         agent="decompose",
         input={},
         expect={},
-        as_of=datetime(2022, 1, 1, tzinfo=timezone.utc),
+        forecast_date=datetime(2022, 1, 1, tzinfo=timezone.utc),
     )
     score = await ce.run_case(case, mode="clean")
     assert isinstance(score, ComponentScore)

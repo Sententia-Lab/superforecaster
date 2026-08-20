@@ -30,7 +30,7 @@ from ..models import (
     OutsideView,
 )
 from ..runner import run_agent
-from . import as_of_note, format_question, with_model
+from . import forecast_date_note, format_question, with_model
 
 INSTRUCTIONS = """You produce the final Forecast from work already done. You have no
 search tools — the evidence gathering is finished. Commit to a number.
@@ -161,7 +161,7 @@ async def run_synthesize(
 
     prompt = f"""Produce the final Forecast.
 
-{format_question(input)}{as_of_note(deps)}
+{format_question(input)}{forecast_date_note(deps)}
 
 DECOMPOSITION:
 {decomposition.model_dump_json(indent=2)}

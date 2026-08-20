@@ -46,7 +46,7 @@ from ..tools import (
     search_wikipedia,
 )
 from . import (
-    as_of_note,
+    forecast_date_note,
     attach_budget,
     format_question,
     withdraw_spent_tools,
@@ -187,7 +187,7 @@ async def run_adjust_lens(
 
     prompt = f"""Adjust the measured rate for ONE population.
 
-{format_question(input)}{as_of_note(deps)}
+{format_question(input)}{forecast_date_note(deps)}
 
 THE PART OF THE QUESTION THIS BEARS ON — {sub_question.id}: {sub_question.question}
 

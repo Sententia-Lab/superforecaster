@@ -1,10 +1,3 @@
-# Plan: write this spec to `spec/planned/spec14.md`
-
-The single action on approval: create `spec/planned/spec14.md` with the content below, verbatim.
-No code changes in this step. `spec13.md` is cancelled, so 14 is the next free number.
-
----
-
 # Spec 14 — Configurable Tavily search
 
 ## The problem

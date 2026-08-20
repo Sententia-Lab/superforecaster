@@ -11,7 +11,7 @@ violations that survived its retry, so a caller can tell a clean forecast from o
 never satisfied its own checks.
 
 To drive one stage at a time, call the functions in `superforecaster.stages` yourself,
-passing a `ForecastDeps` — that is what carries the backtest clamps (`as_of`, `model`)
+passing a `ForecastDeps` — that is what carries the backtest clamps (`forecast_date`, `model`)
 and the progress sink. To reach a single agent, call its `run_*` seam in
 `superforecaster.agents`.
 

@@ -20,7 +20,7 @@ from .models import SourceRef
 class ForecastDeps:
     """The two contamination clamps, plus the audit trail that proves they worked.
 
-    In production both clamps are off: `as_of` is None so tools return current
+    In production both clamps are off: `forecast_date` is None so tools return current
     results, and `model` is None so agents use `resolve_agent_model()`.
 
     In a backtest both are set from the question's `asked_at`, so the agent can
@@ -28,7 +28,7 @@ class ForecastDeps:
     that was trained on the answer.
     """
 
-    as_of: datetime | None = None
+    forecast_date: datetime | None = None
     model: str | None = None
     sources_seen: list[SourceRef] = field(default_factory=list)
     """Every source a tool recorded, in the order the tools recorded it.
@@ -73,6 +73,6 @@ class ForecastDeps:
 
     @property
     def leaked_sources(self) -> list[SourceRef]:
-        """Sources dated after `as_of`. Should always be empty — a non-empty list
+        """Sources dated after `forecast_date`. Should always be empty — a non-empty list
         means the tool clamp has a bug, not that the forecast is merely suspect."""
         return [s for s in self.sources_seen if s.is_leak]

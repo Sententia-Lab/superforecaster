@@ -270,11 +270,13 @@ async def _cmd_models(args: argparse.Namespace) -> int:
         return 0
 
     if args.action == "pick":
-        as_of = datetime.fromisoformat(args.as_of).replace(tzinfo=timezone.utc)
-        entry = model_garden.pick_clean_model(as_of)
+        forecast_date = datetime.fromisoformat(args.forecast_date).replace(
+            tzinfo=timezone.utc
+        )
+        entry = model_garden.pick_clean_model(forecast_date)
         if entry is None:
             print(
-                f"No clean model for a question asked {args.as_of} — "
+                f"No clean model for a question asked {args.forecast_date} — "
                 "every available model was trained after it.",
                 file=sys.stderr,
             )
@@ -530,13 +532,15 @@ def postmortem(
 @app.command()
 def models(
     action: str = typer.Argument("list", help="list | probe | pick"),
-    as_of: str = typer.Option(None, help="Date to pick a clean model for (YYYY-MM-DD)"),
+    forecast_date: str = typer.Option(
+        None, help="Date to pick a clean model for (YYYY-MM-DD)"
+    ),
     verbose: bool = VERBOSE,
 ) -> None:
     """Inspect the model garden."""
     if action not in ("list", "probe", "pick"):
         raise typer.BadParameter("action must be list, probe, or pick")
-    _run(_cmd_models, action=action, as_of=as_of, verbose=verbose)
+    _run(_cmd_models, action=action, forecast_date=forecast_date, verbose=verbose)
 
 
 @app.command()
