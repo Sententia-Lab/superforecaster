@@ -199,50 +199,22 @@ async def test_leaked_sources_surfaces_a_clamp_failure(monkeypatch, tavily_key):
     assert [s.url for s in deps.leaked_sources] == ["late"]
 
 
-async def test_search_web_passes_the_models_arguments_through(monkeypatch, tavily_key):
-    captured = stub_tavily(monkeypatch, [result("a", "2022-01-05T00:00:00Z")])
-
-    await tavily_tools.search_web(
-        make_ctx(ForecastDeps()),
-        "q",
-        search_depth="advanced",
-        include_domains=["ons.gov.uk"],
-        include_answer="basic",
-        days=7,
-    )
-
-    assert captured["search_depth"] == "advanced"
-    assert captured["include_domains"] == ["ons.gov.uk"]
-    assert captured["include_answer"] == "basic"
-    assert captured["days"] == 7
-    assert "topic" not in captured, "an argument the model omitted must not be invented"
-
-
 async def test_search_web_clamps_what_one_call_may_spend(monkeypatch, tavily_key):
+    """The model chooses the query and nothing else. Breadth and timeout are the tool's."""
     captured = stub_tavily(monkeypatch, [result("a", "2022-01-05T00:00:00Z")])
 
-    await tavily_tools.search_web(
-        make_ctx(ForecastDeps()), "q", max_results=50, chunks_per_source=99
-    )
+    await tavily_tools.search_web(make_ctx(ForecastDeps()), "q")
 
     assert captured["max_results"] == tavily_tools.MAX_RESULTS
     assert captured["chunks_per_source"] == tavily_tools.MAX_CHUNKS_PER_SOURCE
-    assert (
-        captured["timeout"] == tavily_tools._TIMEOUT
-    ), "timeout is not the model's to set"
+    assert captured["timeout"] == tavily_tools._TIMEOUT
 
 
-async def test_backtest_clamp_beats_the_models_dates(monkeypatch, tavily_key):
-    """The model may now pass dates. It must not be able to widen the clamp with them."""
+async def test_backtest_clamp_beats_the_tools_own_defaults(monkeypatch, tavily_key):
+    """`_search_kwargs` is applied last, so no default above it can widen the clamp."""
     captured = stub_tavily(monkeypatch, [result("a", "2022-01-05T00:00:00Z")])
 
-    await tavily_tools.search_web(
-        make_ctx(ForecastDeps(forecast_date=AS_OF)),
-        "q",
-        topic="general",
-        start_date="2026-01-01",
-        end_date="2026-08-01",
-    )
+    await tavily_tools.search_web(make_ctx(ForecastDeps(forecast_date=AS_OF)), "q")
 
     assert captured["end_date"] == "2022-02-01"
     assert captured["start_date"] < "2022-02-01"

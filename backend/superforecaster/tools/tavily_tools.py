@@ -12,12 +12,11 @@ every result against `ctx.deps.forecast_date`. The other three take no date of a
 the page as it stands today, so in a backtest each is an uncontrolled leak. They refuse
 instead of running, which keeps ADR 17 clamp 1 true for every path.
 
-`search_web` takes the whole `POST /search` parameter list, so a model can pick its own
-depth, domains, and time window. Three things stay ours, because `config.BUDGETS` counts
-calls rather than tokens and one call must not spend a cell's whole budget: `max_results`
-is clamped to `MAX_RESULTS`, `chunks_per_source` to `MAX_CHUNKS_PER_SOURCE`, and `timeout`
-is not in the signature at all. `_search_kwargs` is applied after the model's arguments, so
-a `topic`, `start_date`, or `end_date` the model passed cannot loosen the backtest clamp.
+`search_web` takes a query and nothing else. Every other `POST /search` parameter is set
+here, because `config.BUDGETS` counts calls rather than tokens and one call must not spend
+a cell's whole budget: `max_results` is `MAX_RESULTS`, `chunks_per_source` is
+`MAX_CHUNKS_PER_SOURCE`, and `timeout` is `_TIMEOUT`. `_search_kwargs` is applied last, so
+no default above it can loosen the backtest clamp.
 
 `extract_pages`, `crawl_site`, and `map_site` keep constant depth and breadth.
 
@@ -54,11 +53,6 @@ _SLOW_TIMEOUT = 60.0
 inside `DEFAULT_AGENT_TIMEOUT_SECONDS` — a tool that outlives the agent kills the step."""
 
 
-def _in_range(value: int | None, low: int, high: int) -> int | None:
-    """The number the model asked for, held inside a range this tool sets."""
-    return None if value is None else min(max(value, low), high)
-
-
 def _client() -> AsyncTavilyClient | None:
     """A client for the key that is set right now, or None when there is none.
 
@@ -67,43 +61,6 @@ def _client() -> AsyncTavilyClient | None:
     """
     key = get_settings().tavily_api_key
     return AsyncTavilyClient(api_key=key) if key else None
-
-
-BACKTEST_WINDOW_DAYS = 3650
-"""How far before `forecast_date` a clamped search may look.
-
-Ten years, because a reference class wants depth — the width is not what makes the clamp
-work, `start_date` merely being present is. Verified from 2 to 10 years with identical
-results.
-"""
-
-
-def _search_kwargs(forecast_date: datetime | None) -> dict:
-    """The date clamp, as keyword arguments.
-
-    Three things, and **all three are required**:
-
-    - `topic="news"` because Tavily only returns `published_date` on news results, and
-      without that field `_drop_leaked` has nothing to check.
-    - `end_date`, the cutoff itself.
-    - `start_date`, which looks redundant beside `end_date` and is not. **Tavily silently
-      ignores `end_date` when it arrives alone.** Measured across three queries: with
-      `end_date` only, 15 of 15 results were published after the cutoff; adding
-      `start_date`, 0 of 15 were. No error, no warning — the filter just does not apply.
-
-    Before this, `_drop_leaked` discarded every result Tavily returned, so a clamped run was
-    not merely protected, it was starved: the agent got "no contemporaneous evidence" for
-    every search and fell back to a pre-research guess.
-    """
-    if forecast_date is None:
-        return {}
-    return {
-        "topic": "news",
-        "start_date": (forecast_date - timedelta(days=BACKTEST_WINDOW_DAYS))
-        .date()
-        .isoformat(),
-        "end_date": forecast_date.date().isoformat(),
-    }
 
 
 def _drop_leaked(
@@ -165,136 +122,6 @@ def _not_in_a_backtest(tool: str, forecast_date: datetime) -> str:
         f"[{tool} is disabled for this run. You are forecasting as of "
         f"{forecast_date.date().isoformat()}, and this tool returns pages as they stand today, "
         "which would show you the future. Use search_web, which is filtered to that date.]"
-    )
-
-
-async def search_web(
-    ctx: RunContext[ForecastDeps],
-    query: str,
-    search_depth: Literal["basic", "advanced", "fast", "ultra-fast"] | None = None,
-    chunks_per_source: int | None = None,
-    topic: Literal["general", "news", "finance"] | None = None,
-    time_range: Literal["day", "week", "month", "year"] | None = None,
-    start_date: str | None = None,
-    end_date: str | None = None,
-    max_results: int | None = None,
-    include_domains: Sequence[str] | None = None,
-    exclude_domains: Sequence[str] | None = None,
-    country: str | None = None,
-    include_answer: bool | Literal["basic", "advanced"] | None = None,
-    include_raw_content: bool | Literal["markdown", "text"] | None = None,
-    include_images: bool | None = None,
-    include_image_descriptions: bool | None = None,
-    include_favicon: bool | None = None,
-    include_usage: bool | None = None,
-    auto_parameters: bool | None = None,
-    exact_match: bool | None = None,
-) -> str:
-    """Search the web for current information and reporting.
-
-    Returns the top results as text, or a message explaining why none are available.
-    Missing results mean missing information, not an error — say so in your reasoning
-    rather than treating it as a failure.
-
-    Leave an argument out and Tavily uses its own default. Set only what the question needs.
-
-    Args:
-        query: What to search for. Write it the way you would type it into a search engine.
-        search_depth: How hard one query works, against how long it takes. `basic` is the
-            default and suits most questions. `advanced` gives the highest relevance and
-            costs two API credits instead of one. `fast` and `ultra-fast` trade relevance
-            for speed. `ultra-fast` returns one summary per page instead of snippets.
-        chunks_per_source: How many snippets to return per page, 1 to 3. Each snippet holds
-            up to 500 characters of the page. Lower it to read more pages for the same
-            number of tokens. `ultra-fast` ignores it.
-        topic: The kind of search. `news` covers politics, sport, and current events from
-            mainstream media. `general` is broader. `finance` covers markets and filings.
-            Only `news` results carry a publication date.
-        time_range: How far back to look from today, by publication or update date.
-        start_date: Return only results published on or after this date, as YYYY-MM-DD.
-        end_date: Return only results published on or before this date, as YYYY-MM-DD.
-        days: How many days back to look. An alternative to `time_range`.
-        max_results: How many results to return. Anything above 5 is lowered to 5.
-        include_domains: Search these domains only. Use it when you already know the
-            authority, such as "ons.gov.uk" for UK statistics. Maximum 300.
-        exclude_domains: Skip these domains. Maximum 150.
-        country: Prefer results from one country, as its lowercase English name, such as
-            "united kingdom". Tavily accepts it only when `topic` is "general".
-        include_answer: Add a generated answer above the results. `basic` is short,
-            `advanced` is longer. Read the sources yourself before you rely on it.
-        include_raw_content: Add the full text of every result, as "markdown" or "text".
-            Expensive, and it slows the call down. Prefer `extract_pages` for the few pages
-            you actually need.
-        include_images: Add image URLs to the response.
-        include_image_descriptions: Describe each image. Needs `include_images`.
-        include_favicon: Add the favicon URL of each result.
-        include_usage: Add how many API credits the call spent.
-        auto_parameters: Let Tavily set the parameters from the query itself. It may raise
-            `search_depth` to "advanced", which costs two credits. Set `search_depth` to
-            "basic" yourself to avoid that. `max_results`, `include_answer`, and
-            `include_raw_content` always stay as you set them.
-        exact_match: Return only results that contain the quoted phrases in `query`. Put
-            the phrase in double quotes inside the query itself.
-    """
-    forecast_date = ctx.deps.forecast_date
-    client = _client()
-    if client is None:
-        return _unavailable("Web search", query)
-
-    options = {
-        "search_depth": search_depth,
-        "chunks_per_source": _in_range(chunks_per_source, 1, MAX_CHUNKS_PER_SOURCE),
-        "topic": topic,
-        "time_range": time_range,
-        "start_date": start_date,
-        "end_date": end_date,
-        "include_domains": include_domains,
-        "exclude_domains": exclude_domains,
-        "country": country,
-        "include_answer": include_answer,
-        "include_raw_content": include_raw_content,
-        "include_images": include_images,
-        "include_image_descriptions": include_image_descriptions,
-        "include_favicon": include_favicon,
-        "include_usage": include_usage,
-        "auto_parameters": auto_parameters,
-        "exact_match": exact_match,
-    }
-    options = {name: value for name, value in options.items() if value is not None}
-    options.setdefault("search_depth", "basic")
-    # Two ceilings the model cannot raise, because neither is read from its arguments.
-    options["max_results"] = _in_range(max_results, 1, MAX_RESULTS) or MAX_RESULTS
-    # Applied last, so a topic or date the model passed cannot loosen the backtest clamp.
-    options.update(_search_kwargs(forecast_date))
-
-    try:
-        payload = await client.search(query, timeout=_TIMEOUT, **options)
-    except Exception as e:
-        return f"Web search error: {e}"
-
-    raw = payload.get("results", [])
-    results, refs = _drop_leaked(raw, forecast_date, query)
-    ctx.deps.sources_seen.extend(refs)
-
-    if not results:
-        if forecast_date is not None and raw:
-            return (
-                f"No web results for '{query}' published on or before "
-                f"{forecast_date.date().isoformat()}. {len(raw)} newer or undated results were "
-                "withheld — treat this as an absence of contemporaneous evidence."
-            )
-        return f"No web results for: {query}"
-
-    header = (
-        f"Results published on or before {forecast_date.date().isoformat()}:\n\n"
-        if forecast_date is not None
-        else ""
-    )
-    return header + "\n\n".join(
-        f"- {r.get('title', 'Untitled')} ({r.get('url', '')})"
-        + (f" [{r['published_date']}]" if r.get("published_date") else "")
-        + f"\n  {r.get('content', '')[:400]}"
-        for r in results
     )
 
 
@@ -419,11 +246,92 @@ async def find_disconfirming_evidence(ctx: RunContext[ForecastDeps], claim: str)
         f"why {claim} will not happen",
         f"{claim} criticism skepticism doubts",
     ]
-    # Three searches inside one tool call cost one call, because `search_web` is invoked
-    # here as a plain function and only the outer call reaches the toolset. The model made
-    # one decision, so it is charged for one.
     sections: list[str] = []
     for angle in angles:
         result = await search_web(ctx, angle)
         sections.append(f"### {angle}\n{result}")
     return "\n\n".join(sections)
+
+
+BACKTEST_WINDOW_DAYS = 3650
+"""How far before `forecast_date` a clamped search may look.
+
+Ten years, because a reference class wants depth — the width is not what makes the clamp
+work, `start_date` merely being present is. Verified from 2 to 10 years with identical
+results.
+"""
+
+
+def _search_kwargs(forecast_date: datetime | None) -> dict:
+    if forecast_date is None:
+        return {}
+    return {
+        "start_date": (forecast_date - timedelta(days=BACKTEST_WINDOW_DAYS))
+        .date()
+        .isoformat(),
+        "end_date": forecast_date.date().isoformat(),
+    }
+
+
+async def search_web(
+    ctx: RunContext[ForecastDeps],
+    query: str,
+    topic: Literal["general", "news", "finance"] = "general",
+) -> str:
+    """Search the web for current information and reporting.
+
+    Returns the top results as text, or a message explaining why none are available.
+    Missing results mean missing information, not an error — say so in your reasoning
+    rather than treating it as a failure.
+
+    Args:
+        query: What to search for. Write it the way you would type it into a search engine. Wrap target phrases in quotes within your query (e.g. "John Smith" CEO Acme Corp) to get exact matches on those strings. Punctuation is typically ignored inside quotes.
+        topic: The category of the search. News is useful for retrieving real-time updates, particularly about politics, sports, and major current events covered by mainstream media sources. General is for broader, more general-purpose searches that may include a wide range of sources.
+
+    """
+    forecast_date = ctx.deps.forecast_date
+    client = _client()
+    if client is None:
+        return _unavailable("Web search", query)
+
+    try:
+        payload = await client.search(
+            query,
+            timeout=_TIMEOUT,
+            search_depth="basic",
+            max_results=MAX_RESULTS,
+            chunks_per_source=MAX_CHUNKS_PER_SOURCE,
+            include_favicon=True,
+            include_usage=True,
+            include_raw_content="markdown",
+            topic=topic,
+            exact_match=True,
+            **_search_kwargs(forecast_date),
+        )
+    except Exception as e:
+        return f"Web search error: {e}"
+
+    raw = payload.get("results", [])
+    results, refs = _drop_leaked(raw, forecast_date, query)
+    ctx.deps.sources_seen.extend(refs)
+
+    if not results:
+        if forecast_date is not None and raw:
+            return (
+                f"No web results for '{query}' published on or before "
+                f"{forecast_date.date().isoformat()}. {len(raw)} newer or undated results were "
+                "withheld — treat this as an absence of contemporaneous evidence."
+            )
+        return f"No web results for: {query}"
+
+    header = (
+        f"Results published on or before {forecast_date.date().isoformat()}:\n\n"
+        if forecast_date is not None
+        else ""
+    )
+    return header + "\n\n".join(
+        f"- {r.get('title', 'Untitled')} ({r.get('url', '')})"
+        + (f" [{r['published_date']}]" if r.get("published_date") else "")
+        + f"\n  {r.get('content', '')[:400]}"
+        for r in results
+    )
