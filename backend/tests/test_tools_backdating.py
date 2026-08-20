@@ -360,3 +360,40 @@ async def test_search_web_does_not_hand_over_whole_pages(monkeypatch, tavily_key
     out = json.loads(await tavily_tools.search_web(make_ctx(ForecastDeps()), "q"))
 
     assert "raw_content" not in out["results"][0]
+
+
+# ---------- exact_match is read off the query, not asked for ----------
+
+
+async def test_a_quoted_phrase_turns_on_exact_match(monkeypatch, tavily_key):
+    """The `query` description tells the agent that quoting requires a phrase verbatim.
+
+    It only did that when a separate flag was also set, which the agent had no reason to
+    connect — one real run quoted three figures, got no exact filter, and came back with an
+    unrelated company. Reading the flag off the query is what makes the description true.
+    """
+    captured = stub_tavily(monkeypatch, [result("a", None)])
+
+    await tavily_tools.search_web(make_ctx(ForecastDeps()), 'Alphabet "annual revenue"')
+
+    assert captured["exact_match"] is True
+
+
+async def test_an_unquoted_query_leaves_exact_match_off(monkeypatch, tavily_key):
+    """Tavily rejects `exact_match` without a quoted phrase, so this is not just a default —
+    sending True here would make every ordinary search a BadRequestError."""
+    captured = stub_tavily(monkeypatch, [result("a", None)])
+
+    await tavily_tools.search_web(make_ctx(ForecastDeps()), "Alphabet annual revenue")
+
+    assert captured["exact_match"] is False
+
+
+async def test_the_agent_cannot_set_exact_match(monkeypatch, tavily_key):
+    """It is not a parameter. A value in the signature is one the model can contradict."""
+    import inspect
+
+    params = inspect.signature(tavily_tools.search_web).parameters
+
+    assert "exact_match" not in params
+    assert set(params) == {"ctx", "query", "topic"}

@@ -19,6 +19,10 @@ from .dates import _as_utc, _parse_published
 
 WIKIPEDIA_URL = "https://en.wikipedia.org/w/api.php"
 
+USER_AGENT = "superforecaster/0.3.0 (https://github.com/Sententia-Lab/superforecaster)"
+"""Wikimedia's User-Agent policy asks for a name and a contact URL, and refuses anything
+that looks like a default client. Anonymous access still needs this, key or no key."""
+
 _TIMEOUT = 15.0
 
 
@@ -65,13 +69,17 @@ def _wikipedia_params(title: str, forecast_date: datetime | None) -> dict:
 
 
 def _wikipedia_headers() -> dict[str, str]:
-    """A bearer token when one is configured, and no header otherwise.
+    """The `User-Agent` Wikimedia requires, plus a bearer token when one is configured.
 
-    The API key is optional. Wikimedia serves this endpoint anonymously; an access token
-    only raises the rate limit.
+    The API key is optional and only raises the rate limit. The `User-Agent` is not
+    optional — Wikimedia answers a default client agent with 403, so without this header
+    every call fails and the agent spends a tool call learning nothing.
     """
+    headers = {"User-Agent": USER_AGENT}
     key = get_settings().wikipedia_api_key
-    return {"Authorization": f"Bearer {key}"} if key else {}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
 
 
 def _extract_page_text(

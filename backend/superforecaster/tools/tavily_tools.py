@@ -12,7 +12,7 @@ every result against `ctx.deps.forecast_date`. The other three take no date of a
 the page as it stands today, so in a backtest each is an uncontrolled leak. They refuse
 instead of running, which keeps ADR 17 clamp 1 true for every path.
 
-The agent chooses `query`, `topic`, and `exact_match`. Every other `POST /search`
+The agent chooses `query` and `topic`. Every other `POST /search`
 parameter is set here, because `config.BUDGETS` counts calls rather than tokens and one
 call must not spend a cell's whole budget: `max_results` is `MAX_RESULTS`,
 `chunks_per_source` is `MAX_CHUNKS_PER_SOURCE`, and `timeout` is `_TIMEOUT`.
@@ -65,7 +65,6 @@ async def search_web(
     ctx: RunContext[ForecastDeps],
     query: str,
     topic: Literal["general", "news", "finance"] = "general",
-    exact_match: bool = False,
 ) -> str:
     """Search the web for current information and reporting.
 
@@ -74,9 +73,8 @@ async def search_web(
     rather than treating it as a failure.
 
     Args:
-        query: What to search for. Write it the way you would type it into a search engine. Wrap target phrases in quotes within your query (e.g. "John Smith" CEO Acme Corp) to get exact matches on those strings. Punctuation is typically ignored inside quotes.
-        topic: The category of the search. News is useful for retrieving real-time updates, particularly about politics, sports, and major current events covered by mainstream media sources. General is for broader, more general-purpose searches that may include a wide range of sources.
-        exact_match: when set to True, tool expects a quoted string in the query. If True but no quoted string, it will throw an error
+        query: What to search for. Write it the way you would type it into a search engine. Wrap a phrase in double quotes to require it verbatim (e.g. "John Smith" CEO Acme Corp) — results that do not contain the quoted phrase are dropped. Quote a phrase only when a near match is no use to you, because requiring one narrows the results.
+        topic: The category of the search. News is useful for retrieving real-time updates, particularly about politics, sports, and major current events covered by mainstream media sources. Finance covers markets, company results, and filings. General is for broader, more general-purpose searches that may include a wide range of sources.
 
     """
     forecast_date = ctx.deps.forecast_date
@@ -93,7 +91,11 @@ async def search_web(
         "include_favicon": True,
         "include_usage": True,
         "topic": topic,
-        "exact_match": exact_match,
+        # Not a parameter, because the two halves have to agree: Tavily errors when
+        # `exact_match` arrives without a quoted phrase, and ignores the quotes without
+        # it. Reading it off the query keeps the promise the `query` description makes and
+        # puts the error out of reach.
+        "exact_match": '"' in query,
     }
     options.update(_search_kwargs(forecast_date))
 

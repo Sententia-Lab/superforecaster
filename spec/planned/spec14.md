@@ -44,9 +44,17 @@ Every Tavily argument is exactly one of these. The kind decides who may set it.
 | **Fixed** | a constant; not in the tool signature at all | `include_answer=False`, `include_raw_content=False`, `include_images=False`, `include_image_descriptions=False`, `include_favicon=True`, `include_usage=True` |
 | **Clamped** | comes from `deps.forecast_date`; overrides the agent | `start_date`, `end_date`, and `topic` forced to `"news"` |
 | **Bounded** | the agent proposes, the system caps | `max_results` ≤ 5, `search_depth` ∈ {basic, fast}, `chunks_per_source` ≤ 3 |
-| **Free** | the agent decides | `exact_match`, `include_domains`, `topic` (live runs only) |
+| **Free** | the agent decides | `include_domains`, `topic` (live runs only) |
+| **Derived** | read off another argument; not in the signature | `exact_match`, from whether `query` holds a quoted phrase |
 | **Layered** | system + user + agent, merged | `exclude_domains` |
 | **Conditional** | the agent decides, but dropped when a precondition fails | `country` (needs `topic="general"`), `time_range` (illegal when clamped), `auto_parameters` (needs budget headroom) |
+
+**`exact_match` moved from Free to Derived (2026-08-20).** As a free parameter it has two
+halves that must agree, and the agent has no reason to connect them: Tavily errors on
+`exact_match=true` without a quoted phrase, and ignores the quotes without the flag. A live
+`base_rate_cell` run quoted three revenue figures, got no exact filter, and came back with
+an unrelated company. `search_web` now reads the flag off the query, so the `query`
+description is true as written and the error is unreachable.
 
 **Fixed parameters are not in the signature.** Every parameter in the signature is a field in
 the JSON schema the model reads on every request, and one it can set. A fixed parameter in the
