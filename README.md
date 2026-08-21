@@ -153,7 +153,7 @@ and `make config` prints all of them with their origins.
 | `WIKIPEDIA_API_KEY` | Optional. Raises the Wikimedia rate limit; nothing needs it |
 | `AGENT_MODEL` | Override the model for every agent, e.g. `anthropic:claude-sonnet-4-6` |
 | `LOGFIRE_TOKEN` | A `pylf_v1_...` *write* token for cloud traces. Different from the gateway key |
-| `BUDGET_<AGENT>` | Override one agent's four ceilings — see **Agent budgets** below |
+| `BUDGET_<AGENT>` | Override one agent's three ceilings — see **Agent budgets** below |
 | `DATABASE_PATH` | Default `./superforecaster.db`; Docker uses `/app/data/` |
 
 Every check threshold is an environment variable too — see
@@ -165,20 +165,17 @@ returns a key's value, only where it came from.
 
 ### Agent budgets
 
-Every agent has four ceilings, because an agent runs away in four different ways. A
-tool-call cap does not stop a model that re-reads a growing transcript, and a token cap
-does not stop a model that searches forty times for cheap results.
+Every agent has three ceilings, all enforced by Pydantic AI `UsageLimits`:
 
-| Ceiling | Unit | Enforced by |
-|---|---|---|
-| cost | US dollars, from published per-token prices | `agents.attach_budget` |
-| tokens | input + output, cumulative over the run | Pydantic AI |
-| tool calls | searches | Pydantic AI |
-| iterations | model requests | Pydantic AI |
+| Ceiling | Unit |
+|---|---|
+| tool calls | searches. When they run out the search tools are withdrawn and the agent must answer |
+| requests | model requests |
+| tokens | input + output, cumulative over the run |
 
 The defaults are one row per agent in `backend/superforecaster/config.py` (`BUDGETS`). Override one with
-`BUDGET_<AGENT>="cost,tokens,tool_calls,iterations"` — for example
-`BUDGET_CRITIC="0.10,60000,3,6"`.
+`BUDGET_<AGENT>="tool_calls,requests,tokens"` — for example
+`BUDGET_CRITIC="4,7,60000"`.
 
 ---
 

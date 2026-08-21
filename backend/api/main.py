@@ -1,11 +1,4 @@
-"""FastAPI app entry point.
-
-- Initializes DB on startup
-- Starts the APScheduler (daily refresh) on startup
-- Mounts all routers
-- Health check at /healthz (used by Docker healthcheck)
-- CORS open by default — public API
-"""
+"""FastAPI app entry point."""
 
 from __future__ import annotations
 
@@ -39,12 +32,7 @@ load_env()
 
 
 def _preflight() -> list[str]:
-    """What this process is actually configured to do, as lines to print at startup.
-
-    A forecast that quietly ran without web search looks exactly like one that had it —
-    same shape, same confidence, worse answer. Same for a model nobody chose. Saying it
-    once at startup costs four lines and turns "why is this bad" into something visible.
-    """
+    """What this process is actually configured to do, as lines to print at startup."""
     s = get_settings()
     app_s = get_app_settings()
     lines = []
@@ -103,12 +91,7 @@ def healthz() -> dict[str, str]:
 
 @app.get("/config", tags=["health"])
 def client_config() -> dict[str, object]:
-    """What the frontend needs to know about this server before it renders.
-
-    Public and deliberately thin: two booleans and a model name, nothing an
-    unauthenticated caller could not learn by trying a request. `keys` says where each
-    key came from and never what it is — see ADR 61.
-    """
+    """What the frontend needs to know about this server before it renders."""
     return _client_config()
 
 
@@ -143,11 +126,7 @@ class KeyUpdate(BaseModel):
 
 @app.put("/config/keys", tags=["health"])
 def set_keys(body: KeyUpdate) -> dict[str, object]:
-    """Set API keys for the life of this process. ADR 61.
-
-    Write-only: the response is the same `keys` origin map `GET /config` returns, so the
-    panel redraws from it without a follow-up read, and no route ever hands a key back.
-    """
+    """Set API keys for the life of this process. ADR 61."""
     for field, name in (
         # The LLM row writes whichever variable is credentialing the model, so setting a
         # key through the panel always changes the key the next run actually uses.

@@ -1,12 +1,4 @@
-"""Logfire configuration, and the terminal progress printer.
-
-The core library emits spans and logs but never configures Logfire — deciding whether
-traces leave this process, and where they go, is the application's call. This module
-makes it, once, at each entry point.
-
-The token is probed over HTTP before use. An invalid one silently sends nothing, and a
-run that produced no trace looks exactly like a run nobody looked at.
-"""
+"""Logfire configuration, and the terminal progress printer."""
 
 from __future__ import annotations
 
@@ -20,8 +12,6 @@ from superforecaster.config import get_settings
 
 _logfire_configured = False
 _warned_invalid_logfire_token = False
-_cloud_tracing_active = False
-_console_active = False
 
 
 def _looks_like_logfire_write_token(token: str) -> bool:
@@ -31,14 +21,6 @@ def _looks_like_logfire_write_token(token: str) -> bool:
 def logfire_tracing_enabled() -> bool:
     token = (get_settings().logfire_token or "").strip()
     return _looks_like_logfire_write_token(token)
-
-
-def cloud_tracing_active() -> bool:
-    return _cloud_tracing_active
-
-
-def console_active() -> bool:
-    return _console_active
 
 
 def _logfire_base_url(token: str) -> str:
@@ -60,12 +42,8 @@ def _token_is_valid(token: str) -> bool:
 
 
 def configure_logfire(*, verbose: bool = False) -> None:
-    """Point Logfire at the cloud, the console, or nowhere. Idempotent.
-
-    The console is switched on whenever cloud tracing is off, so a run always reports
-    itself somewhere. `verbose` turns it on as well even when traces are being sent.
-    """
-    global _logfire_configured, _warned_invalid_logfire_token, _cloud_tracing_active, _console_active
+    """Point Logfire at the cloud, the console, or nowhere. Idempotent."""
+    global _logfire_configured, _warned_invalid_logfire_token
     if _logfire_configured:
         return
 
@@ -97,16 +75,8 @@ def configure_logfire(*, verbose: bool = False) -> None:
         kwargs["token"] = token
 
     logfire.configure(**kwargs)
-    # Unconditionally, not only when traces are sent to the cloud. This is what records
-    # tool calls and model messages, and with the console on and no token it is the only
-    # thing that does — `runner` builds its event handler for a UI subscriber, not for
-    # tracing, so a verbose CLI run with no token would otherwise report nothing.
-    # `include_content` is what puts tool arguments on the span, which is what
-    # `pydantic_evals.evaluators.ArgumentCorrectness` reads. Versions 2, 3, and 4 are
-    # deprecated; 5 names a tool span `execute_tool {name}` rather than `running tool`,
-    # and the agentic evaluators read both shapes.
+    # Always on: this is what records tool calls and model messages, console or cloud.
+    # `include_content` puts tool arguments on the span for the trajectory evaluators.
     logfire.instrument_pydantic_ai(include_content=True, version=5)
 
-    _cloud_tracing_active = tracing
-    _console_active = bool(kwargs["console"])
     _logfire_configured = True

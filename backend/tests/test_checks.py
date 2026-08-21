@@ -33,7 +33,6 @@ from superforecaster.models import (
     InsideView,
     OutsideView,
     ResearchedLens,
-    ResearchSummary,
     SourceRef,
     SubPrediction,
     UpdateDecision,
@@ -187,7 +186,6 @@ def forecast(probability: float = 0.28, extreme_justification: str = "") -> Fore
         category="business",
         probability=probability,
         decompositions=[sub(), sub(), sub()],
-        research=ResearchSummary(),
         reasoning="base rate then adjustments",
         extreme_justification=extreme_justification,
     )
@@ -514,7 +512,7 @@ def test_linkage_accepts_references_to_real_sub_questions():
     o = outside(lenses=[ref("a", 0.20), ref("b", 0.24)])
     o.lenses[0].sub_question_ids = ["sq1"]
     f = forecast().model_copy(update={"decompositions": d.sub_questions})
-    assert checks.check_linkage(f, d, o, inside()) is None
+    assert checks.check_linkage(d, o, inside()) is None
 
 
 def test_linkage_catches_an_invented_sub_question_id():
@@ -522,28 +520,15 @@ def test_linkage_catches_an_invented_sub_question_id():
     o = outside(lenses=[ref("a", 0.20), ref("b", 0.24)])
     o.lenses[0].sub_question_ids = ["sq9"]
     f = forecast().model_copy(update={"decompositions": d.sub_questions})
-    v = checks.check_linkage(f, d, o, inside())
+    v = checks.check_linkage(d, o, inside())
     assert v is not None
     assert "sq9" in v.detail
-
-
-def test_linkage_catches_synthesis_dropping_a_sub_question():
-    """Synthesis regenerates `Forecast.decompositions`; every link dangles if it drifts."""
-    d = ided("sq1", "sq2", "sq3")
-    # Deep copies: a slice would alias the decomposition's own objects, so renaming one
-    # would rename it on both sides and the check would have nothing to find.
-    carried = [s.model_copy(deep=True) for s in d.sub_questions]
-    carried[2] = carried[2].model_copy(update={"id": "renamed"})
-    f = forecast().model_copy(update={"decompositions": carried})
-    v = checks.check_linkage(f, d, outside(), inside())
-    assert v is not None
-    assert "points at nothing" in v.detail
 
 
 def test_linkage_allows_a_class_that_addresses_the_whole_question():
     d = ided("sq1", "sq2", "sq3")
     f = forecast().model_copy(update={"decompositions": d.sub_questions})
-    assert checks.check_linkage(f, d, outside(), inside()) is None
+    assert checks.check_linkage(d, outside(), inside()) is None
 
 
 # ---------- P7: base-rate aggregation ----------
@@ -801,7 +786,6 @@ def test_dragonfly_ignores_spread_between_different_columns():
         lenses=[researched("sq1", 0.15), researched("sq4", 0.80)],
         disagreement="",
     )
-    assert checks.base_rate_spread(o) == pytest.approx(0.65)
     assert checks.check_dragonfly(o) is None
 
 
@@ -888,63 +872,6 @@ def test_graded_source_keeps_a_real_url():
         source="x", url="https://example.test/a?b=c", confidence="high", note="n"
     )
     assert s.url == "https://example.test/a?b=c"
-
-
-# ---------- Source confidence ----------
-
-
-def test_claim_support_takes_the_strongest_source():
-    """Max, not mean — citing extra weak corroboration must not downgrade a claim.
-
-    Averaging would teach the agent to cite less, which is the opposite of the point.
-    """
-    assert checks.claim_support([graded(confidence="high")]) == "high"
-    assert (
-        checks.claim_support([graded(confidence="high"), graded(confidence="low")])
-        == "high"
-    )
-
-
-def test_claim_support_with_no_sources_is_low():
-    assert checks.claim_support([]) == "low"
-
-
-def test_aggregate_source_confidence_is_weighted_by_fit_and_magnitude():
-    strong = outside(
-        lenses=[
-            ref("a", 0.20, weight=1.0, sources=[graded(confidence="high")]),
-            ref("b", 0.24, weight=1.0, sources=[graded(confidence="high")]),
-        ]
-    )
-    i = inside(
-        adjustments=[adjustment("up", 0.10, sources=[graded(confidence="high")])]
-    )
-    assert checks.aggregate_source_confidence(strong, i) == "high"
-
-    thin = outside(
-        lenses=[
-            ref("a", 0.20, weight=1.0, sources=[graded(confidence="low")]),
-            ref("b", 0.24, weight=1.0, sources=[graded(confidence="low")]),
-        ]
-    )
-    assert checks.aggregate_source_confidence(thin, i) == "medium"
-
-
-def test_aggregate_source_confidence_skips_noise_adjustments():
-    """Noise contributes zero to the probability, so it must not drag the grade."""
-    o = outside(
-        lenses=[
-            ref("a", 0.20, sources=[graded(confidence="high")]),
-            ref("b", 0.24, sources=[graded(confidence="high")]),
-        ]
-    )
-    noisy = inside(
-        adjustments=[
-            adjustment("up", 0.10, sources=[graded(confidence="high")]),
-            adjustment("up", 0.0, is_noise=True, sources=[]),
-        ]
-    )
-    assert checks.aggregate_source_confidence(o, noisy) == "high"
 
 
 # ---------- P11: Bayesian direction ----------

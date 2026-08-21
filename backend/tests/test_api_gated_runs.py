@@ -123,7 +123,7 @@ def _frames(sse_text: str) -> list[dict]:
     ]
 
 
-async def test_stream_yields_progress_then_result_then_run(client, stub_decompose):
+async def test_stream_yields_progress_then_the_run(client, stub_decompose):
     detail = await _started_run(client)
     step_id = detail["steps"][0]["id"]
 
@@ -133,11 +133,11 @@ async def test_stream_yields_progress_then_result_then_run(client, stub_decompos
     types = [f["type"] for f in frames]
 
     assert "thought" in types
-    assert types[-2:] == ["result", "run"]
-    result = frames[types.index("result")]["payload"]["step"]
-    assert result["status"] == "complete"
-    assert result["payload"]["sub_questions"]
+    assert types[-1] == "run"
     run_frame = frames[-1]["payload"]
+    done = next(s for s in run_frame["steps"] if s["id"] == step_id)
+    assert done["status"] == "complete"
+    assert done["payload"]["sub_questions"]
     assert any(s["stage"] == "lenses" for s in run_frame["steps"])
 
 
