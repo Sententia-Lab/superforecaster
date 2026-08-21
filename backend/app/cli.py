@@ -1,4 +1,4 @@
-"""CLI entry point for the forecasting agents and the model garden.
+"""CLI entry point for the forecasting agents.
 
 All print formatted JSON to stdout.
 
@@ -40,10 +40,8 @@ from superforecaster.models import (
     ForecastInput,
     ForecastRecord,
     ForecastUpdateRecord,
-    ResearchSummary,
     SubPrediction,
 )
-from superforecaster import model_garden
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -90,7 +88,6 @@ def _record_from_fixture(data: dict) -> ForecastRecord:
     submission_deadline = resolution_date.replace(microsecond=0)  # placeholder
 
     decompositions = [SubPrediction(**d) for d in data.get("decompositions", [])]
-    research = ResearchSummary(**data.get("research", {}))
     updates = [
         ForecastUpdateRecord(
             id=str(uuid.uuid4()),
@@ -125,7 +122,6 @@ def _record_from_fixture(data: dict) -> ForecastRecord:
         resolution_date=resolution_date,
         initial_reasoning=data.get("initial_reasoning", ""),
         decompositions=decompositions,
-        research=research,
         updates=updates,
         created_at=updates[0].created_at,
     )
@@ -255,43 +251,6 @@ async def _cmd_postmortem(args: argparse.Namespace) -> int:
             record, ForecastDeps(store=research.store_for(record.research_id))
         )
     )
-    return 0
-
-
-# ---------- models subcommand ----------
-
-
-async def _cmd_models(args: argparse.Namespace) -> int:
-    """Inspect the model garden — clamp 2 of the contamination clamps."""
-    if args.action == "probe":
-        entries = await model_garden.probe_all()
-        print(model_garden.render_garden(entries))
-        reach = model_garden.earliest_cutoff()
-        if reach is None:
-            print("\nNo model is currently available — no clean backtest is possible.")
-        else:
-            print(f"\nEarliest available training cutoff: {reach.isoformat()}")
-            print(
-                "A question must be asked after that date (plus the margin) to be clean."
-            )
-        return 0
-
-    if args.action == "pick":
-        forecast_date = datetime.fromisoformat(args.forecast_date).replace(
-            tzinfo=timezone.utc
-        )
-        entry = model_garden.pick_clean_model(forecast_date)
-        if entry is None:
-            print(
-                f"No clean model for a question asked {args.forecast_date} — "
-                "every available model was trained after it.",
-                file=sys.stderr,
-            )
-            return 1
-        _print_json(entry)
-        return 0
-
-    print(model_garden.render_garden(model_garden.list_models(available_only=False)))
     return 0
 
 
@@ -508,20 +467,6 @@ def postmortem(
 ) -> None:
     """Review a resolved forecast for process errors."""
     _run(_cmd_postmortem, id=id, verbose=verbose)
-
-
-@app.command()
-def models(
-    action: str = typer.Argument("list", help="list | probe | pick"),
-    forecast_date: str = typer.Option(
-        None, help="Date to pick a clean model for (YYYY-MM-DD)"
-    ),
-    verbose: bool = VERBOSE,
-) -> None:
-    """Inspect the model garden."""
-    if action not in ("list", "probe", "pick"):
-        raise typer.BadParameter("action must be list, probe, or pick")
-    _run(_cmd_models, action=action, forecast_date=forecast_date, verbose=verbose)
 
 
 @app.command()

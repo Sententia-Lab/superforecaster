@@ -5,7 +5,7 @@ is a script rather than a pytest test — `uv run pytest` stubs the key and neve
 reaches a provider.
 
     make eval decompose
-    make eval decompose ARGS="--model anthropic:claude-haiku-4-5 --budget 0.05,40000,0,3"
+    make eval decompose ARGS="--model anthropic:claude-haiku-4-5 --budget 0,3,40000"
 
 Two kinds of evaluator run on every case. `Structure`, `MentionsTerms`, and
 `ChainRuleIs` are mechanical — they answer yes or no, cost nothing, and never
@@ -40,7 +40,7 @@ from ..observability import configure_logfire
 
 Ctx = EvaluatorContext[ForecastInput, Decomposition, dict]
 
-BUDGET_FORMAT = "COST,TOKENS,TOOL_CALLS,ITERATIONS"
+BUDGET_FORMAT = "TOOL_CALLS,REQUESTS,TOKENS"
 
 
 @dataclass
@@ -122,16 +122,10 @@ def judge(model: str) -> LLMJudge:
 
 
 def make_task(model: str | None):
-    """The task under evaluation, bound to a model.
-
-    `model` rides on `ForecastDeps` rather than being passed to the agent builder,
-    because that is the seam production uses: `agents.with_model` overrides the agent
-    for the duration of the run. None means the agent keeps whatever
-    `resolve_agent_model()` gives it.
-    """
+    """The task under evaluation. `--model` is applied through `AGENT_MODEL`."""
 
     async def task(input: ForecastInput) -> Decomposition:
-        return await run_decompose(input, ForecastDeps(model=model))
+        return await run_decompose(input, ForecastDeps())
 
     return task
 
@@ -244,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.budget:
         # `config.get_budget` re-reads the environment on every call, so the env var is
         # the supported override and nothing has to be threaded through the agent.
-        if len(args.budget.split(",")) != 4:
+        if len(args.budget.split(",")) != 3:
             print(f"--budget takes four fields: {BUDGET_FORMAT}", file=sys.stderr)
             return 2
         os.environ["BUDGET_DECOMPOSE"] = args.budget
@@ -254,6 +248,8 @@ def main(argv: list[str] | None = None) -> int:
     # experiment span opens before any of that, so configure here or lose the tree.
     load_env()
     configure_logfire()
+    if args.model:
+        os.environ["AGENT_MODEL"] = args.model
 
     # The judge holds still while `--model` moves. It defaults to the configured agent
     # model rather than to `--model` so that scores stay comparable between runs, and

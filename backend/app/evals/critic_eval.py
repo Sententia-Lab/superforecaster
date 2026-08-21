@@ -4,7 +4,7 @@ Like `decompose_eval`, this runs the real model, so it costs money and needs a r
 key. That is why it is a script rather than a pytest test.
 
     make eval critic
-    make eval critic ARGS="--model anthropic:claude-haiku-4-5 --budget 0.05,40000,2,3"
+    make eval critic ARGS="--model anthropic:claude-haiku-4-5 --budget 2,3,40000"
 
 The critic is the first agent here graded on its **path** as well as its answer. It has
 one tool and a strict instruction about it: at most two searches, and only to confirm that
@@ -66,7 +66,7 @@ class CriticInput(BaseModel):
 
 Ctx = EvaluatorContext[CriticInput, CriteriaCritique, dict]
 
-BUDGET_FORMAT = "COST,TOKENS,TOOL_CALLS,ITERATIONS"
+BUDGET_FORMAT = "TOOL_CALLS,REQUESTS,TOKENS"
 
 PROMPT_MAX_CALLS = 2
 """What `critic.INSTRUCTIONS` permits: "At most TWO searches". The runtime ceiling in
@@ -177,7 +177,7 @@ def make_task(model: str | None):
                 question=input.question,
                 resolution_criteria=input.resolution_criteria,
                 resolution_date=input.resolution_date,
-                deps=ForecastDeps(model=model),
+                deps=ForecastDeps(),
             )
 
     return task
@@ -298,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
     if args.budget:
-        if len(args.budget.split(",")) != 4:
+        if len(args.budget.split(",")) != 3:
             print(f"--budget takes four fields: {BUDGET_FORMAT}", file=sys.stderr)
             return 2
         os.environ["BUDGET_CRITIC"] = args.budget
@@ -307,6 +307,8 @@ def main(argv: list[str] | None = None) -> int:
     # span opens before the first case runs. Configure here or lose the tree.
     load_env()
     configure_logfire()
+    if args.model:
+        os.environ["AGENT_MODEL"] = args.model
 
     # The judge holds still while `--model` moves, so scores stay comparable between runs
     # and a weak model under test never grades its own path.

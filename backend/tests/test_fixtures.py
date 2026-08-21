@@ -47,5 +47,3 @@ def test_existing_forecast_fixture_builds_a_record(existing_forecast_data):
     assert len(record.updates) == 2
     assert record.updates[0].probability == 0.71
     assert record.updates[1].probability == 0.64
-    assert record.research.empirical_base_rate is not None
-    assert len(record.research.historical_analogs) >= 3

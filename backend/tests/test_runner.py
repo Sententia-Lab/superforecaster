@@ -37,7 +37,7 @@ AGENTS_DIR = (
     pathlib.Path(__file__).resolve().parent.parent / "superforecaster" / "agents"
 )
 
-BUDGET = Budget("decompose", cost_usd=1.0, tokens=100_000, tool_calls=2, iterations=4)
+BUDGET = Budget("decompose", tool_calls=2, requests=4, tokens=100_000)
 
 
 def _answers(text: str):
@@ -79,7 +79,7 @@ def test_every_agent_calls_run_agent_with_arguments_it_accepts():
 
 
 async def test_run_agent_returns_the_result_and_puts_the_budget_on_deps():
-    """One place attaches the budget, so `attach_budget` can read it off `ctx.deps`."""
+    """One place attaches the budget, so `withdraw_tools` can read it off `ctx.deps`."""
     seen: list[Budget | None] = []
     agent = Agent(FunctionModel(_answers("done")), deps_type=ForecastDeps)
 

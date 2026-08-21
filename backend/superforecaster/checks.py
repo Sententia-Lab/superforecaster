@@ -64,7 +64,7 @@ def signed_adjustment(a: Adjustment) -> float:
     return a.magnitude if a.direction == "up" else -a.magnitude
 
 
-def _clamp(p: float) -> float:
+def clamp(p: float) -> float:
     """A probability, whatever the arithmetic wanted to say."""
     return min(1.0, max(0.0, p))
 
@@ -92,15 +92,15 @@ def implied_probability(
     whole_question = sum(signed_adjustment(a) for a in i.adjustments if not a.lens_name)
 
     if d is None or d.chain_rule == "custom":
-        return _clamp(
+        return clamp(
             o.aggregate_base_rate + sum(signed_adjustment(a) for a in i.adjustments)
         )
 
     rates = [row["rate"] for row in chain_inputs(d, o, i)]
     combined = combine_sub_question_rates(rates, d.chain_rule, d.dependent_groups)
     if combined is None:
-        return _clamp(o.aggregate_base_rate + whole_question)
-    return _clamp(combined + whole_question)
+        return clamp(o.aggregate_base_rate + whole_question)
+    return clamp(combined + whole_question)
 
 
 def sub_question_spreads(o: OutsideView) -> dict[str | None, float]:
@@ -503,19 +503,12 @@ def check_aggregation(
 
 
 def check_linkage(
-    f: Forecast,
     d: Decomposition,
     o: OutsideView,
     i: InsideView,
     t: CheckThresholds | None = None,
 ) -> CheckViolation | None:
-    """P1. A reference back to a sub-question has to point at one that exists.
-
-    Two ways this dangles. A class or adjustment can name an id the decomposition never
-    had; or synthesis, which regenerates `Forecast.decompositions`, can quietly reword
-    or drop a sub-question — leaving every link pointing at nothing. Both are cheap to
-    catch and invisible otherwise.
-    """
+    """P1. A reference back to a sub-question has to point at one that exists."""
     known = {s.id for s in d.sub_questions if s.id}
 
     referenced = {
@@ -531,15 +524,6 @@ def check_linkage(
             f"({', '.join(sorted(known)) or 'none'})",
         )
 
-    carried = {s.id for s in f.decompositions if s.id}
-    if known and carried != known:
-        return CheckViolation(
-            principle=1,
-            name="linkage",
-            detail=f"the forecast carries sub-questions {', '.join(sorted(carried)) or 'none'} "
-            f"but the decomposition produced {', '.join(sorted(known))} — every link "
-            f"into the dropped ones now points at nothing",
-        )
     return None
 
 
@@ -921,7 +905,7 @@ def is_large_move(d: UpdateDecision, t: CheckThresholds | None = None) -> bool:
 
 FORECAST_CHECKS: tuple[tuple[str, Any], ...] = (
     ("decomposition", lambda c: check_decomposition(c.d, c.t)),
-    ("linkage", lambda c: check_linkage(c.f, c.d, c.o, c.i, c.t)),
+    ("linkage", lambda c: check_linkage(c.d, c.o, c.i, c.t)),
     ("base_rates", lambda c: check_base_rate_derivation(c.o)),
     ("dragonfly", lambda c: check_dragonfly(c.o, c.t)),
     ("aggregation", lambda c: check_aggregation(c.o, c.d, c.t)),

@@ -11,19 +11,12 @@ code path.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 import httpx
 import pytest
 from pydantic_ai import RunContext
 
 from superforecaster.deps import ForecastDeps
 from superforecaster.tools import wikipedia_tools
-
-AS_OF = datetime(2022, 2, 1, tzinfo=timezone.utc)
-"""Wikipedia still backdates: `_wikipedia_params` asks for the revision as of a date.
-That clamp works — the MediaWiki revisions API genuinely serves the old article — and it
-outlived the Tavily one, which ADR 17 removed."""
 
 
 def make_ctx(deps: ForecastDeps) -> RunContext[ForecastDeps]:
@@ -137,59 +130,3 @@ async def test_a_403_is_reported_rather_than_raised(monkeypatch, no_wikipedia_ke
     out = await wikipedia_tools.search_wikipedia(make_ctx(ForecastDeps()), "Alphabet")
 
     assert "Wikipedia error" in out
-
-
-# ---------- the revision-as-of clamp ----------
-
-
-def test_wikipedia_params_requests_a_historical_revision_when_clamped():
-    params = wikipedia_tools._wikipedia_params("Ukraine", AS_OF)
-    assert params["prop"] == "revisions"
-    assert params["rvstart"] == "2022-02-01T00:00:00Z"
-    assert params["rvdir"] == "older"
-    assert params["rvlimit"] == 1
-
-
-def test_wikipedia_params_requests_the_current_article_when_unclamped():
-    params = wikipedia_tools._wikipedia_params("Ukraine", None)
-    assert params["prop"] == "extracts"
-    assert "rvstart" not in params
-
-
-# ---------- _extract_page_text ----------
-
-
-def test_extract_page_text_reads_the_current_extract_when_unclamped():
-    page = {"extract": "current intro text"}
-    text, revision_date = wikipedia_tools._extract_page_text(page, None)
-    assert text == "current intro text"
-    assert revision_date is None
-
-
-def test_extract_page_text_reads_the_historical_revision_when_clamped():
-    """Revisions arrive under revisions[0].slots.main, not under `extract`."""
-    page = {
-        "revisions": [
-            {
-                "timestamp": "2022-01-20T10:00:00Z",
-                "slots": {"main": {"*": "text as of January 2022"}},
-            }
-        ]
-    }
-    text, revision_date = wikipedia_tools._extract_page_text(page, AS_OF)
-    assert text == "text as of January 2022"
-    assert revision_date is not None
-    assert revision_date.date().isoformat() == "2022-01-20"
-
-
-def test_extract_page_text_is_empty_when_the_article_did_not_exist_yet():
-    text, revision_date = wikipedia_tools._extract_page_text({"revisions": []}, AS_OF)
-    assert text == ""
-    assert revision_date is None
-
-
-def test_extract_page_text_falls_back_to_the_unslotted_shape():
-    """Older MediaWiki responses put content directly on the revision."""
-    page = {"revisions": [{"timestamp": "2022-01-20T10:00:00Z", "*": "legacy shape"}]}
-    text, _ = wikipedia_tools._extract_page_text(page, AS_OF)
-    assert text == "legacy shape"

@@ -23,8 +23,8 @@ from sse_starlette.sse import EventSourceResponse
 from app import db, machine, research, stream
 from superforecaster.errors import AgentTimeout, StageTimeout
 from superforecaster.events import AgentEvent
+from superforecaster.config import MAX_SEARCH_DEPTH
 from superforecaster.models import (
-    MAX_SEARCH_DEPTH,
     CreateGatedRunRequest,
     GatedRunDetail,
     GatedRunSummary,

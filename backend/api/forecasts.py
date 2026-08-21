@@ -25,7 +25,7 @@ async def create_forecast(body: CreateForecastRequest) -> ForecastRecord:
     """Run the whole pipeline back-to-back (no gates) and persist.
 
     The gated flow (`/runs`) is the primary path; this blocking endpoint is the API
-    twin of `superforecaster forecast` for scripted use. Runs live: no `forecast_date` or
+    twin of `superforecaster forecast` for scripted use. Runs live, with no
     `model` clamp — those exist for backtesting.
     """
     store = research.new_store()

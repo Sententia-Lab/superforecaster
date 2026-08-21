@@ -50,7 +50,6 @@ from superforecaster.models import (
     Forecast,
     ForecastRecord,
     ForecastUpdateRecord,
-    ResearchSummary,
     SubPrediction,
 )
 
@@ -98,7 +97,7 @@ def connect() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 """Bump this and add a step to `MIGRATIONS` whenever an existing table has to change.
 
 `CREATE TABLE IF NOT EXISTS` covers a fresh database and nothing else. It does not add a
@@ -296,6 +295,8 @@ MIGRATIONS: dict[int, tuple[MigrationStep, ...]] = {
     # means rebuilding it, which is safe here because `research_docs` holds the text and
     # the index holds nothing of its own.
     6: (_rebuild_research_index,),
+    # `Forecast.research` was a model-transcribed summary nothing read (ADR 82).
+    7: ("ALTER TABLE forecasts DROP COLUMN research_json;",),
 }
 """version -> steps that take the schema from `version - 1` to `version`.
 
@@ -379,7 +380,6 @@ def init_db() -> None:
                 flagged_for_resolution_review INTEGER NOT NULL DEFAULT 0,
                 initial_reasoning TEXT NOT NULL,
                 decompositions_json TEXT NOT NULL,
-                research_json TEXT NOT NULL,
                 research_id TEXT,
                 created_at TIMESTAMP NOT NULL
             );
@@ -484,9 +484,8 @@ def save_forecast(
             INSERT INTO forecasts (
                 id, question, resolution_criteria, resolution_source, category,
                 submission_gap_days, submission_deadline, resolution_date,
-                initial_reasoning, decompositions_json, research_json, research_id,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                initial_reasoning, decompositions_json, research_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 fid,
@@ -499,7 +498,6 @@ def save_forecast(
                 forecast.resolution_date,
                 forecast.reasoning,
                 json.dumps([d.model_dump() for d in forecast.decompositions]),
-                forecast.research.model_dump_json(),
                 research_id,
                 now,
             ),
@@ -1138,7 +1136,6 @@ def _row_to_forecast(f_row: sqlite3.Row, u_rows: list[sqlite3.Row]) -> ForecastR
     decompositions = [
         SubPrediction(**d) for d in json.loads(f_row["decompositions_json"])
     ]
-    research = ResearchSummary.model_validate_json(f_row["research_json"])
     updates = [
         ForecastUpdateRecord(
             id=u["id"],
@@ -1174,7 +1171,6 @@ def _row_to_forecast(f_row: sqlite3.Row, u_rows: list[sqlite3.Row]) -> ForecastR
         flagged_for_resolution_review=bool(f_row["flagged_for_resolution_review"]),
         initial_reasoning=f_row["initial_reasoning"],
         decompositions=decompositions,
-        research=research,
         updates=updates,
         research_id=f_row["research_id"],
         created_at=_ensure_aware(f_row["created_at"]),

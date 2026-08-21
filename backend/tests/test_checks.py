@@ -33,7 +33,6 @@ from superforecaster.models import (
     InsideView,
     OutsideView,
     ResearchedLens,
-    ResearchSummary,
     SourceRef,
     SubPrediction,
     UpdateDecision,
@@ -187,7 +186,6 @@ def forecast(probability: float = 0.28, extreme_justification: str = "") -> Fore
         category="business",
         probability=probability,
         decompositions=[sub(), sub(), sub()],
-        research=ResearchSummary(),
         reasoning="base rate then adjustments",
         extreme_justification=extreme_justification,
     )
@@ -514,7 +512,7 @@ def test_linkage_accepts_references_to_real_sub_questions():
     o = outside(lenses=[ref("a", 0.20), ref("b", 0.24)])
     o.lenses[0].sub_question_ids = ["sq1"]
     f = forecast().model_copy(update={"decompositions": d.sub_questions})
-    assert checks.check_linkage(f, d, o, inside()) is None
+    assert checks.check_linkage(d, o, inside()) is None
 
 
 def test_linkage_catches_an_invented_sub_question_id():
@@ -522,28 +520,15 @@ def test_linkage_catches_an_invented_sub_question_id():
     o = outside(lenses=[ref("a", 0.20), ref("b", 0.24)])
     o.lenses[0].sub_question_ids = ["sq9"]
     f = forecast().model_copy(update={"decompositions": d.sub_questions})
-    v = checks.check_linkage(f, d, o, inside())
+    v = checks.check_linkage(d, o, inside())
     assert v is not None
     assert "sq9" in v.detail
-
-
-def test_linkage_catches_synthesis_dropping_a_sub_question():
-    """Synthesis regenerates `Forecast.decompositions`; every link dangles if it drifts."""
-    d = ided("sq1", "sq2", "sq3")
-    # Deep copies: a slice would alias the decomposition's own objects, so renaming one
-    # would rename it on both sides and the check would have nothing to find.
-    carried = [s.model_copy(deep=True) for s in d.sub_questions]
-    carried[2] = carried[2].model_copy(update={"id": "renamed"})
-    f = forecast().model_copy(update={"decompositions": carried})
-    v = checks.check_linkage(f, d, outside(), inside())
-    assert v is not None
-    assert "points at nothing" in v.detail
 
 
 def test_linkage_allows_a_class_that_addresses_the_whole_question():
     d = ided("sq1", "sq2", "sq3")
     f = forecast().model_copy(update={"decompositions": d.sub_questions})
-    assert checks.check_linkage(f, d, outside(), inside()) is None
+    assert checks.check_linkage(d, outside(), inside()) is None
 
 
 # ---------- P7: base-rate aggregation ----------

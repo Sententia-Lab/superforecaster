@@ -23,7 +23,6 @@ from superforecaster.models import (
     EvidenceItem,
     ForecastRecord,
     ForecastUpdateRecord,
-    ResearchSummary,
     ResolutionCheckResult,
     UpdateDecision,
     UpdateOutcome,
@@ -44,7 +43,6 @@ def a_record(probability: float = 0.50) -> ForecastRecord:
         resolution_date=datetime(2027, 1, 1, tzinfo=timezone.utc),
         initial_reasoning="r",
         decompositions=[sub(), sub(), sub()],
-        research=ResearchSummary(),
         updates=[
             ForecastUpdateRecord(
                 id="u1",
