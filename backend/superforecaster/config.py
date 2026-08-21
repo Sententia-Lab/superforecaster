@@ -206,28 +206,32 @@ BUDGETS: dict[str, Budget] = {
     b.name: b
     for b in (
         Budget(
-            "base_rate_cell", cost_usd=0.40, tokens=200_000, tool_calls=8, iterations=11
+            "base_rate_cell",
+            cost_usd=0.40,
+            tokens=200_000,
+            tool_calls=10,
+            iterations=13,
         ),
         Budget(
             "inside_view",
             cost_usd=0.40,
             tokens=200_000,
-            tool_calls=8,
-            iterations=11,
+            tool_calls=10,
+            iterations=13,
         ),
-        Budget("critic", cost_usd=0.10, tokens=60_000, tool_calls=3, iterations=6),
-        Budget("resolution", cost_usd=0.10, tokens=60_000, tool_calls=4, iterations=7),
-        Budget("update", cost_usd=0.10, tokens=60_000, tool_calls=4, iterations=7),
-        Budget("postmortem", cost_usd=0.10, tokens=60_000, tool_calls=4, iterations=7),
-        Budget("decompose", cost_usd=0.15, tokens=80_000, tool_calls=4, iterations=8),
-        Budget("lenses", cost_usd=0.15, tokens=80_000, tool_calls=2, iterations=4),
-        Budget("reflect", cost_usd=0.20, tokens=100_000, tool_calls=0, iterations=4),
+        Budget("critic", cost_usd=0.10, tokens=60_000, tool_calls=4, iterations=7),
+        Budget("resolution", cost_usd=0.10, tokens=60_000, tool_calls=5, iterations=8),
+        Budget("update", cost_usd=0.10, tokens=60_000, tool_calls=5, iterations=8),
+        Budget("postmortem", cost_usd=0.10, tokens=60_000, tool_calls=5, iterations=8),
+        Budget("decompose", cost_usd=0.15, tokens=80_000, tool_calls=5, iterations=9),
+        Budget("lenses", cost_usd=0.15, tokens=80_000, tool_calls=3, iterations=5),
+        Budget("reflect", cost_usd=0.20, tokens=100_000, tool_calls=3, iterations=6),
         Budget(
             "synthesize",
             cost_usd=0.25,
             tokens=120_000,
-            tool_calls=0,
-            iterations=4,
+            tool_calls=4,
+            iterations=8,
         ),
         Budget("draft", cost_usd=0.10, tokens=40_000, tool_calls=0, iterations=4),
     )
@@ -278,8 +282,8 @@ def get_model_settings() -> dict:
        outright, before any of the four runs.
 
     Serial searching costs turns rather than tool calls, and the iteration ceilings have
-    room: `base_rate_cell` allows 11 requests for 8 searches, which is one request per
-    search plus two to open and close.
+    room: `base_rate_cell` allows 13 requests for 10 tool calls, which is one request per
+    call plus two to open and close.
 
     It is a no-op for the agents built without tools — Pydantic AI omits `tool_choice`
     entirely when there are none.

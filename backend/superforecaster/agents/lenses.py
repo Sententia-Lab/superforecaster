@@ -22,7 +22,7 @@ from pydantic_ai import Agent
 from pydantic_ai.capabilities.hooks import Hooks
 
 from ..deps import ForecastDeps
-from ..tools import crawl_site, extract_pages, map_site, search_web
+from ..tools import crawl_site, extract_pages, map_site, search_research, search_web
 from ..models import Decomposition, ForecastInput, SubQuestionLenses, SubPrediction
 from ..runner import run_agent
 from . import forecast_date_note, format_question, with_model, withdraw_tools
@@ -104,7 +104,7 @@ def build_lenses_agent(
         output_type=SubQuestionLenses,
         system_prompt=INSTRUCTIONS,
         retries=1,
-        tools=[search_web, extract_pages, crawl_site, map_site],
+        tools=[search_research, search_web, extract_pages, crawl_site, map_site],
         capabilities=[Hooks(prepare_tools=withdraw_tools)],
     )
 

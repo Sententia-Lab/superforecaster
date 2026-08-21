@@ -1,8 +1,9 @@
 """Synthesis agent — principles 6, 8, and 16.
 
-Combine the decomposition, base rate, and adjustments into one Forecast. No tools:
-everything it needs is already in state, and giving it search here would let it
-re-litigate the earlier steps instead of committing to them.
+Combine the decomposition, base rate, and adjustments into one Forecast. Its only tool is
+`search_research`, which reads back the pages the run already fetched — no web search,
+because new evidence at this point would let it re-litigate the earlier steps instead of
+committing to them.
 
 On a retry it is told exactly which methodology check failed, so the second attempt
 is a correction rather than a re-roll.
@@ -18,6 +19,7 @@ from ..config import (
     resolve_agent_model,
 )
 from pydantic_ai import Agent
+from pydantic_ai.capabilities.hooks import Hooks
 
 from .. import checks
 from ..deps import ForecastDeps
@@ -30,10 +32,21 @@ from ..models import (
     OutsideView,
 )
 from ..runner import run_agent
-from . import forecast_date_note, format_question, with_model
+from ..tools import search_research
+from . import (
+    attach_budget,
+    forecast_date_note,
+    format_question,
+    with_model,
+    withdraw_tools,
+)
 
-INSTRUCTIONS = """You produce the final Forecast from work already done. You have no
-search tools — the evidence gathering is finished. Commit to a number.
+INSTRUCTIONS = """You produce the final Forecast from work already done. The evidence
+gathering is finished — commit to a number.
+
+Your one tool is `search_research`, which returns pages this run already read. There is no
+web search here. Use it to check a figure you are about to write down against the source
+it came from, not to look for evidence the run did not gather.
 
 THE ARITHMETIC (principle 6 — regression to the mean)
 Your probability should equal what the pipeline already computed:
@@ -76,16 +89,19 @@ into `decompositions` and the research into `research`.
 
 
 def build_synthesize_agent(model: str | None = None) -> Agent[ForecastDeps, Forecast]:
-    return Agent[ForecastDeps, Forecast](
+    agent = Agent[ForecastDeps, Forecast](
         model=model or resolve_agent_model(),
         model_settings=get_model_settings(),
         name="synthesize",
         deps_type=ForecastDeps,
         output_type=Forecast,
         system_prompt=INSTRUCTIONS,
-        tools=[],
+        tools=[search_research],
+        capabilities=[Hooks(prepare_tools=withdraw_tools)],
         retries=1,
     )
+    attach_budget(agent)
+    return agent
 
 
 _agent: Agent[ForecastDeps, Forecast] | None = None

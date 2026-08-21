@@ -724,6 +724,48 @@ class SourceRef(BaseModel):
     tool: str
 
 
+class ResearchDoc(BaseModel):
+    """One page the run fetched, kept whole so a later step can read it again.
+
+    `SourceRef` records that a page was seen — which query found it, which tool, what date
+    it carried. This records what it *said*. The two are written side by side by the same
+    tools and neither repeats the other: a check reads the reference, an agent reads the
+    document, and provenance is asked of the reference.
+    """
+
+    url: str
+    title: str = ""
+    body: str = ""
+    """The page text as the tool received it. Already truncated by the tool that fetched
+    it, so nothing here re-truncates."""
+
+
+class ResearchHit(BaseModel):
+    """One document the research store returned.
+
+    `score` is None when nothing ranked it — a browse has no query to score against, and
+    a zero there would read as "scored, and irrelevant".
+    """
+
+    rank: int
+    url: str
+    """The real URL — always unmarked, because it is also the link and the identity."""
+    title: str
+    content: str
+    score: Optional[float] = None
+    marked_url: Optional[str] = None
+    """The URL with search hits marked, for display. None when nothing was searched."""
+
+
+class ResearchPage(BaseModel):
+    """One page of a run's research store, as the panel reads it."""
+
+    total: int
+    """Documents in the whole store, so a filtered view can say what it is filtering."""
+    query: str = ""
+    results: list[ResearchHit] = []
+
+
 # ---------- DB record types ----------
 
 
@@ -760,6 +802,11 @@ class ForecastRecord(BaseModel):
     decompositions: list[SubPrediction]
     research: ResearchSummary
     updates: list[ForecastUpdateRecord]
+    research_id: Optional[str] = None
+    """The research store the original run built, if it kept one.
+
+    What makes a refresh able to re-read what the forecast was built on. None for a
+    forecast saved before the store existed, or by a run that kept none."""
     created_at: datetime
 
 

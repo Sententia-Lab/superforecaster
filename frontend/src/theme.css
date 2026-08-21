@@ -36,7 +36,10 @@
   --pv-yellow: #9a7420; --pv-yellow-fill: #faf1dd;
   --pv-grid: #efece7;
 }
+:root { --pv-mark: rgba(240, 180, 0, .34); }
+
 :root[data-theme="dark"] {
+  --pv-mark: rgba(255, 214, 10, .30);
   --pv-bg: #14130f;
   --pv-surface: #1b1a16;
   --pv-surface-2: #22211c;
@@ -505,4 +508,107 @@ textarea.field-input {
 @media (max-width: 760px) {
   .rail { display:none; }
   .main { --main-pad-top:16px; padding:var(--main-pad-top) 14px 60px; }
+}
+
+/* ---------- research dock ---------- */
+
+/* A column of the layout, not a sheet over it. Reference material read *against* the
+   forecast has to be legible at the same time as the forecast, so the panel takes its
+   own width and the run re-centres in what is left. */
+.layout { position:relative; }
+.research-dock {
+  --dock-w: 460px;
+  width:var(--dock-w); flex:none;
+  display:flex; flex-direction:column; gap:10px;
+  padding:16px 18px;
+  overflow:hidden;
+  border-left:1px solid var(--pv-border); background:var(--pv-surface);
+  animation:pv-dock .16s ease both;
+}
+@keyframes pv-dock {
+  from { width:0; opacity:0 }
+  to   { width:var(--dock-w); opacity:1 }
+}
+
+/* Anchored to `.layout`, which starts under the header and does not itself scroll — so
+   "top right, below the nav bar" needs no magic number and never scrolls away. Shifts
+   left by the dock's width when it opens, staying beside it rather than under it. */
+.research-toggle {
+  position:absolute; top:14px; right:16px; z-index:10;
+  transition:right .16s ease;
+}
+.layout.docked .research-toggle { right:calc(460px + 16px); }
+
+/* Below this there is no width to give away: 280px of rail plus 460px of dock leaves the
+   run a ribbon, and a forecast you cannot read is not a forecast you can check research
+   against. So the dock stops taking a column and covers one instead — the run keeps its
+   width, and the toggle sits in the gap the dock's title already leaves for it. */
+@media (max-width: 1180px) {
+  .research-dock {
+    position:absolute; top:0; right:0; height:100%; z-index:9;
+    box-shadow:-18px 0 48px rgba(0,0,0,.22);
+  }
+  .layout.docked .research-toggle { right:16px; }
+}
+
+.dock-title {
+  font-size:var(--pv-fs-title); font-weight:var(--pv-fw-semibold);
+  padding-right:46px;  /* clear of the toggle */
+}
+
+/* A square button carrying an icon instead of a word. */
+.btn.icon {
+  display:inline-grid; place-items:center;
+  width:30px; height:30px; padding:0;
+}
+.btn.icon svg { display:block; }
+.dock-sub { color:var(--pv-text-3); font-size:var(--pv-fs-xs); }
+
+/* Only the list scrolls — the search box stays reachable at the bottom of a long store,
+   which is exactly where a person stops trusting what they are looking at. */
+.dock-body { flex:1; overflow-y:auto; margin:0 -18px; padding:2px 18px 24px; }
+
+/* One page is an accordion, the same shape a lens gets: a title row that reads as a list
+   when closed, and everything the page said when open. */
+.acc.research-item { padding:12px 0; border-top:1px dashed var(--pv-border); }
+.acc.research-item:first-child { border-top:none; }
+.acc.research-item > summary { align-items:flex-start; }
+.research-item-title {
+  font-size:var(--pv-fs-sm); font-weight:var(--pv-fw-semibold); color:var(--pv-text);
+}
+.acc.research-item > summary:hover .research-item-title { color:var(--pv-focus); }
+/* A scraped title arrives with whatever markup the page had. Rendered inline, so its
+   own headings and emphasis cannot change the row's size. */
+.research-item-title .prose-inline * { font:inherit; color:inherit; margin:0; }
+.research-item-url {
+  display:block; margin:2px 0 6px;
+  font-size:var(--pv-fs-micro); color:var(--pv-text-3);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+/* The accordion holds the length now, so the body is whole when it is shown at all. */
+.research-item-body { font-size:var(--pv-fs-xs); color:var(--pv-text-2); }
+.research-item-body .prose { font-size:var(--pv-fs-xs); }
+.research-item-body .prose :first-child { margin-top:0; }
+.research-item-body .prose :last-child { margin-bottom:0; }
+/* A scraped page's headings are its furniture — a nav label, a section rule, the site's
+   own name — not the structure of a document anyone is reading here. At their real sizes
+   one `#` fills the whole preview, so they keep their weight and lose their scale. */
+.research-item-body .prose :is(h1,h2,h3,h4,h5,h6) {
+  font-size:inherit; font-weight:var(--pv-fw-semibold);
+  color:var(--pv-text); margin:.6em 0 .2em; line-height:inherit;
+}
+.research-item-body .prose :is(ul,ol) { margin:.3em 0; padding-left:1.1em; }
+.research-item-body .prose li { margin:.1em 0; }
+.research-item-body .prose p { margin:.35em 0; }
+.research-item-body .prose :is(img,hr) { display:none; }
+.research-item-body .prose pre {
+  white-space:pre-wrap; overflow-x:auto; font-size:.95em;
+}
+.research-item-body .prose table { display:block; overflow-x:auto; max-width:100%; }
+
+/* Why a result is on screen. The store marks hits in the title, the link and the text,
+   so the highlight has to read on all three. */
+mark {
+  background:var(--pv-mark); color:inherit;
+  border-radius:3px; padding:0 1px;
 }

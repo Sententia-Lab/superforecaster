@@ -50,8 +50,8 @@ def spent_usd(model: Any, usage: RunUsage) -> float:
         return 0.0
 
 
-SEARCH_RESERVE = 2
-"""Searches still legal when the instruction turns from advice into an order.
+CALL_RESERVE = 2
+"""Tool calls still legal when the instruction turns from advice into an order.
 
 The stop has to arrive while the agent can still act on it. Told only at zero, it gets
 exactly one turn to comply, and the turn after that is fatal: `tool_calls_limit` refuses
@@ -62,6 +62,11 @@ warning.
 Two, matching the search ladder in `agents.outside_view`, which reserves the same two.
 The number is fixed rather than a share of the budget because the ladder is fixed: a
 deeper retry buys more attempts at the same plan, not a longer one.
+
+Named for what it counts — `Budget.tool_calls`, every tool call, `search_research`
+included — while the bands it gates keep saying "searches". That gap is ADR 62, not an
+oversight: the structured answer is itself delivered as a tool call, so an instruction
+against tool calls *as a category* forbids the one act that would end the run.
 """
 
 
@@ -83,7 +88,8 @@ async def withdraw_tools(ctx: RunContext[ForecastDeps], tool_defs: list) -> list
     | Reason | What goes |
     |---|---|
     | no `TAVILY_API_KEY` | the Tavily tools. `search_wikipedia` stays — it needs no key |
-    | the search budget is spent | everything left |
+    | the research store is empty | `search_research`. It needs no key, only something to find |
+    | the tool-call budget is spent | everything left |
 
     One function rather than one per reason, because `Hooks(prepare_tools=)` takes a
     single callable, and because "may the agent still call this" is one question however
@@ -121,10 +127,30 @@ async def withdraw_tools(ctx: RunContext[ForecastDeps], tool_defs: list) -> list
         # itself.
         tool_defs = [t for t in tool_defs if getattr(t, "name", t) not in _TAVILY_TOOLS]
 
+    if not _research_store_ready(ctx):
+        tool_defs = [t for t in tool_defs if getattr(t, "name", t) != "search_research"]
+
     b = getattr(ctx.deps, "budget", None)
     if b is None or b.tool_calls - ctx.usage.tool_calls > 0:
         return tool_defs
     return []
+
+
+def _research_store_ready(ctx: RunContext[ForecastDeps]) -> bool:
+    """Whether the research store holds anything this agent could read.
+
+    An empty store can only answer "nothing yet", and learning that costs a tool call —
+    the same reason a missing Tavily key withdraws the Tavily tools rather than letting
+    the agent pay to discover it. The base-rate stage runs its cells concurrently against
+    a store that starts empty, so this is the ordinary case early in a run, not an edge.
+    """
+    store = getattr(ctx.deps, "store", None)
+    if store is None:
+        return False
+    try:
+        return not store.is_empty()
+    except Exception:
+        return False
 
 
 def attach_budget(agent: Agent) -> None:
@@ -144,8 +170,8 @@ def attach_budget(agent: Agent) -> None:
 
     | searches left | the agent is told |
     |---|---|
-    | more than `SEARCH_RESERVE` | how many remain, and to prefer a few well-chosen ones |
-    | 1 to `SEARCH_RESERVE` | to stop searching and write up now |
+    | more than `CALL_RESERVE` | how many remain, and to prefer a few well-chosen ones |
+    | 1 to `CALL_RESERVE` | to stop searching and write up now |
     | 0 | to run no further searches and return its answer |
 
     The middle band is the one that matters. Without it the only unambiguous stop arrived
@@ -183,7 +209,7 @@ def attach_budget(agent: Agent) -> None:
             return left
 
         searches = b.tool_calls - ctx.usage.tool_calls
-        if searches > SEARCH_RESERVE:
+        if searches > CALL_RESERVE:
             return (
                 f"{left} {searches} of {b.tool_calls} searches left. Prefer a few "
                 "well-chosen searches over exhaustive looping."

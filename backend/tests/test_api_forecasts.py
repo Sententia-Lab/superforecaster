@@ -15,7 +15,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
+from app import db, research
 from superforecaster.models import (
+    ResearchDoc,
     UpdateOutcome,
     Forecast,
     HistoricalAnalog,
@@ -27,7 +29,7 @@ from superforecaster.models import (
 
 @asynccontextmanager
 async def _noop_lifespan(app):
-    from app import db
+    from app import db, research
 
     db.init_db()
     yield
@@ -74,7 +76,7 @@ def _mock_forecast() -> Forecast:
 
 
 def test_create_forecast(client):
-    async def mock_run_forecast(input):
+    async def mock_run_forecast(input, **kwargs):
         # run_all returns (forecast, surviving violations)
         return (
             _mock_forecast().model_copy(
@@ -107,7 +109,7 @@ def test_create_forecast(client):
 
 
 def test_list_and_get_forecast(client):
-    async def mock_run_forecast(input):
+    async def mock_run_forecast(input, **kwargs):
         # run_all returns (forecast, surviving violations)
         return (
             _mock_forecast().model_copy(
@@ -144,7 +146,7 @@ def test_list_and_get_forecast(client):
 
 
 def test_resolve_forecast(client):
-    async def mock_run_forecast(input):
+    async def mock_run_forecast(input, **kwargs):
         # run_all returns (forecast, surviving violations)
         return (
             _mock_forecast().model_copy(
@@ -183,7 +185,7 @@ def test_resolve_forecast(client):
 
 
 def test_resolve_with_null_marks_ambiguous(client):
-    async def mock_run_forecast(input):
+    async def mock_run_forecast(input, **kwargs):
         # run_all returns (forecast, surviving violations)
         return (
             _mock_forecast().model_copy(
@@ -221,7 +223,7 @@ def test_resolve_with_null_marks_ambiguous(client):
 
 
 def test_manual_refresh_endpoint(client):
-    async def mock_run_forecast(input):
+    async def mock_run_forecast(input, **kwargs):
         # run_all returns (forecast, surviving violations)
         return (
             _mock_forecast().model_copy(
@@ -269,3 +271,42 @@ def test_healthz(client):
     resp = client.get("/healthz")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
+
+
+def test_delete_forecast_endpoint(client):
+    """A deleted forecast takes its research store with it, in one transaction."""
+
+    async def mock_run_forecast(input, **kwargs):
+        return (_mock_forecast(), [])
+
+    with patch("api.forecasts.run_all", side_effect=mock_run_forecast):
+        created = client.post(
+            "/forecasts",
+            json={
+                "question": "Q",
+                "resolution_criteria": "X",
+                "resolution_source": "src",
+                "resolution_date": _future_iso(),
+                "category": "test",
+            },
+        )
+    fid = created.json()["id"]
+
+    with db.connect() as c:
+        rid = c.execute(
+            "SELECT research_id FROM forecasts WHERE id = ?", (fid,)
+        ).fetchone()["research_id"]
+    assert rid, "the endpoint must bind a store to the forecast it saves"
+
+    research.index_documents(
+        rid,
+        [ResearchDoc(url="https://a", title="A", body="alpha")],
+    )
+
+    assert client.delete(f"/forecasts/{fid}").status_code == 204
+    assert client.get(f"/forecasts/{fid}").status_code == 404
+    assert research.search_research(rid, "alpha") == []
+
+
+def test_delete_forecast_that_is_not_there(client):
+    assert client.delete("/forecasts/nope").status_code == 404

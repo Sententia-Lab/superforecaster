@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from ..config import get_budget, get_model_settings, resolve_agent_model
 from pydantic_ai import Agent
+from pydantic_ai.capabilities.hooks import Hooks
 
 from ..deps import ForecastDeps
 from ..models import (
@@ -34,14 +35,26 @@ from ..models import (
     Reflection,
 )
 from ..runner import run_agent
-from . import forecast_date_note, format_question, with_model
+from ..tools import search_research
+from . import (
+    attach_budget,
+    forecast_date_note,
+    format_question,
+    with_model,
+    withdraw_tools,
+)
 
 INSTRUCTIONS = """You review a forecast that has already been researched, and supply the
 two things nobody looking at one piece of it could see. You do not adjust anything and
 you do not produce a probability — both are already decided.
 
-You are given every adjustment made across every part of the question, and the
-sub-question-level counter-arguments the researchers wrote. You have no search tools.
+You are given every adjustment made across every pa rt of the question, and the
+sub-question-level counter-arguments the researchers wrote.
+
+`search_research` returns the pages this run already read, and it is your only tool —
+there is no web search here. Use it to check a claim against what the run actually saw
+before you steel-man it. It answers nothing the run did not fetch, so a thin result means
+the evidence is thin, not that you asked wrongly.
 
 SEEK DISCONFIRMATION (principle 14)
     steel_man: the strongest version of the opposing case for the WHOLE question — argue
@@ -69,16 +82,19 @@ bias check that would read the same on any forecast is not a bias check.
 
 
 def build_reflect_agent(model: str | None = None) -> Agent[ForecastDeps, Reflection]:
-    return Agent[ForecastDeps, Reflection](
+    agent = Agent[ForecastDeps, Reflection](
         model=model or resolve_agent_model(),
         model_settings=get_model_settings(),
         name="reflect",
         deps_type=ForecastDeps,
         output_type=Reflection,
         system_prompt=INSTRUCTIONS,
-        tools=[],
+        tools=[search_research],
+        capabilities=[Hooks(prepare_tools=withdraw_tools)],
         retries=1,
     )
+    attach_budget(agent)
+    return agent
 
 
 _agent: Agent[ForecastDeps, Reflection] | None = None

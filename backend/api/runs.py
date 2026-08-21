@@ -20,7 +20,7 @@ from pydantic import ValidationError
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from sse_starlette.sse import EventSourceResponse
 
-from app import db, machine, stream
+from app import db, machine, research, stream
 from superforecaster.errors import AgentTimeout, StageTimeout
 from superforecaster.events import AgentEvent
 from superforecaster.models import (
@@ -28,6 +28,7 @@ from superforecaster.models import (
     CreateGatedRunRequest,
     GatedRunDetail,
     GatedRunSummary,
+    ResearchPage,
     UpdateGatedRunRequest,
 )
 
@@ -86,6 +87,38 @@ def edit_run(run_id: str, body: UpdateGatedRunRequest) -> GatedRunDetail:
     except db.StateError as exc:
         raise _409(str(exc))
     return GatedRunDetail(**machine.detail(run_id))
+
+
+@router.get("/{run_id}/research")
+def run_research(
+    run_id: str,
+    q: str | None = Query(default=None),
+    limit: int = Query(default=100, le=500),
+) -> ResearchPage:
+    """What this run has read so far — the same store its agents search.
+
+    With `q`, BM25-ranked exactly as `search_research` ranks it for an agent, so the panel
+    shows what the agent would see. Without one, everything in insertion order.
+
+    `total` is the whole store, not the page, so the header can say "12 of 240" while a
+    query is narrowing it.
+    """
+    run = db.get_gated_run(run_id)
+    if run is None:
+        raise _404(f"run {run_id}")
+
+    research_id = run["research_id"]
+    query = (q or "").strip()
+    results = (
+        research.search_research(research_id, query, limit=limit, mark=True)
+        if query
+        else research.list_research(research_id, limit=limit)
+    )
+    return ResearchPage(
+        total=research.count_research(research_id),
+        query=query,
+        results=results,
+    )
 
 
 @router.delete("/{run_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -42,6 +42,7 @@ from ..tools import (
     extract_pages,
     find_disconfirming_evidence,
     map_site,
+    search_research,
     search_web,
     search_wikipedia,
 )
@@ -99,6 +100,12 @@ noise dressed as signal — set `is_noise=true` and `magnitude=0`. Keep it in th
 recording what you considered and discarded is useful. Evidence you call noise must
 move the number by zero.
 
+READ WHAT THIS RUN ALREADY FOUND, FIRST
+Call `search_research` before you search the web. Earlier steps of this run fetched
+pages in full, and reading one back is the cheapest tool call you have — the page needs
+no follow-up. A thin result means the run has not covered this ground yet, so search the
+web next.
+
 SEEK DISCONFIRMATION FIRST (principle 14)
 Use find_disconfirming_evidence before you settle, not after. Ordinary search returns
 material that agrees with however you phrased the query.
@@ -142,6 +149,7 @@ def build_inside_view_agent(
         output_type=SubQuestionAdjustments,
         system_prompt=INSTRUCTIONS,
         tools=[
+            search_research,
             search_web,
             extract_pages,
             crawl_site,

@@ -35,7 +35,7 @@ from tavily import AsyncTavilyClient
 
 from ..config import get_settings
 from ..deps import ForecastDeps
-from ..models import SourceRef
+from ..models import ResearchDoc, SourceRef
 from .dates import _as_utc, _parse_published
 
 MAX_RESULTS = 5
@@ -97,6 +97,7 @@ async def search_web(
 
     results = payload.get("results", [])
     ctx.deps.sources_seen.extend(_sources(results, query=query, tool="search_web"))
+    _remember(ctx, results, body_key="content")
 
     if not results:
         return f"No web results for: {query}"
@@ -145,6 +146,7 @@ async def extract_pages(
     ctx.deps.sources_seen.extend(
         _sources(results, query=", ".join(wanted), tool="extract_pages")
     )
+    _remember(ctx, results, body_key="raw_content")
     if not results:
         return f"Could not extract any of: {', '.join(wanted)}"
 
@@ -293,6 +295,37 @@ def _client() -> AsyncTavilyClient | None:
     """
     key = get_settings().tavily_api_key
     return AsyncTavilyClient(api_key=key) if key else None
+
+
+def _remember(
+    ctx: RunContext[ForecastDeps], results: list[dict], *, body_key: str
+) -> None:
+    """Keep the page text in the run's research store instead of discarding it.
+
+    The text is already here and already paid for — the model reads it once and the
+    context window then loses it. Storing it lets a later stage read it back for a tool
+    call instead of another search.
+
+    Failure is silent by design. A store that cannot be written is a lost convenience,
+    and raising here would turn it into a lost search.
+    """
+    store = ctx.deps.store
+    if store is None or not results:
+        return
+
+    docs = [
+        ResearchDoc(
+            url=r["url"],
+            title=r.get("title") or "",
+            body=(r.get(body_key) or "")[:_PAGE_CHARS],
+        )
+        for r in results
+        if r.get("url")
+    ]
+    try:
+        store.remember(docs)
+    except Exception:
+        pass
 
 
 def _sources(results: list[dict], *, query: str, tool: str) -> list[SourceRef]:

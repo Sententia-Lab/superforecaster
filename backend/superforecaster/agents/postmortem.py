@@ -18,7 +18,7 @@ from pydantic_ai import Agent
 from pydantic_ai.capabilities.hooks import Hooks
 
 from ..deps import ForecastDeps
-from ..tools import crawl_site, extract_pages, map_site, search_web
+from ..tools import crawl_site, extract_pages, map_site, search_research, search_web
 from ..models import ForecastRecord, PostMortem
 from ..runner import run_agent
 from . import with_model, withdraw_tools
@@ -58,7 +58,9 @@ One transferable sentence that would improve the NEXT forecast. Not "should have
 more careful" — something specific enough to act on. If the process was sound, the
 honest lesson may be "nothing to change here", and that is a real finding.
 
-You may search to establish what was publicly knowable before the forecast date.
+Start with `search_research`: it returns the pages this forecast was actually built on,
+so you can compare what the process saw against what was there. Then you may search the
+web to establish what else was publicly knowable before the forecast date.
 """
 
 
@@ -70,7 +72,7 @@ def build_postmortem_agent(model: str | None = None) -> Agent[ForecastDeps, Post
         deps_type=ForecastDeps,
         output_type=PostMortem,
         system_prompt=INSTRUCTIONS,
-        tools=[search_web, extract_pages, crawl_site, map_site],
+        tools=[search_research, search_web, extract_pages, crawl_site, map_site],
         capabilities=[Hooks(prepare_tools=withdraw_tools)],
         retries=1,
     )

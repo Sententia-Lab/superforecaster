@@ -56,6 +56,8 @@ export const api = {
   createRun: (body) => req("POST", "/runs", body),
   editRun: (id, body) => req("PATCH", `/runs/${id}`, body),
   deleteRun: (id) => req("DELETE", `/runs/${id}`),
+  runResearch: (id, q) =>
+    req("GET", `/runs/${id}/research${q ? `?q=${encodeURIComponent(q)}` : ""}`),
   startRun: (id) => req("POST", `/runs/${id}/start`),
   draftQuestion: (text) => req("POST", "/questions/draft", { text }),
   // Returns the rewrite, not a report: the caller writes `suggested_criteria` and

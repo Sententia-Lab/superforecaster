@@ -2865,3 +2865,205 @@ measurement away; the script is in ADR 17's history.
 a guard. This is the third time Tavily's date handling has been measured doing something
 other than what it says — `end_date` alone ignored (ADR 17), `end_date=2023-06-01`
 returning 2024 and 2026 articles (ADR 78), and now the `general` filter being inert.
+
+---
+
+## ADR 80 — A run keeps what it reads, in SQLite FTS5, behind a tool the agent calls
+
+**Accepted, 2026-08-20.**
+
+**Context.** A run fetched a page, the model read it once, and the text was gone. Only
+`SourceRef(url, title, query, tool)` survived on `ctx.deps.sources_seen` — enough to audit
+a citation, not enough to read the page again. A later stage that wanted what an earlier
+one had already fetched had to fetch it again and pay a tool call for it.
+
+**Decision.** Keep the page text in two SQLite tables scoped by a per-run `research_id`,
+and give the research agents one tool, `search_research`, that reads it back.
+
+### SQLite FTS5, not a BM25 library
+
+`bm25s` was in `pyproject.toml` and is removed. It indexes a fixed corpus and has no
+add-one-document API, so every page fetched mid-run would force a full index rebuild.
+Documents here arrive one at a time *while the run is in flight*, and the agent searches
+them during that same run.
+
+| | SQLite FTS5 | `bm25s` |
+|---|---|---|
+| Add one document mid-run | `INSERT` | rebuild the index |
+| Delete one run's documents | one `DELETE` | rebuild the index |
+| Storage | the `.db` file already there | a separate directory of arrays |
+| Same transaction as the forecast delete | yes | no — two stores can disagree |
+
+**What this costs.** FTS5 is SQLite-only, which narrows ADR 2's "the schema can migrate to
+Postgres later" for these two tables. Postgres has `tsvector` and `ts_rank_cd`, so the
+capability ports; the SQL does not. That is stated here rather than discovered later.
+
+### Two tables, not one
+
+FTS5 has no primary key and no usable index on an `UNINDEXED` column. Measured: `INSERT OR
+REPLACE` into an FTS5 table **appends a duplicate** rather than replacing, because there is
+no key to conflict on. So `research_docs` is a plain table and `research_index` is an
+external-content FTS5 index over it, kept in step by three triggers.
+
+**The key is `(research_id, url)`, and there is no surrogate one.** One run, one page, is
+the whole identity of a row; nothing ever asks for a page by any other name. The first
+draft carried `id TEXT PRIMARY KEY` beside a `UNIQUE (research_id, url)`, copying the shape
+of the other four tables — where the id is genuinely referenced, as a step id in a URL or a
+forecast id in a foreign key. Here it was written on every insert and read by nothing. The
+primary key's own index also answers `WHERE research_id = ?` on its leading column
+(`SEARCH ... USING COVERING INDEX`), so the separate index on `research_id` went with it:
+three declarations became one. The FTS5 join uses `rowid`, which SQLite maintains whatever
+the primary key is, and an upsert preserves it — both measured.
+
+**Four columns, because four is what anything reads.** `research_id`, `url`, `title`,
+`body`. The first draft also carried `tool`, `query`, `created_at`, and `description`, and
+the same audit removed all four:
+
+| Column | Why it went |
+|---|---|
+| `tool` | written on every insert, read by nothing |
+| `query` | same — and `SourceRef.query` already records which search found a page, where it *is* read |
+| `created_at` | same. Every page in a store was fetched during one run, which lasts minutes and whose own timestamp is on the forecast |
+| `description` | worse than unread: **always empty**, because no Tavily result carries the key. `_RESULT_FIELDS` is `title, url, content, published_date, score`, and an extraction returns `title, url, raw_content`. It was an indexed FTS5 column weighted `2.0` in every `bm25()` call, so a third of the documented ranking scheme scored a field that never had content |
+
+The `description` case is the one worth keeping. A dead *column* costs a little storage. A
+dead column that is **indexed and weighted** looks like a working part of the ranking, and
+the weights beside it read as measured when one of the three was inert. `bm25()` is now
+called with two weights for two columns that both hold text.
+
+**The division of labour this settles.** `SourceRef` records that a page was seen and where
+it came from — the query, the tool, the published date — and the checks and the run tree
+read it. `research_docs` records what the page *said*. Provenance questions go to the
+reference; content questions go to the document. Neither stores the other's answer.
+
+### The query is escaped, always
+
+FTS5 reads its `MATCH` argument as **syntax**, and an agent writes prose. Measured:
+
+| Agent query | Raw `MATCH` |
+|---|---|
+| `US-China tariffs` | `OperationalError: no such column: China` |
+| `Trump: what next?` | `OperationalError: no such column: Trump` |
+| `AND` | `fts5: syntax error near "AND"` |
+
+`_match_expression` strips each token to alphanumerics, quotes it, and joins with **`OR`**.
+`OR`, not `AND`: an all-tokens rule returns nothing for the long specific query an agent
+actually writes — `US-China steel tariff negotiations 2026` matches 3 documents under `OR`
+and 0 under `AND` on the same store. Ranking filters, matching does not.
+
+### A tool the agent calls, not a cache inside `search_web`
+
+`search_web` could have consulted the store and returned local results without calling
+Tavily. Rejected. The agent is the one that knows whether what the run already found
+answers *its* question, and a cache decides that on its behalf using a similarity threshold
+nobody has measured. A cached answer also makes "did this search cost anything" invisible
+at the point where the methodology checks read `sources_seen`.
+
+`search_web` and `extract_pages` still **write** every page they fetch. Only the read is a
+decision.
+
+**The risk this accepts.** ADR 77 measured `extract_pages`, `crawl_site`, and `map_site` at
+zero calls each. A tool the model does not reach for is dead weight, and with nothing
+intercepting `search_web` the prompt is the whole mechanism: `outside_view`'s numbered
+search ladder gains a rung 0, and `inside_view` and `critic` each gain a line. Whether that
+worked is one number — how often `search_research` is called per stage — and it is the
+first thing to read off a real run.
+
+### A store read is an ordinary tool call
+
+No counter, no exemption. `withdraw_tools` subtracts `ctx.usage.tool_calls`, Pydantic AI's
+own count of every tool call, which this codebase cannot decrement. The budgets were raised
+to pay for the new tool instead:
+
+| Agent | `tool_calls` | `iterations` |
+|---|---|---|
+| `base_rate_cell` | 8 → 10 | 11 → 13 |
+| `inside_view` | 8 → 10 | 11 → 13 |
+| `critic` | 3 → 4 | 6 → 7 |
+| `decompose` | 4 → 5 | 8 → 9 |
+| `lenses` | 2 → 3 | 4 → 5 |
+| `resolution` | 4 → 5 | 7 → 8 |
+| `update` | 4 → 5 | 7 → 8 |
+| `postmortem` | 4 → 5 | 7 → 8 |
+
+**Every agent that can call a tool gets it.** `reflect`, `synthesize`, and `draft` do not,
+because all three carry `tool_calls=0`: `withdraw_tools` returns `[]` on its first
+evaluation, so a tool added there would be built and never offered. Opening a budget for
+them is a separate decision about what those agents are for, not part of this one.
+
+**The post-forecast agents reach it through the record.** `update`, `resolution`, and
+`postmortem` run months after the run that made the forecast, outside any run, so they have
+no `ForecastDeps` a stage built. `ForecastRecord.research_id` is what still knows which
+store was theirs, and `research.store_for(record.research_id)` turns it back into one. That
+is what makes a daily refresh able to read what the forecast was built on — which is what
+"new evidence" has to be new *against* — rather than searching for it again.
+
+`tokens` and `cost_usd` are deliberately unchanged, so a cell can now reach its token
+ceiling before its tool ceiling. The token ceiling is the one that should bind if either
+does — but a cell dying on `total_tokens_limit` mid-write is not the intended outcome, and
+which ceiling binds first is the second number to read off a real run.
+
+`iterations` had to move with `tool_calls`: `parallel_tool_calls` is off (ADR 70), so a
+tool call with no model request to make it in is unusable.
+
+**`lenses` is the exception worth naming.** It has the tool, because the instruction was
+to give it to every agent that can call one. It should probably not keep it. `lenses` names
+reference populations **before any rate has been seen** — that ordering is the whole reason
+it is a separate step (P4, P7), and its own module docstring says a search there "would
+only surface rates, which is exactly what this step must not see." In the normal order the
+store holds nothing but `decompose`'s work when `lenses` runs, so the risk is latent rather
+than live. A **retry** of a lenses step after base rates have been measured is where it
+bites: `gate_offender` only requires *earlier* stages to be complete, so nothing stops it,
+and the store would then hand the lens-chooser the measured rates it is supposed to be
+blind to. Its prompt was deliberately left without a line pointing at the tool.
+
+(Pre-existing and separate: that docstring says "No tools" while the agent has had four
+search tools and `tool_calls=2` for some time. The drift predates this ADR.)
+
+**It is withdrawn while empty.** The base-rate stage runs its cells concurrently against a
+store that starts empty. Offering a tool that can only answer "nothing yet" costs a tool
+call to learn what `withdraw_tools` already knows — the same argument ADR 69 makes for
+withdrawing the Tavily tools when there is no key.
+
+### The vocabulary is tool calls; the prompt still says searches
+
+`SEARCH_RESERVE` is renamed `CALL_RESERVE`, because what it gates is `Budget.tool_calls` and
+`search_research` is a tool call that is not a web search. The bands `attach_budget` writes
+into the prompt still say "searches", and that is ADR 62, not an oversight: the structured
+answer is itself delivered as a tool call, so an instruction against tool calls *as a
+category* forbids the one act that would end the run. `test_agent_budget` asserts it.
+
+So the tension is deliberate and one-directional. Internally the budget counts tool calls.
+Externally the agent is told to stop *searching*, because that is the only phrasing it can
+obey without trapping itself. This supersedes ADR 32's title — the budget is not a search
+budget — while leaving its gradient and per-cell decisions intact.
+
+### The store is injected, not imported
+
+`superforecaster/` may not import `app` (ADR 73, enforced by `test_layering`), and the
+store is SQLite. So `deps.ResearchStore` is a Protocol with three methods — `remember`,
+`find`, `is_empty` — and `app.research.SqliteResearchStore` implements it. The app layer
+passes one in, exactly as it already passes a `Sink` for `emit`. The store is bound to its
+`research_id` at construction, so no tool ever handles one and no run can name another
+run's store.
+
+### `research_id` is a third key, and not a foreign key
+
+Pages are written while the run is in flight, which is **before** any `forecasts` row
+exists — `save_forecast` mints the forecast id at synthesis. So the store cannot reference
+`forecasts(id)`. `start_gated_run` mints the `research_id`, `complete_gated_run` copies it
+onto the forecast, and from then on the forecast owns the store.
+
+`DELETE /forecasts/{id}` and `db.delete_forecast` are new, and are the mirror of
+`DELETE /runs/{id}`: that one keeps the forecast, this one keeps the run. The store delete
+and the forecast delete share one transaction, because a store that outlives its forecast
+is unreachable — nothing else knows its `research_id`.
+
+**What this rules out.** Reading another run's research, and therefore any cross-forecast
+"what have we already learned about tariffs" query, until something deliberately widens the
+scope. Also a store that survives its forecast: there is no orphan sweep, because there are
+no orphans to sweep.
+
+**The general finding.** A library that stores things does not have to import the storage.
+The protocol is three methods, and it is what let the store live in `app` where ADR 73 says
+storage lives, while the tools that use it stayed in the library where the agents are.

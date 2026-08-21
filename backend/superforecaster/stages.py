@@ -333,6 +333,7 @@ async def run_all(
     forecast_date: datetime | None = None,
     model: str | None = None,
     emit=None,
+    store=None,
 ) -> tuple[Forecast, list[CheckViolation]]:
     """Run every stage back-to-back with no gates. The CLI and eval entry point.
 
@@ -342,8 +343,16 @@ async def run_all(
 
     Returns the forecast plus any violations that survived the retry, so a caller can
     tell a clean forecast from one that never satisfied its own methodology.
+
+    Pass `store` to keep the pages this run reads, so a later stage can read them back
+    instead of searching again. Without one the run reads the web exactly as before.
     """
-    deps = ForecastDeps(forecast_date=forecast_date, model=model, emit=emit)
+    deps = ForecastDeps(
+        forecast_date=forecast_date,
+        model=model,
+        emit=emit,
+        store=store,
+    )
 
     decomposition = await run_decompose_stage(input, deps)
     researchable = [

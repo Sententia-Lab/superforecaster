@@ -26,7 +26,7 @@ from pydantic import BaseModel
 
 from superforecaster.config import Budget
 from superforecaster.agents import (
-    SEARCH_RESERVE,
+    CALL_RESERVE,
     attach_budget,
     spent_usd,
     withdraw_tools,
@@ -161,7 +161,7 @@ async def test_the_order_to_stop_arrives_while_a_search_is_still_legal():
 async def test_the_three_search_bands_in_order():
     """`RESEARCH` allows 3 searches and the reserve is 2, so the agent is encouraged
     once, ordered to land twice, and then told it is out."""
-    assert RESEARCH.tool_calls == 3 and SEARCH_RESERVE == 2
+    assert RESEARCH.tool_calls == 3 and CALL_RESERVE == 2
     said = await instructions_until_exhausted(RESEARCH)
 
     assert "3 of 3 searches left. Prefer" in said[0]

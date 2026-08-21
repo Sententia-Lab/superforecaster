@@ -9,11 +9,36 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Protocol
 
 from .config import Budget
 
 from .events import Sink
-from .models import SourceRef
+from .models import ResearchDoc, ResearchHit, SourceRef
+
+
+class ResearchStore(Protocol):
+    """The pages this run has already read, bound to the run that read them.
+
+    A protocol rather than an import because the store is SQLite and this package is a
+    library — `test_layering` keeps storage in `app`. The app layer passes an
+    implementation in, the same way it passes a `Sink`.
+
+    Already scoped to one run, so no caller passes an id around: two runs cannot see each
+    other's pages because neither ever names the other's store.
+    """
+
+    def remember(self, docs: list[ResearchDoc]) -> int:
+        """Keep these pages. Re-storing a URL updates it rather than adding a copy."""
+        ...
+
+    def find(self, query: str, limit: int = 5) -> list[ResearchHit]:
+        """The stored pages ranked against `query`, best first."""
+        ...
+
+    def is_empty(self) -> bool:
+        """Whether nothing has been stored yet."""
+        ...
 
 
 @dataclass
@@ -65,6 +90,21 @@ class ForecastDeps:
     fixes the columns; each research stage runs one agent per column concurrently, and
     each of those agents gets a deps copy carrying its own tag and its own
     `sources_seen`. None when nothing fanned out — the CLI, the update graph, an eval.
+    """
+
+    store: ResearchStore | None = None
+    """The pages this run has already read, or None to keep none.
+
+    One store per run, copied unchanged into every cell, because the whole point is that a
+    later stage can read what an earlier one fetched. `sources_seen` is private per cell
+    for the opposite reason — it is an audit trail of one cell's work, and this is a
+    shared record of the run's.
+
+    Rides here rather than through each tool's signature for the same reason `emit` does:
+    `deps` is already forwarded into `agent.run`, so a tool reaches it from `ctx.deps`.
+
+    None everywhere it is not set: `search_research` is withdrawn and the Tavily tools
+    skip their write, so a direct call or a test without one behaves as it always did.
     """
 
     budget: Budget | None = None

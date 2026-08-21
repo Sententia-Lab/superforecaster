@@ -19,7 +19,7 @@ from typing import Callable
 import logfire
 from superforecaster.config import get_stage_timeout
 
-from . import db
+from . import db, research
 from superforecaster import stages
 from superforecaster.stages import STAGE_ORDER
 from superforecaster.agents.decompose import with_ids
@@ -281,7 +281,12 @@ async def execute_step(
             category=run["category"],
             max_iterations=max_iterations or run["max_iterations"],
         )
-        deps = ForecastDeps(emit=emit)
+        store = (
+            research.SqliteResearchStore(run["research_id"])
+            if run["research_id"]
+            else None
+        )
+        deps = ForecastDeps(emit=emit, store=store)
 
         cancelled: asyncio.CancelledError | None = None
         try:

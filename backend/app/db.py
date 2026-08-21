@@ -99,7 +99,7 @@ def connect() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 """Bump this and add a step to `MIGRATIONS` whenever an existing table has to change.
 
 `CREATE TABLE IF NOT EXISTS` covers a fresh database and nothing else. It does not add a
@@ -184,6 +184,78 @@ def _rewrite_sub_claim_payloads(conn: sqlite3.Connection) -> None:
                 )
 
 
+_RESEARCH_TABLES = """
+            CREATE TABLE IF NOT EXISTS research_docs (
+                research_id TEXT NOT NULL,
+                url TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                body TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (research_id, url)
+            );
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS research_index USING fts5(
+                title, url, body,
+                content='research_docs', content_rowid='rowid',
+                tokenize='porter unicode61'
+            );
+
+            CREATE TRIGGER IF NOT EXISTS research_ai AFTER INSERT ON research_docs BEGIN
+                INSERT INTO research_index(rowid, title, url, body)
+                VALUES (new.rowid, new.title, new.url, new.body);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS research_ad AFTER DELETE ON research_docs BEGIN
+                INSERT INTO research_index(research_index, rowid, title, url, body)
+                VALUES ('delete', old.rowid, old.title, old.url, old.body);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS research_au AFTER UPDATE ON research_docs BEGIN
+                INSERT INTO research_index(research_index, rowid, title, url, body)
+                VALUES ('delete', old.rowid, old.title, old.url, old.body);
+                INSERT INTO research_index(rowid, title, url, body)
+                VALUES (new.rowid, new.title, new.url, new.body);
+            END;
+"""
+"""The research store, in one place because two callers need it verbatim.
+
+Four columns, because four is what anything reads. `(research_id, url)` — one run, one
+page — is the whole identity of a row, so it is the key rather than a `UNIQUE` beside a
+surrogate one, and its index answers `WHERE research_id = ?` on the leading column, so the
+scope lookup and the delete need no second index.
+
+The FTS5 table is external content over `research_docs` and joins on its `rowid`, which
+SQLite maintains whatever the primary key is. The three triggers are what keep the two in
+step; without `research_ad` a delete would leave the index answering for rows that are
+gone.
+"""
+
+
+def _rebuild_research_index(conn: sqlite3.Connection) -> None:
+    """Migration 6's Python step: re-make the FTS index over the new column set.
+
+    `DROP` then re-`CREATE` then `'rebuild'`, rather than an ALTER, because FTS5 has no
+    ALTER. Nothing is lost: an external-content index stores no text of its own, so the
+    rebuild reads every row back out of `research_docs`.
+
+    Safe on a fresh database, where the create block has already built the new shape and
+    there is nothing to read back.
+    """
+    conn.executescript("""
+        DROP TRIGGER IF EXISTS research_ai;
+        DROP TRIGGER IF EXISTS research_ad;
+        DROP TRIGGER IF EXISTS research_au;
+        DROP TABLE IF EXISTS research_index;
+    """)
+    conn.executescript(_RESEARCH_TABLES)
+    conn.execute("INSERT INTO research_index(research_index) VALUES('rebuild')")
+
+
+def _create_research_tables(conn: sqlite3.Connection) -> None:
+    """Migration 5's Python step. `executescript` because it is several statements, and
+    a migration step is one statement or one callable (ADR 57)."""
+    conn.executescript(_RESEARCH_TABLES)
+
+
 MigrationStep = str | Callable[[sqlite3.Connection], None]
 
 MIGRATIONS: dict[int, tuple[MigrationStep, ...]] = {
@@ -211,6 +283,20 @@ MIGRATIONS: dict[int, tuple[MigrationStep, ...]] = {
         "WHERE sub_question_id GLOB 'sc[0-9]*';",
         _rewrite_sub_claim_payloads,
     ),
+    # The research store. Every statement is IF NOT EXISTS, so a fresh database whose
+    # create block already built these tables reaches this step with nothing to do. The
+    # two columns are ALTERs because the create block cannot add a column to a table that
+    # already exists — the failure mode SCHEMA_VERSION's docstring describes.
+    5: (
+        _create_research_tables,
+        "ALTER TABLE forecasts ADD COLUMN research_id TEXT;",
+        "ALTER TABLE gated_runs ADD COLUMN research_id TEXT;",
+    ),
+    # A URL is evidence about a page — the domain is often the whole reason a person
+    # recognises a source — and it was not searchable. Adding a column to an FTS5 table
+    # means rebuilding it, which is safe here because `research_docs` holds the text and
+    # the index holds nothing of its own.
+    6: (_rebuild_research_index,),
 }
 """version -> steps that take the schema from `version - 1` to `version`.
 
@@ -295,6 +381,7 @@ def init_db() -> None:
                 initial_reasoning TEXT NOT NULL,
                 decompositions_json TEXT NOT NULL,
                 research_json TEXT NOT NULL,
+                research_id TEXT,
                 created_at TIMESTAMP NOT NULL
             );
 
@@ -320,6 +407,7 @@ def init_db() -> None:
                 status TEXT NOT NULL DEFAULT 'backlog',
                 error TEXT,
                 forecast_id TEXT REFERENCES forecasts(id) ON DELETE SET NULL,
+                research_id TEXT,
                 created_at TIMESTAMP NOT NULL,
                 started_at TIMESTAMP,
                 completed_at TIMESTAMP
@@ -344,7 +432,8 @@ def init_db() -> None:
             );
 
             CREATE INDEX IF NOT EXISTS ix_run_steps_run ON run_steps(run_id, stage);
-            """)
+        """)
+        conn.executescript(_RESEARCH_TABLES)
         if fresh:
             # Born at the current schema, so no historical step has anything to do here.
             # Stamping now is what stops a future migration — a rename, say — from
@@ -379,8 +468,13 @@ def save_forecast(
     forecast: Forecast,
     resolution_source: str,
     submission_gap_days: int = 7,
+    research_id: str | None = None,
 ) -> str:
-    """Insert a new forecast plus its initial update row. Returns UUID."""
+    """Insert a new forecast plus its initial update row. Returns UUID.
+
+    `research_id` binds the run's research store to the forecast it produced, so deleting
+    the forecast can take the store with it. None when the run kept no store.
+    """
     fid = str(uuid.uuid4())
     now = _utcnow()
     submission_deadline = forecast.resolution_date - timedelta(days=submission_gap_days)
@@ -391,8 +485,9 @@ def save_forecast(
             INSERT INTO forecasts (
                 id, question, resolution_criteria, resolution_source, category,
                 submission_gap_days, submission_deadline, resolution_date,
-                initial_reasoning, decompositions_json, research_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                initial_reasoning, decompositions_json, research_json, research_id,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 fid,
@@ -406,6 +501,7 @@ def save_forecast(
                 forecast.reasoning,
                 json.dumps([d.model_dump() for d in forecast.decompositions]),
                 forecast.research.model_dump_json(),
+                research_id,
                 now,
             ),
         )
@@ -425,6 +521,27 @@ def save_forecast(
             ),
         )
     return fid
+
+
+def delete_forecast(forecast_id: str) -> None:
+    """Remove a forecast, its updates (via CASCADE), and its research store.
+
+    One transaction, because a store that outlives its forecast is unreachable and a
+    forecast that outlives its store has lost its evidence. Any gated run that produced
+    this forecast survives with `forecast_id` set to NULL — the mirror of
+    `delete_gated_run`, which deliberately leaves the forecast alive.
+    """
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT research_id FROM forecasts WHERE id = ?", (forecast_id,)
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"forecast {forecast_id}")
+        # Imported here, not at the top: `research` reads `connect` from this module.
+        from . import research
+
+        research.delete_research(row["research_id"], conn)
+        conn.execute("DELETE FROM forecasts WHERE id = ?", (forecast_id,))
 
 
 def add_forecast_update(
@@ -740,12 +857,17 @@ def update_gated_run_fields(
 
 
 def start_gated_run(run_id: str) -> None:
-    """CAS `backlog` → `active`. Raises StateError if it already left the backlog."""
+    """CAS `backlog` → `active`. Raises StateError if it already left the backlog.
+
+    Mints the run's `research_id` here rather than at creation, because this is where the
+    run starts reading pages. A run that was already active when this column arrived keeps
+    NULL and simply keeps no store.
+    """
     with connect() as conn:
         cur = conn.execute(
-            "UPDATE gated_runs SET status = 'active', started_at = ? "
+            "UPDATE gated_runs SET status = 'active', started_at = ?, research_id = ? "
             "WHERE id = ? AND status = 'backlog'",
-            (_utcnow(), run_id),
+            (_utcnow(), str(uuid.uuid4()), run_id),
         )
         if cur.rowcount == 0:
             row = conn.execute(
@@ -757,11 +879,22 @@ def start_gated_run(run_id: str) -> None:
 
 
 def complete_gated_run(run_id: str, forecast_id: str) -> None:
+    """Bind the finished forecast to its run, and the run's research store to the forecast.
+
+    The store is copied across rather than looked up through the run, because
+    `delete_gated_run` may remove the run while the forecast lives on.
+    """
     with connect() as conn:
         conn.execute(
             "UPDATE gated_runs SET status = 'complete', forecast_id = ?, "
             "completed_at = ?, error = NULL WHERE id = ?",
             (forecast_id, _utcnow(), run_id),
+        )
+        conn.execute(
+            "UPDATE forecasts SET research_id = "
+            "(SELECT research_id FROM gated_runs WHERE id = ?) "
+            "WHERE id = ? AND research_id IS NULL",
+            (run_id, forecast_id),
         )
 
 
@@ -971,6 +1104,7 @@ def _row_to_gated_run(row: sqlite3.Row) -> dict:
         "status": row["status"],
         "error": row["error"],
         "forecast_id": row["forecast_id"],
+        "research_id": row["research_id"],
         "created_at": _ensure_aware(row["created_at"]),
         "started_at": _ensure_aware(row["started_at"]) if row["started_at"] else None,
         "completed_at": (
@@ -1043,5 +1177,6 @@ def _row_to_forecast(f_row: sqlite3.Row, u_rows: list[sqlite3.Row]) -> ForecastR
         decompositions=decompositions,
         research=research,
         updates=updates,
+        research_id=f_row["research_id"],
         created_at=_ensure_aware(f_row["created_at"]),
     )

@@ -44,14 +44,14 @@ def test_a_budget_carries_all_four_ceilings():
     not stop a model searching forty times for cheap results."""
     b = get_budget("base_rate_cell")
 
-    assert (b.cost_usd, b.tokens, b.tool_calls, b.iterations) == (0.40, 200_000, 8, 11)
+    assert (b.cost_usd, b.tokens, b.tool_calls, b.iterations) == (0.40, 200_000, 10, 13)
 
 
 def test_three_of_the_four_reach_pydantic_ai():
     """Cost is the one this codebase enforces itself, in `agents.attach_budget`."""
     limits = get_budget("critic").limits()
 
-    assert limits.request_limit == 6
+    assert limits.request_limit == 7
     assert limits.total_tokens_limit == 60_000
 
 
@@ -80,8 +80,8 @@ def test_the_enforced_tool_ceiling_is_double_the_budgeted_one():
     with two left would otherwise die a turn from writing up."""
     b = get_budget("critic")
 
-    assert b.tool_calls == 3
-    assert b.limits().tool_calls_limit == 6
+    assert b.tool_calls == 4
+    assert b.limits().tool_calls_limit == 8
 
 
 def test_every_agent_has_a_budget():
@@ -131,7 +131,7 @@ def test_a_searching_agent_is_still_bounded():
     """A real ceiling, not an open one. `tavily_research` runs about 40 seconds a call."""
     for name, armed in _agent_tool_use().items():
         if armed:
-            assert 0 < get_budget(name).tool_calls <= 8, name
+            assert 0 < get_budget(name).tool_calls <= 10, name
 
 
 def _agent_tool_use() -> dict[str, bool]:

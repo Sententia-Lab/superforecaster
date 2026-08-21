@@ -20,7 +20,7 @@ from pydantic_ai.exceptions import UsageLimitExceeded
 
 from ..deps import ForecastDeps
 from ..errors import AgentTimeout
-from ..tools import crawl_site, extract_pages, map_site, search_web
+from ..tools import crawl_site, extract_pages, map_site, search_research, search_web
 from ..models import CriteriaCritique
 from ..runner import run_agent
 from . import attach_budget, withdraw_tools, with_model
@@ -85,6 +85,9 @@ one sentence from you and then look at the new wording. Write for that reader.
                  with the author: an empty source reads as "no adjudicator" and fails
                  the question.
 
+Call `search_research` first. Earlier steps of this run already fetched pages, and one
+of them may name the source you were about to go looking for.
+
 At most TWO searches, and only to check that a source you are about to name exists and
 publishes what the criteria assume it does — a criterion resting on a statistic nobody
 publishes is not resolvable. That is the only thing worth searching for here. You are
@@ -104,7 +107,7 @@ def build_critic_agent(
         deps_type=ForecastDeps,
         output_type=CriteriaCritique,
         system_prompt=INSTRUCTIONS,
-        tools=[search_web, extract_pages, crawl_site, map_site],
+        tools=[search_research, search_web, extract_pages, crawl_site, map_site],
         capabilities=[Hooks(prepare_tools=withdraw_tools)],
         retries=1,
     )

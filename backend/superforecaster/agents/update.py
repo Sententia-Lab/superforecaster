@@ -23,6 +23,7 @@ from ..tools import (
     extract_pages,
     find_disconfirming_evidence,
     map_site,
+    search_research,
     search_web,
 )
 from . import with_model, withdraw_tools
@@ -70,7 +71,9 @@ things, in this order:
 
 1. CORROBORATE. Find a second, independent source for the decisive claim. A single
    outlet repeating a wire story is not independent confirmation.
-2. TRY TO BREAK IT. Search for evidence the claim is wrong, premature, disputed, or
+2. TRY TO BREAK IT. Start with `search_research` — it holds what the original forecast
+   read, which is what "new" has to be new *against*. Then search the web for evidence
+   the claim is wrong, premature, disputed, or
    more limited than the headline implies. Reports get retracted; "agreed in
    principle" is not "closed"; an announcement is not an event.
 
@@ -93,6 +96,7 @@ def build_update_agent(model: str | None = None) -> Agent[ForecastDeps, UpdateDe
         output_type=UpdateDecision,
         system_prompt=INSTRUCTIONS,
         tools=[
+            search_research,
             search_web,
             extract_pages,
             crawl_site,

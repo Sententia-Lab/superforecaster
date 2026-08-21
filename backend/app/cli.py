@@ -25,7 +25,7 @@ from pathlib import Path
 from .config import load_env
 from .observability import configure_logfire
 
-from . import db
+from . import db, research
 from superforecaster.agents.critic import run_critique
 from superforecaster.agents.postmortem import run_postmortem
 from superforecaster.agents.resolution import run_resolution_check
@@ -154,6 +154,7 @@ async def _cmd_forecast(args: argparse.Namespace) -> int:
         resolution_date = datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
         category = input("Category: ").strip()
 
+    store = research.new_store()
     forecast, violations = await run_all(
         ForecastInput(
             question=question,
@@ -162,6 +163,7 @@ async def _cmd_forecast(args: argparse.Namespace) -> int:
             category=category,
             max_iterations=args.max_iterations,
         ),
+        store=store,
     )
 
     if violations:
@@ -171,7 +173,9 @@ async def _cmd_forecast(args: argparse.Namespace) -> int:
 
     if not args.no_save:
         db.init_db()
-        forecast_id = db.save_forecast(forecast, resolution_source=source)
+        forecast_id = db.save_forecast(
+            forecast, resolution_source=source, research_id=store.research_id
+        )
         print(json.dumps({"forecast_id": forecast_id}, indent=2), file=sys.stderr)
 
     _print_json(forecast)
@@ -189,7 +193,7 @@ async def _cmd_refresh(args: argparse.Namespace) -> int:
 
     data = _load_fixture(args.fixture, "existing_forecast.json")
     record = _record_from_fixture(data)
-    deps = ForecastDeps()
+    deps = ForecastDeps(store=research.store_for(record.research_id))
     _print_json(await run_update(record, deps))
     return 0
 
@@ -212,7 +216,7 @@ async def _cmd_resolve(args: argparse.Namespace) -> int:
     else:
         record = _record_from_fixture(data)
 
-    deps = ForecastDeps()
+    deps = ForecastDeps(store=research.store_for(record.research_id))
     _print_json(await run_resolution_check(record, deps))
     return 0
 
@@ -247,7 +251,11 @@ async def _cmd_postmortem(args: argparse.Namespace) -> int:
     if record is None:
         print(f"forecast {args.id} not found", file=sys.stderr)
         return 1
-    _print_json(await run_postmortem(record, ForecastDeps()))
+    _print_json(
+        await run_postmortem(
+            record, ForecastDeps(store=research.store_for(record.research_id))
+        )
+    )
     return 0
 
 

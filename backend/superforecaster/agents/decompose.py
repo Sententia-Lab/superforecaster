@@ -12,7 +12,7 @@ from pydantic_ai import Agent
 
 from pydantic_ai.capabilities.hooks import Hooks
 from ..deps import ForecastDeps
-from ..tools import crawl_site, extract_pages, map_site, search_web
+from ..tools import crawl_site, extract_pages, map_site, search_web, search_research
 from ..models import Decomposition, ForecastInput
 from ..runner import run_agent
 from . import forecast_date_note, format_question, with_model, withdraw_tools
@@ -98,7 +98,7 @@ def build_decompose_agent(
         deps_type=ForecastDeps,
         output_type=Decomposition,
         system_prompt=INSTRUCTIONS,
-        tools=[search_web, extract_pages, crawl_site, map_site],
+        tools=[search_web, extract_pages, crawl_site, map_site, search_research],
         capabilities=[Hooks(prepare_tools=withdraw_tools)],
         retries=1,
     )
