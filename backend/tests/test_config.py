@@ -44,7 +44,7 @@ def test_a_budget_carries_all_four_ceilings():
     not stop a model searching forty times for cheap results."""
     b = get_budget("base_rate_cell")
 
-    assert (b.tool_calls, b.requests, b.tokens) == (10, 15, 200_000)
+    assert (b.tool_calls, b.requests, b.tokens) == (8, 12, 200_000)
 
 
 def test_three_of_the_four_reach_pydantic_ai():

@@ -132,8 +132,8 @@ class Budget:
 BUDGETS: dict[str, Budget] = {
     b.name: b
     for b in (
-        Budget("base_rate_cell", tool_calls=10, requests=15, tokens=200_000),
-        Budget("inside_view", tool_calls=10, requests=15, tokens=200_000),
+        Budget("base_rate_cell", tool_calls=8, requests=12, tokens=200_000),
+        Budget("inside_view", tool_calls=8, requests=12, tokens=200_000),
         Budget("critic", tool_calls=4, requests=7, tokens=60_000),
         Budget("resolution", tool_calls=5, requests=8, tokens=60_000),
         Budget("update", tool_calls=5, requests=8, tokens=60_000),
