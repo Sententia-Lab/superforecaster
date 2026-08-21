@@ -11,10 +11,8 @@ from dotenv import load_dotenv
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = BACKEND_ROOT / ".env"
 
-# Snapshot which names the real environment already carried, BEFORE any file is read.
-# `override=False` means an exported variable beats `.env`, and once `load_dotenv` has
-# run the two are indistinguishable in `os.environ` — so "why is this setting not what my
-# .env says" becomes unanswerable unless the answer is captured here, first.
+# Which names the real environment carried before `.env` was read, so `origin` can say
+# where a value came from.
 _PRESET_ENV: frozenset[str] = frozenset(k for k, v in os.environ.items() if v != "")
 
 _env_loaded = False

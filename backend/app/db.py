@@ -300,19 +300,13 @@ MIGRATIONS: dict[int, tuple[MigrationStep, ...]] = {
         "WHERE sub_question_id GLOB 'sc[0-9]*';",
         _rewrite_sub_claim_payloads,
     ),
-    # The research store. Every statement is IF NOT EXISTS, so a fresh database whose
-    # create block already built these tables reaches this step with nothing to do. The
-    # two columns are ALTERs because the create block cannot add a column to a table that
-    # already exists — the failure mode SCHEMA_VERSION's docstring describes.
+    # The research store.
     5: (
         _create_research_tables,
         "ALTER TABLE forecasts ADD COLUMN research_id TEXT;",
         "ALTER TABLE gated_runs ADD COLUMN research_id TEXT;",
     ),
-    # A URL is evidence about a page — the domain is often the whole reason a person
-    # recognises a source — and it was not searchable. Adding a column to an FTS5 table
-    # means rebuilding it, which is safe here because `research_docs` holds the text and
-    # the index holds nothing of its own.
+    # Make the URL searchable. FTS5 has no ALTER, so the index is rebuilt.
     6: (_rebuild_research_index,),
     # `Forecast.research` was a model-transcribed summary nothing read (ADR 82).
     7: ("ALTER TABLE forecasts DROP COLUMN research_json;",),

@@ -45,10 +45,8 @@ def _print_json(obj) -> None:
 
 
 def _load_fixture(path_arg: str | None, default_name: str) -> dict:
-    """`--fixture` alone loads the bundled file; `--fixture <path>` loads that path."""
-    path = FIXTURES_DIR / default_name if not path_arg else Path(path_arg)
-    if not path.exists() and (FIXTURES_DIR / path.name).exists():
-        path = FIXTURES_DIR / path.name
+    """`--fixture` loads the bundled file; `--fixture-path` loads any JSON file."""
+    path = Path(path_arg) if path_arg else FIXTURES_DIR / default_name
     if not path.exists():
         print(f"error: fixture not found: {path}", file=sys.stderr)
         sys.exit(2)
@@ -86,7 +84,7 @@ def _record_from_fixture(data: dict) -> ForecastRecord:
 
 
 def _record(fixture: str | None, id: str | None, what: str) -> ForecastRecord:
-    """The forecast a command works on: from `--fixture` or from the DB by `--id`."""
+    """The forecast a command works on: from a fixture or from the DB by `--id`."""
     if (fixture is None) == (id is None):
         raise typer.BadParameter(f"give exactly one of --fixture or --id to {what}")
     if id is not None:
@@ -105,16 +103,15 @@ def _deps(record: ForecastRecord) -> ForecastDeps:
 
 @app.command()
 def forecast(
-    fixture: str = typer.Option(
-        None, help="Load the question from a fixture JSON file"
-    ),
+    fixture: bool = typer.Option(False, "--fixture", help="Use the bundled question"),
+    fixture_path: str = typer.Option(None, help="Load the question from a JSON file"),
     no_save: bool = typer.Option(False, "--no-save", help="Do not save to SQLite"),
     max_iterations: int = 5,
     verbose: bool = VERBOSE,
 ) -> None:
     """Run every stage back-to-back and save the forecast."""
-    if fixture is not None:
-        data = _load_fixture(fixture, "forecast_question.json")
+    if fixture or fixture_path:
+        data = _load_fixture(fixture_path, "forecast_question.json")
     else:
         print("Forecast a new question.")
         data = {
@@ -143,27 +140,29 @@ def forecast(
 
 @app.command()
 def refresh(
-    fixture: str = typer.Option(None, help="Forecast fixture (no DB write)"),
+    fixture: bool = typer.Option(False, "--fixture", help="Use the bundled forecast"),
+    fixture_path: str = typer.Option(None, help="Load a forecast from a JSON file"),
     id: str = typer.Option(None, help="Forecast UUID in the DB"),
     verbose: bool = VERBOSE,
 ) -> None:
     """Check one forecast for resolution, then update it against new evidence."""
-    if id is not None and fixture is None:
+    if id is not None and not (fixture or fixture_path):
         db.init_db()
         _print_json(asyncio.run(run_update_graph(id)))
         return
-    record = _record(fixture, id, "refresh")
+    record = _record(fixture_path or ("" if fixture else None), id, "refresh")
     _print_json(asyncio.run(run_update(record, _deps(record))))
 
 
 @app.command()
 def resolve(
-    fixture: str = typer.Option(None, help="Forecast fixture (no DB write)"),
+    fixture: bool = typer.Option(False, "--fixture", help="Use the bundled forecast"),
+    fixture_path: str = typer.Option(None, help="Load a forecast from a JSON file"),
     id: str = typer.Option(None, help="Forecast UUID in the DB"),
     verbose: bool = VERBOSE,
 ) -> None:
     """Ask whether a forecast has already resolved."""
-    record = _record(fixture, id, "resolve")
+    record = _record(fixture_path or ("" if fixture else None), id, "resolve")
     _print_json(asyncio.run(run_resolution_check(record, _deps(record))))
 
 
