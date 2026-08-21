@@ -121,6 +121,12 @@ async def test_a_spent_budget_withdraws_everything(monkeypatch):
     assert offered == []
 
 
-def test_a_budget_scales_every_ceiling_together():
+def test_a_budget_scales_and_keeps_turns_to_answer_in():
     deeper = CELL.scaled(10)
-    assert (deeper.tool_calls, deeper.requests, deeper.tokens) == (16, 50, 200_000)
+    assert (deeper.tool_calls, deeper.requests, deeper.tokens) == (16, 33, 200_000)
+
+
+def test_the_enforced_ceiling_has_headroom_for_one_batched_turn():
+    """A batch is refused whole, so an exact ceiling kills a cell that asks for two
+    searches with one left. Withdrawal is the real cap; this is the backstop."""
+    assert CELL.limits().tool_calls_limit == CELL.tool_calls + 4

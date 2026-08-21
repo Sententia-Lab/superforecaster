@@ -90,11 +90,19 @@ def get_check_thresholds() -> CheckThresholds:
 BASELINE_ITERATIONS = 5
 """The `max_iterations` every row in `BUDGETS` is written for."""
 
+TOOL_CALL_HEADROOM = 4
+"""Tool calls the enforced ceiling allows past the budget, for one batched turn."""
+
 
 @dataclass(frozen=True, slots=True)
 class Budget:
-    """What one agent run may spend. Pydantic AI enforces all three through `limits()`;
-    `agents.withdraw_tools` removes the search tools once `tool_calls` is spent."""
+    """What one agent run may spend.
+
+    `agents.withdraw_tools` is what caps searching: it stops offering the tools once
+    `tool_calls` is spent. Pydantic AI's `tool_calls_limit` is a backstop with headroom,
+    because a model can still batch several calls into one turn and a batch is refused
+    whole (ADR 81).
+    """
 
     name: str
     tool_calls: int
@@ -104,17 +112,19 @@ class Budget:
     def limits(self) -> UsageLimits:
         return UsageLimits(
             request_limit=self.requests,
-            tool_calls_limit=self.tool_calls,
+            tool_calls_limit=self.tool_calls + TOOL_CALL_HEADROOM,
             total_tokens_limit=self.tokens,
         )
 
     def scaled(self, max_iterations: int) -> Budget:
-        """This budget at a different search depth. All three numbers move together."""
+        """This budget at a different search depth. `requests` keeps its gap above
+        `tool_calls`, so a deeper run still has turns left to answer in."""
         factor = max(1, max_iterations) / BASELINE_ITERATIONS
+        tool_calls = int(self.tool_calls * factor)
         return Budget(
             name=self.name,
-            tool_calls=int(self.tool_calls * factor),
-            requests=max(2, int(self.requests * factor)),
+            tool_calls=tool_calls,
+            requests=tool_calls + (self.requests - self.tool_calls),
             tokens=int(self.tokens * factor),
         )
 
@@ -122,8 +132,8 @@ class Budget:
 BUDGETS: dict[str, Budget] = {
     b.name: b
     for b in (
-        Budget("base_rate_cell", tool_calls=10, requests=13, tokens=200_000),
-        Budget("inside_view", tool_calls=10, requests=13, tokens=200_000),
+        Budget("base_rate_cell", tool_calls=10, requests=15, tokens=200_000),
+        Budget("inside_view", tool_calls=10, requests=15, tokens=200_000),
         Budget("critic", tool_calls=4, requests=7, tokens=60_000),
         Budget("resolution", tool_calls=5, requests=8, tokens=60_000),
         Budget("update", tool_calls=5, requests=8, tokens=60_000),

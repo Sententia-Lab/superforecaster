@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+
+import logfire
 from dataclasses import replace
 from typing import Awaitable, Callable, TypeVar
 
@@ -252,7 +254,15 @@ async def _gather_ok(
 ) -> list[tuple[T, U]]:
     """Run `fn` over every item concurrently; keep the ones that did not raise."""
     results = await asyncio.gather(*(fn(i) for i in items), return_exceptions=True)
-    return [(i, r) for i, r in zip(items, results) if not isinstance(r, BaseException)]
+    kept = []
+    for item, result in zip(items, results):
+        if isinstance(result, BaseException):
+            logfire.error(
+                "cell failed: {error}", error=f"{type(result).__name__}: {result}"
+            )
+        else:
+            kept.append((item, result))
+    return kept
 
 
 async def run_all(
