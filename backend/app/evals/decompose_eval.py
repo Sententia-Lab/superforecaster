@@ -19,28 +19,20 @@ module owns is the cases, what counts as good, and the flags.
 
 from __future__ import annotations
 
-import argparse
-import os
-import shutil
-import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from superforecaster.config import resolve_agent_model
 from pydantic_evals import Case, Dataset
 from pydantic_evals.evaluators import Evaluator, EvaluatorContext, LLMJudge
 from pydantic_evals.evaluators.common import OutputConfig
 
+from . import eval_main
 from superforecaster import checks
 from superforecaster.agents.decompose import run_decompose
 from superforecaster.deps import ForecastDeps
 from superforecaster.models import Decomposition, ForecastInput
-from ..config import load_env
-from ..observability import configure_logfire
 
 Ctx = EvaluatorContext[ForecastInput, Decomposition, dict]
-
-BUDGET_FORMAT = "TOOL_CALLS,REQUESTS,TOKENS"
 
 
 @dataclass
@@ -121,7 +113,7 @@ def judge(model: str) -> LLMJudge:
     )
 
 
-def make_task(model: str | None):
+def make_task():
     """The task under evaluation. `--model` is applied through `AGENT_MODEL`."""
 
     async def task(input: ForecastInput) -> Decomposition:
@@ -201,75 +193,8 @@ def build_dataset(judge_model: str) -> Dataset:
     )
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="decompose_eval", description=__doc__)
-    parser.add_argument(
-        "--model",
-        help="Model the decompose agent runs on. Default: the configured agent model.",
-    )
-    parser.add_argument(
-        "--judge-model",
-        help=(
-            "Model that grades the output. Default: the configured agent model, "
-            "which deliberately does NOT follow --model."
-        ),
-    )
-    parser.add_argument(
-        "--budget",
-        metavar=BUDGET_FORMAT,
-        help=(
-            "Override what one decompose run may spend, in the field order of "
-            "`config.Budget` — the same format as the BUDGET_DECOMPOSE env var. "
-            "Example: 0.30,120000,0,6"
-        ),
-    )
-    parser.add_argument(
-        "--concurrency",
-        type=int,
-        default=3,
-        help="Cases to run at once. Default: 3.",
-    )
-    return parser.parse_args(argv)
-
-
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-
-    if args.budget:
-        # `config.get_budget` re-reads the environment on every call, so the env var is
-        # the supported override and nothing has to be threaded through the agent.
-        if len(args.budget.split(",")) != 3:
-            print(f"--budget takes four fields: {BUDGET_FORMAT}", file=sys.stderr)
-            return 2
-        os.environ["BUDGET_DECOMPOSE"] = args.budget
-
-    # `run_agent` configures logfire too, but only once the first case is already
-    # running — and a span opened before `logfire.configure()` is never exported. The
-    # experiment span opens before any of that, so configure here or lose the tree.
-    load_env()
-    configure_logfire()
-    if args.model:
-        os.environ["AGENT_MODEL"] = args.model
-
-    # The judge holds still while `--model` moves. It defaults to the configured agent
-    # model rather than to `--model` so that scores stay comparable between runs, and
-    # so a weak model under test never grades its own work — asked to, it passes itself.
-    dataset = build_dataset(args.judge_model or resolve_agent_model())
-    report = dataset.evaluate_sync(
-        make_task(args.model),
-        name="decompose",
-        max_concurrency=args.concurrency,
-    )
-    # `include_reasons` is what names each assertion and prints the judge's rationale.
-    # Rich falls back to 80 columns when stdout is not a terminal, which wraps that
-    # rationale down to one word per line, so give it room when the output is piped.
-    report.print(
-        width=shutil.get_terminal_size((140, 24)).columns,
-        include_input=False,
-        include_output=False,
-        include_reasons=True,
-    )
-    return 0
+    return eval_main("decompose", build_dataset, make_task, argv)
 
 
 if __name__ == "__main__":

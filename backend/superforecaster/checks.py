@@ -370,27 +370,6 @@ def lens_rate(lens: ResearchedLens) -> float:
     return sum(e.hits for e in lens.evidence) / n
 
 
-def adjusted_lens_rate(lens: ResearchedLens, i: InsideView | None = None) -> float:
-    """A lens's rate after its own modifiers, clamped.
-
-    Only the adjustments naming this lens apply. A modifier is meaningful relative to a
-    population — "market cap exploded" is already inside *large-cap tech IPOs* and
-    warrants nothing, while against *all AI labs* it is the whole differentiator. Moving
-    a blended rate would double-count against the populations that already control for it.
-    """
-    moved = 0.0
-    if i is not None:
-        moved = sum(
-            signed_adjustment(a) for a in i.adjustments if a.lens_name == lens.name
-        )
-    return min(1.0, max(0.0, lens_rate(lens) + moved))
-
-
-def lenses_for(sub_question_id: str, o: OutsideView) -> list[ResearchedLens]:
-    """The lenses that say they inform this sub-question."""
-    return [l for l in o.lenses if sub_question_id in l.sub_question_ids]
-
-
 def sub_question_rate(
     sub_question_id: str, o: OutsideView, i: InsideView | None = None
 ) -> float | None:
@@ -413,9 +392,17 @@ def sub_question_rate(
     None when no lens claims this sub-question: the honest answer for a `judgment`
     sub-question, and for a `researchable` one it means the research did not land.
     """
-    return _weighted_mean(
-        [(l.weight, adjusted_lens_rate(l, i)) for l in lenses_for(sub_question_id, o)]
-    )
+    pairs = []
+    for lens in o.lenses:
+        if sub_question_id not in lens.sub_question_ids:
+            continue
+        moved = sum(
+            signed_adjustment(a)
+            for a in (i.adjustments if i else [])
+            if a.lens_name == lens.name
+        )
+        pairs.append((lens.weight, clamp(lens_rate(lens) + moved)))
+    return _weighted_mean(pairs)
 
 
 def weighted_base_rate(o: OutsideView) -> float | None:
@@ -539,12 +526,6 @@ def lens_sources(lens: ResearchedLens) -> list[GradedSource]:
     return [e.source for e in lens.evidence if e.source is not None]
 
 
-def _cited_sources(o: OutsideView, i: InsideView) -> list[GradedSource]:
-    return [s for l in o.lenses for s in lens_sources(l)] + [
-        s for a in i.adjustments for s in a.sources
-    ]
-
-
 def check_citations(
     o: OutsideView,
     i: InsideView,
@@ -561,9 +542,9 @@ def check_citations(
     `Critique` node is where the two meet.
     """
     retrieved = {ref.url for ref in seen if ref.url}
-    invented = sorted(
-        {s.url for s in _cited_sources(o, i) if s.url and s.url not in retrieved}
-    )
+    cited = [s for l in o.lenses for s in lens_sources(l)]
+    cited += [s for a in i.adjustments for s in a.sources]
+    invented = sorted({s.url for s in cited if s.url and s.url not in retrieved})
     if not invented:
         return None
 

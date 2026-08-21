@@ -1,14 +1,4 @@
-"""SQLite persistence layer.
-
-All DB operations live here. The schema is defined in `init_db()` and created on first
-connection. Queries are intentionally written in plain SQL — there is no ORM. Measured
-against this file, one would eliminate ~200 lines of row-mapping and add ~150 of model
-and migration scaffolding, and roughly 40% of what is here is forecasting domain rules an
-ORM does not touch. See ADR 38-adjacent notes in the audit.
-
-Scoring maths lives in `scoring`, not here — what a forecast is *worth* is a methodology
-question, and it is testable without a database.
-"""
+"""SQLite persistence: plain SQL, no ORM (ADR 41). Scoring maths lives in `scoring`."""
 
 from __future__ import annotations
 
@@ -20,9 +10,8 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
-# ---------- sqlite datetime adapters ----------
-# Python 3.12 deprecated the default datetime adapter; it also doesn't handle
-# timezone-aware datetimes correctly. Register our own that round-trip ISO 8601.
+# Python 3.12 deprecated the default datetime adapter. These round-trip ISO 8601 and
+# treat a naive stored value as UTC.
 
 
 def _adapt_datetime(dt: datetime) -> str:
@@ -32,10 +21,8 @@ def _adapt_datetime(dt: datetime) -> str:
 
 
 def _convert_timestamp(value: bytes) -> datetime:
-    s = value.decode("utf-8")
-    # Tolerate both " " and "T" separators
-    s = s.replace(" ", "T", 1)
-    return datetime.fromisoformat(s)
+    dt = datetime.fromisoformat(value.decode("utf-8"))
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 sqlite3.register_adapter(datetime, _adapt_datetime)
@@ -50,7 +37,6 @@ from superforecaster.models import (
     Forecast,
     ForecastRecord,
     ForecastUpdateRecord,
-    SubPrediction,
 )
 
 # ---------- Errors ----------
@@ -73,15 +59,8 @@ def _db_path() -> str:
 
 @contextmanager
 def connect() -> Iterator[sqlite3.Connection]:
-    """Yield a sqlite3 connection with sane defaults.
-
-    `journal_mode=WAL` and a `busy_timeout` are not optional here: APScheduler's daily
-    refresh runs in the same process as the API, so a write during a request is ordinary
-    rather than exceptional. Without WAL a reader blocks a writer; without the timeout the
-    loser of that race gets `database is locked` immediately instead of waiting a moment.
-
-    Foreign keys are enforced. Row factory returns dicts for ergonomic access.
-    """
+    """One connection per call. WAL and a busy timeout, because the scheduler writes in
+    the same process as the API."""
     conn = sqlite3.connect(_db_path(), detect_types=sqlite3.PARSE_DECLTYPES)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -98,15 +77,8 @@ def connect() -> Iterator[sqlite3.Connection]:
 
 
 SCHEMA_VERSION = 7
-"""Bump this and add a step to `MIGRATIONS` whenever an existing table has to change.
-
-`CREATE TABLE IF NOT EXISTS` covers a fresh database and nothing else. It does not add a
-column, drop one, or relax a constraint — it silently does nothing to a table that already
-exists, which is how `forecast_updates.confidence` survived ADR 29 deleting it everywhere
-else. The INSERT stopped supplying the value; the `NOT NULL` column stayed; every run then
-completed all five stages and died on the last write. A schema drift that only surfaces
-after a full run is the most expensive kind there is.
-"""
+"""Bump this and add a step to `MIGRATIONS` whenever an existing table changes.
+`CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists (ADR 34)."""
 
 _SUB_QUESTION_KEYS = {
     "sub_claims": "sub_questions",
@@ -127,14 +99,8 @@ def _renumber(value: object) -> object:
 
 
 def _rename_sub_claims(node: object) -> object:
-    """Rewrite ADR 56's old vocabulary inside one parsed JSON document.
-
-    Structural on purpose. The equivalent SQL is `replace(payload_json, '"sc', '"sq')`,
-    which also rewrites `"bias":"scope_insensitivity"` and any `causal_forces:
-    ["scarcity of chips"]` entry — silently, inside a blob nobody reads again until a
-    model fails to parse it. An id is only renumbered where an id can legally sit: as the
-    `id` of a sub-question, or as a member of a `sub_question_ids` list.
-    """
+    """Rewrite ADR 56's old vocabulary inside one parsed JSON document. Structural, so
+    prose that merely starts with `sc` is left alone (ADR 57)."""
     if isinstance(node, list):
         return [_rename_sub_claims(item) for item in node]
     if not isinstance(node, dict):
@@ -214,30 +180,12 @@ _RESEARCH_TABLES = """
                 VALUES (new.rowid, new.title, new.url, new.body);
             END;
 """
-"""The research store, in one place because two callers need it verbatim.
-
-Four columns, because four is what anything reads. `(research_id, url)` — one run, one
-page — is the whole identity of a row, so it is the key rather than a `UNIQUE` beside a
-surrogate one, and its index answers `WHERE research_id = ?` on the leading column, so the
-scope lookup and the delete need no second index.
-
-The FTS5 table is external content over `research_docs` and joins on its `rowid`, which
-SQLite maintains whatever the primary key is. The three triggers are what keep the two in
-step; without `research_ad` a delete would leave the index answering for rows that are
-gone.
-"""
+"""The research store: a plain table keyed by (research_id, url), plus an FTS5 index
+over it kept in step by three triggers."""
 
 
 def _rebuild_research_index(conn: sqlite3.Connection) -> None:
-    """Migration 6's Python step: re-make the FTS index over the new column set.
-
-    `DROP` then re-`CREATE` then `'rebuild'`, rather than an ALTER, because FTS5 has no
-    ALTER. Nothing is lost: an external-content index stores no text of its own, so the
-    rebuild reads every row back out of `research_docs`.
-
-    Safe on a fresh database, where the create block has already built the new shape and
-    there is nothing to read back.
-    """
+    """Migration 6: re-make the FTS index over the new column set. FTS5 has no ALTER."""
     conn.executescript("""
         DROP TRIGGER IF EXISTS research_ai;
         DROP TRIGGER IF EXISTS research_ad;
@@ -249,10 +197,81 @@ def _rebuild_research_index(conn: sqlite3.Connection) -> None:
 
 
 def _create_research_tables(conn: sqlite3.Connection) -> None:
-    """Migration 5's Python step. `executescript` because it is several statements, and
-    a migration step is one statement or one callable (ADR 57)."""
+    """Migration 5: the research store."""
     conn.executescript(_RESEARCH_TABLES)
 
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS forecasts (
+    id TEXT PRIMARY KEY,
+    question TEXT NOT NULL,
+    resolution_criteria TEXT NOT NULL,
+    resolution_source TEXT NOT NULL,
+    category TEXT NOT NULL,
+    submission_gap_days INTEGER NOT NULL DEFAULT 7,
+    submission_deadline TIMESTAMP NOT NULL,
+    resolution_date TIMESTAMP NOT NULL,
+    resolved_at TIMESTAMP,
+    outcome REAL,
+    is_ambiguous INTEGER NOT NULL DEFAULT 0,
+    scored_probability REAL,
+    brier_score REAL,
+    last_refreshed_at TIMESTAMP,
+    flagged_for_resolution_review INTEGER NOT NULL DEFAULT 0,
+    initial_reasoning TEXT NOT NULL,
+    decompositions_json TEXT NOT NULL,
+    research_id TEXT,
+    created_at TIMESTAMP NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS forecast_updates (
+    id TEXT PRIMARY KEY,
+    forecast_id TEXT NOT NULL REFERENCES forecasts(id) ON DELETE CASCADE,
+    probability REAL NOT NULL,
+    reasoning TEXT NOT NULL,
+    is_late INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_updates_forecast ON forecast_updates(forecast_id, created_at);
+
+CREATE TABLE IF NOT EXISTS gated_runs (
+    id TEXT PRIMARY KEY,
+    question TEXT NOT NULL DEFAULT '',
+    resolution_criteria TEXT NOT NULL DEFAULT '',
+    resolution_source TEXT NOT NULL DEFAULT '',
+    resolution_date TIMESTAMP,
+    category TEXT NOT NULL DEFAULT 'general',
+    max_iterations INTEGER NOT NULL DEFAULT 5,
+    status TEXT NOT NULL DEFAULT 'backlog',
+    error TEXT,
+    forecast_id TEXT REFERENCES forecasts(id) ON DELETE SET NULL,
+    research_id TEXT,
+    created_at TIMESTAMP NOT NULL,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS ix_gated_runs_status ON gated_runs(status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS run_steps (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES gated_runs(id) ON DELETE CASCADE,
+    stage TEXT NOT NULL,
+    sub_question_id TEXT NOT NULL DEFAULT '',
+    lens_name TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    payload_json TEXT,
+    error TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    started_at TIMESTAMP,
+    finished_at TIMESTAMP,
+    edited_at TIMESTAMP,
+    UNIQUE(run_id, stage, sub_question_id, lens_name)
+);
+
+CREATE INDEX IF NOT EXISTS ix_run_steps_run ON run_steps(run_id, stage);
+"""
 
 MigrationStep = str | Callable[[sqlite3.Connection], None]
 
@@ -298,43 +317,16 @@ MIGRATIONS: dict[int, tuple[MigrationStep, ...]] = {
     # `Forecast.research` was a model-transcribed summary nothing read (ADR 82).
     7: ("ALTER TABLE forecasts DROP COLUMN research_json;",),
 }
-"""version -> steps that take the schema from `version - 1` to `version`.
-
-A step is SQL, or a callable taking the open connection when the change cannot be
-expressed in SQL safely (ADR 57). A callable carries exactly the same obligation as a
-statement: it must be safe against a database that reached the previous version by either
-route.
-
-Each step must be safe to apply to a database that reached the previous version by *either*
-route: an old database being upgraded, or a fresh one just built by `init_db`'s
-`CREATE TABLE` block. `_migrate` skips a step whose work the fresh schema already did, so
-"drop a column that no longer exists" and "add a column the create block already made" are
-both no-ops rather than errors — see `_MIGRATION_NO_OPS`.
-"""
+"""version -> steps that take the schema from `version - 1` to `version`. A step is
+SQL or a callable, and must be safe against a database that reached the previous
+version by either route: upgrade, or fresh `CREATE TABLE` (ADR 57)."""
 
 _MIGRATION_NO_OPS = ("no such column", "duplicate column name")
-"""Errors that mean "the fresh schema already did this step's work", so the step is skipped.
-
-Both directions, because a table can arrive at a step by two routes. A version-2 database
-upgrading in place has `run_steps` without `edited_at`, so migration 3's ALTER runs for real.
-A database stamped at version 0 with only the pre-gated tables gets `run_steps` built by the
-current `CREATE TABLE` block — column included — and then the same ALTER would raise. Neither
-is a failure; both leave the schema in the same correct shape.
-"""
+"""Errors that mean the fresh schema already did this step's work."""
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """Bring an existing database up to `SCHEMA_VERSION`.
-
-    `PRAGMA user_version` is a four-byte integer SQLite keeps in the file header for
-    exactly this. No extra table, no dependency, and it survives a copy of the file.
-
-    A fresh database is stamped at `SCHEMA_VERSION` by `init_db` before this runs, so
-    historical steps never replay against a schema that was born correct. That matters
-    more with every migration added: a step that *renames* a column would succeed against
-    a fresh database and corrupt it, and no amount of tolerance inside the step would
-    help. Tolerating a no-op is still worth keeping for databases stamped before this.
-    """
+    """Bring an existing database up to `SCHEMA_VERSION`, using `PRAGMA user_version`."""
     current = conn.execute("PRAGMA user_version").fetchone()[0]
     if current >= SCHEMA_VERSION:
         return
@@ -344,8 +336,6 @@ def _migrate(conn: sqlite3.Connection) -> None:
             try:
                 step(conn) if callable(step) else conn.execute(step)
             except sqlite3.OperationalError as e:
-                # The fresh-schema case, in both directions. Anything else is a real
-                # failure and has to surface.
                 if not any(n in str(e).lower() for n in _MIGRATION_NO_OPS):
                     raise
         conn.execute(f"PRAGMA user_version = {version}")
@@ -361,88 +351,13 @@ def init_db() -> None:
             == 0
         )
 
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS forecasts (
-                id TEXT PRIMARY KEY,
-                question TEXT NOT NULL,
-                resolution_criteria TEXT NOT NULL,
-                resolution_source TEXT NOT NULL,
-                category TEXT NOT NULL,
-                submission_gap_days INTEGER NOT NULL DEFAULT 7,
-                submission_deadline TIMESTAMP NOT NULL,
-                resolution_date TIMESTAMP NOT NULL,
-                resolved_at TIMESTAMP,
-                outcome REAL,
-                is_ambiguous INTEGER NOT NULL DEFAULT 0,
-                scored_probability REAL,
-                brier_score REAL,
-                last_refreshed_at TIMESTAMP,
-                flagged_for_resolution_review INTEGER NOT NULL DEFAULT 0,
-                initial_reasoning TEXT NOT NULL,
-                decompositions_json TEXT NOT NULL,
-                research_id TEXT,
-                created_at TIMESTAMP NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS forecast_updates (
-                id TEXT PRIMARY KEY,
-                forecast_id TEXT NOT NULL REFERENCES forecasts(id) ON DELETE CASCADE,
-                probability REAL NOT NULL,
-                reasoning TEXT NOT NULL,
-                is_late INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMP NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS ix_updates_forecast ON forecast_updates(forecast_id, created_at);
-
-            CREATE TABLE IF NOT EXISTS gated_runs (
-                id TEXT PRIMARY KEY,
-                question TEXT NOT NULL DEFAULT '',
-                resolution_criteria TEXT NOT NULL DEFAULT '',
-                resolution_source TEXT NOT NULL DEFAULT '',
-                resolution_date TIMESTAMP,
-                category TEXT NOT NULL DEFAULT 'general',
-                max_iterations INTEGER NOT NULL DEFAULT 5,
-                status TEXT NOT NULL DEFAULT 'backlog',
-                error TEXT,
-                forecast_id TEXT REFERENCES forecasts(id) ON DELETE SET NULL,
-                research_id TEXT,
-                created_at TIMESTAMP NOT NULL,
-                started_at TIMESTAMP,
-                completed_at TIMESTAMP
-            );
-
-            CREATE INDEX IF NOT EXISTS ix_gated_runs_status ON gated_runs(status, created_at DESC);
-
-            CREATE TABLE IF NOT EXISTS run_steps (
-                id TEXT PRIMARY KEY,
-                run_id TEXT NOT NULL REFERENCES gated_runs(id) ON DELETE CASCADE,
-                stage TEXT NOT NULL,
-                sub_question_id TEXT NOT NULL DEFAULT '',
-                lens_name TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'pending',
-                payload_json TEXT,
-                error TEXT,
-                attempts INTEGER NOT NULL DEFAULT 0,
-                started_at TIMESTAMP,
-                finished_at TIMESTAMP,
-                edited_at TIMESTAMP,
-                UNIQUE(run_id, stage, sub_question_id, lens_name)
-            );
-
-            CREATE INDEX IF NOT EXISTS ix_run_steps_run ON run_steps(run_id, stage);
-        """)
+        conn.executescript(_SCHEMA)
         conn.executescript(_RESEARCH_TABLES)
         if fresh:
-            # Born at the current schema, so no historical step has anything to do here.
-            # Stamping now is what stops a future migration — a rename, say — from
-            # "upgrading" a database that was already correct.
+            # Born at the current schema, so no historical step applies.
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         _migrate(conn)
 
-    # A step can only be `running` while a live connection is executing it. Anything
-    # still marked running after a restart died with the process; saying so beats
-    # leaving the UI on a spinner that will never resolve.
     mark_interrupted_steps()
 
 
@@ -451,13 +366,6 @@ def init_db() -> None:
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _ensure_aware(dt: datetime) -> datetime:
-    """SQLite returns naive datetimes; treat them as UTC."""
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
 
 
 # ---------- Forecasts ----------
@@ -559,7 +467,7 @@ def add_forecast_update(
         ).fetchone()
         if row is None:
             raise NotFoundError(f"forecast {forecast_id}")
-        resolution_date = _ensure_aware(row["resolution_date"])
+        resolution_date = row["resolution_date"]
         if row["outcome"] is not None or row["is_ambiguous"]:
             raise StateError("forecast is already resolved")
         if now >= resolution_date:
@@ -675,7 +583,7 @@ def compute_time_weighted_probability(forecast_id: str) -> float:
         ).fetchone()
         if f_row is None:
             raise NotFoundError(f"forecast {forecast_id}")
-        resolution_date = _ensure_aware(f_row["resolution_date"])
+        resolution_date = f_row["resolution_date"]
         u_rows = conn.execute(
             "SELECT probability, created_at FROM forecast_updates "
             "WHERE forecast_id = ? ORDER BY created_at ASC",
@@ -687,7 +595,7 @@ def compute_time_weighted_probability(forecast_id: str) -> float:
 
     return scoring.time_weighted_probability(
         [r["probability"] for r in u_rows],
-        [_ensure_aware(r["created_at"]) for r in u_rows],
+        [r["created_at"] for r in u_rows],
         resolution_date,
     )
 
@@ -770,12 +678,7 @@ def calibration_report() -> CalibrationReport:
     )
 
 
-# ---------- Gated runs ----------
-#
-# A run is a persisted state machine of user-gated stages (ADR 45). Every stage output
-# lands here as a `run_steps` row, so the whole reasoning trail survives a restart and
-# "retry" is re-running one step from what the database already knows. Decisions about
-# *which* transitions are legal live in `machine`; this section only reads and writes.
+# ---------- Gated runs (ADR 45). `machine` decides; this reads and writes. ----------
 
 
 def create_gated_run(
@@ -1088,90 +991,18 @@ def mark_interrupted_steps() -> int:
 
 
 def _row_to_gated_run(row: sqlite3.Row) -> dict:
-    return {
-        "id": row["id"],
-        "question": row["question"],
-        "resolution_criteria": row["resolution_criteria"],
-        "resolution_source": row["resolution_source"],
-        "resolution_date": (
-            _ensure_aware(row["resolution_date"]) if row["resolution_date"] else None
-        ),
-        "category": row["category"],
-        "max_iterations": row["max_iterations"],
-        "status": row["status"],
-        "error": row["error"],
-        "forecast_id": row["forecast_id"],
-        "research_id": row["research_id"],
-        "created_at": _ensure_aware(row["created_at"]),
-        "started_at": _ensure_aware(row["started_at"]) if row["started_at"] else None,
-        "completed_at": (
-            _ensure_aware(row["completed_at"]) if row["completed_at"] else None
-        ),
-    }
+    return dict(row)
 
 
 def _row_to_step(row: sqlite3.Row) -> dict:
-    return {
-        "id": row["id"],
-        "run_id": row["run_id"],
-        "stage": row["stage"],
-        "sub_question_id": row["sub_question_id"],
-        "lens_name": row["lens_name"],
-        "status": row["status"],
-        "payload_json": row["payload_json"],
-        "error": row["error"],
-        "attempts": row["attempts"],
-        "started_at": _ensure_aware(row["started_at"]) if row["started_at"] else None,
-        "finished_at": (
-            _ensure_aware(row["finished_at"]) if row["finished_at"] else None
-        ),
-        "edited_at": _ensure_aware(row["edited_at"]) if row["edited_at"] else None,
-    }
-
-
-# ---------- Row → model converters ----------
+    return dict(row)
 
 
 def _row_to_forecast(f_row: sqlite3.Row, u_rows: list[sqlite3.Row]) -> ForecastRecord:
-    decompositions = [
-        SubPrediction(**d) for d in json.loads(f_row["decompositions_json"])
-    ]
-    updates = [
-        ForecastUpdateRecord(
-            id=u["id"],
-            forecast_id=u["forecast_id"],
-            probability=u["probability"],
-            reasoning=u["reasoning"],
-            is_late=bool(u["is_late"]),
-            created_at=_ensure_aware(u["created_at"]),
-        )
-        for u in u_rows
-    ]
-    return ForecastRecord(
-        id=f_row["id"],
-        question=f_row["question"],
-        resolution_criteria=f_row["resolution_criteria"],
-        resolution_source=f_row["resolution_source"],
-        category=f_row["category"],
-        submission_gap_days=f_row["submission_gap_days"],
-        submission_deadline=_ensure_aware(f_row["submission_deadline"]),
-        resolution_date=_ensure_aware(f_row["resolution_date"]),
-        resolved_at=(
-            _ensure_aware(f_row["resolved_at"]) if f_row["resolved_at"] else None
-        ),
-        outcome=f_row["outcome"],
-        is_ambiguous=bool(f_row["is_ambiguous"]),
-        scored_probability=f_row["scored_probability"],
-        brier_score=f_row["brier_score"],
-        last_refreshed_at=(
-            _ensure_aware(f_row["last_refreshed_at"])
-            if f_row["last_refreshed_at"]
-            else None
-        ),
-        flagged_for_resolution_review=bool(f_row["flagged_for_resolution_review"]),
-        initial_reasoning=f_row["initial_reasoning"],
-        decompositions=decompositions,
-        updates=updates,
-        research_id=f_row["research_id"],
-        created_at=_ensure_aware(f_row["created_at"]),
+    return ForecastRecord.model_validate(
+        {
+            **dict(f_row),
+            "decompositions": json.loads(f_row["decompositions_json"]),
+            "updates": [dict(u) for u in u_rows],
+        }
     )
