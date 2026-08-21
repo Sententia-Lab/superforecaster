@@ -1,12 +1,7 @@
 """Gated run endpoints — the sidebar CRUD plus the step stream.
 
-The load-bearing decision here is ADR 46: `POST .../steps/{id}/stream` *is* the step's
-execution. The SSE response runs the agent inside its own generator, so the connection
-is the agent's lifetime — the client hanging up (laptop closed, tab gone) cancels the
-generator, which cancels the step, which lands it as `error='cancelled'` in the
-database, immediately claimable again. There is no background task registry, no ring
-buffer, no replay, and no watchdog, because there is nothing running that nobody is
-watching.
+`POST .../steps/{id}/stream` *is* the step's execution (ADR 46): the connection is the
+agent's lifetime, so a client that hangs up cancels the step.
 """
 
 from __future__ import annotations
@@ -20,9 +15,9 @@ from pydantic import ValidationError
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from sse_starlette.sse import EventSourceResponse
 
-from app import db, machine, research, stream
+from app import db, machine, research
 from superforecaster.errors import AgentTimeout, StageTimeout
-from superforecaster.events import AgentEvent
+from superforecaster.events import AgentEvent, frame
 from superforecaster.config import MAX_SEARCH_DEPTH
 from superforecaster.models import (
     CreateGatedRunRequest,
@@ -95,14 +90,7 @@ def run_research(
     q: str | None = Query(default=None),
     limit: int = Query(default=100, le=500),
 ) -> ResearchPage:
-    """What this run has read so far — the same store its agents search.
-
-    With `q`, BM25-ranked exactly as `search_research` ranks it for an agent, so the panel
-    shows what the agent would see. Without one, everything in insertion order.
-
-    `total` is the whole store, not the page, so the header can say "12 of 240" while a
-    query is narrowing it.
-    """
+    """What this run has read so far, ranked as `search_research` ranks it for an agent."""
     run = db.get_gated_run(run_id)
     if run is None:
         raise _404(f"run {run_id}")
@@ -131,11 +119,7 @@ def delete_run(run_id: str) -> None:
 
 @router.post("/{run_id}/start", status_code=status.HTTP_202_ACCEPTED)
 def start_run(run_id: str) -> GatedRunDetail:
-    """The four-field gate, then `backlog → active` with a pending decompose step.
-
-    Nothing executes here — the decompose step sits pending until its stream is
-    opened. 422 on missing fields so the UI can say exactly which ones.
-    """
+    """The four-field gate, then `backlog → active` with a pending decompose step."""
     try:
         return GatedRunDetail(**machine.start_run(run_id))
     except db.NotFoundError as exc:
@@ -154,14 +138,8 @@ def edit_step_payload(
     step_id: str,
     body: dict,
 ) -> GatedRunDetail:
-    """Replace a completed payload by hand, then rebuild the pending rows below it.
-
-    The body is a bare dict because its shape depends on the step's stage — a
-    `Decomposition` for decompose, a `SubQuestionLensesEdit` for lenses — and the stage is
-    only known once the row has been read. `machine.edit_payload` validates it.
-
-    Returns the whole run so the screen redraws from this response with no follow-up GET.
-    """
+    """Replace a completed payload by hand. The body's shape depends on the stage, so
+    `machine.edit_payload` validates it. Returns the whole run."""
     try:
         return GatedRunDetail(**machine.edit_payload(run_id, step_id, body))
     except db.NotFoundError as exc:
@@ -176,7 +154,9 @@ def edit_step_payload(
 
 
 def _failure_hint(exc: BaseException) -> str:
-    """One honest sentence about why the step died, with the fix when there is one."""
+    """Why the step died, with the fix when there is one."""
+    if isinstance(exc, (machine.GateError, machine.BusyError, db.NotFoundError)):
+        return str(exc)
     if isinstance(exc, UsageLimitExceeded):
         return (
             f"{exc} — the step ran out of search budget. Retry with a higher "
@@ -201,19 +181,16 @@ async def stream_step(
     step_id: str,
     max_iterations: int | None = Query(default=None, ge=1, le=MAX_SEARCH_DEPTH),
 ) -> EventSourceResponse:
-    """The gated "next": execute one step, streaming its progress until it lands.
-
-    Frames are `data:` JSON with a `type` field — `thought`/`query`/`source`/
-    `exhausted` while the agent works, then `result` (the finished step) and `run`
-    (the updated tree, including any newly materialized pending steps), or `error`.
-    Disconnecting cancels the step (ADR 46).
-    """
+    """Execute one step, streaming `thought`/`query`/`source`/`exhausted` frames, then
+    `run` (the updated tree) or `error`. Disconnecting cancels the step."""
     step = db.get_step(step_id)
     if step is None or step["run_id"] != run_id:
         raise _404(f"step {step_id} not found on run {run_id}")
     run = db.get_gated_run(run_id)
     if run is None:
         raise _404(f"run {run_id}")
+    # Checked here as well as in `execute_step` so the client gets a status code; once
+    # the stream starts the status is already 200.
     if run["status"] != "active":
         raise _409(f"run is {run['status']}, not active")
     if step["status"] not in ("pending", "error"):
@@ -228,36 +205,16 @@ async def stream_step(
         queue: asyncio.Queue = asyncio.Queue()
 
         def emit(event: AgentEvent, sub_question: str | None = None) -> None:
-            # Must stay synchronous and non-blocking — it is called from inside the
-            # agent's event handler, where an await would stall token delivery.
-            queue.put_nowait(stream.frame(event, sub_question))
+            queue.put_nowait(frame(event, sub_question))
 
         async def work() -> None:
             try:
-                finished = await machine.execute_step(
+                await machine.execute_step(
                     step_id, max_iterations=max_iterations, emit=emit
-                )
-                payload = (
-                    json.loads(finished["payload_json"])
-                    if finished.get("payload_json")
-                    else None
-                )
-                queue.put_nowait(
-                    {
-                        "type": "result",
-                        "payload": {
-                            "step": {
-                                k: v for k, v in finished.items() if k != "payload_json"
-                            }
-                            | {"payload": payload},
-                        },
-                    }
                 )
                 queue.put_nowait({"type": "run", "payload": machine.detail(run_id)})
             except asyncio.CancelledError:
                 raise
-            except (machine.GateError, machine.BusyError, db.NotFoundError) as exc:
-                queue.put_nowait({"type": "error", "payload": {"message": str(exc)}})
             except Exception as exc:  # noqa: BLE001 — every failure must reach the wire
                 queue.put_nowait(
                     {"type": "error", "payload": {"message": _failure_hint(exc)}}
@@ -267,14 +224,9 @@ async def stream_step(
 
         task = asyncio.create_task(work())
         try:
-            while True:
-                frame = await queue.get()
-                if frame is None:
-                    break
-                yield {"data": json.dumps(frame, default=str)}
+            while (item := await queue.get()) is not None:
+                yield {"data": json.dumps(item, default=str)}
         finally:
-            # The client hung up (or the loop above finished). Cancelling a finished
-            # task is a no-op; cancelling a live one is exactly ADR 46.
             if not task.done():
                 task.cancel()
                 with suppress(BaseException):

@@ -42,7 +42,7 @@ def written(monkeypatch):
 
 
 def _a_record(fid: str):
-    from tests.test_graph_update import a_record
+    from tests.test_update_cycle import a_record
 
     record = a_record()
     return record.model_copy(update={"id": fid})

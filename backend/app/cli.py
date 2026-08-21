@@ -33,7 +33,6 @@ from superforecaster.agents.update import run_update
 from superforecaster.deps import ForecastDeps
 from .update import run_update_graph
 
-from superforecaster.update import update_mermaid
 from superforecaster.stages import run_all
 from superforecaster.models import (
     Forecast,
@@ -267,11 +266,20 @@ stateDiagram-v2
 """
 
 
+_UPDATE_MERMAID = """\
+stateDiagram-v2
+    [*] --> resolution_check
+    resolution_check --> [*] : resolved, flagged for review
+    resolution_check --> update : not resolved
+    update --> verify_large_move : |delta| > CHECK_LARGE_MOVE
+    verify_large_move --> gate
+    update --> gate
+    gate --> [*] : noise, inconsistent, or written
+"""
+
+
 async def _cmd_diagram(args: argparse.Namespace) -> int:
-    """Render the pipeline shape. The update graph is generated from real wiring;
-    the forecast pipeline is a gated state machine, so its diagram is the machine's
-    stage table rather than graph edges."""
-    print(update_mermaid() if args.graph == "update" else _FORECAST_MERMAID)
+    print(_UPDATE_MERMAID if args.graph == "update" else _FORECAST_MERMAID)
     return 0
 
 

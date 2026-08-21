@@ -1,20 +1,14 @@
-"""The gated-run state machine — every legal transition, in one place.
+"""The gated-run state machine — every legal transition, in one place (ADR 45).
 
 `db` reads and writes rows; this module decides. A run is `backlog → active →
 complete`; a step is `pending → running → complete | error`, with `error → running`
-on retry. Nothing runs unless a user asks for that specific step (ADR 45), and only
-one agent step may be in flight in the whole process at a time — the budget is one
-person's API key, and idle-at-a-gate costs nothing.
-
-Every terminal write here is a plain synchronous sqlite call, so a cancelled
-coroutine (the client hung up — ADR 46) still records `cancelled` on its way out.
+on retry. One agent step runs at a time in the whole process.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-from typing import Callable
 
 import logfire
 from superforecaster.config import get_stage_timeout
@@ -57,13 +51,7 @@ REQUIRED_FIELDS = (
 
 
 def start_run(run_id: str) -> dict:
-    """The four-field gate, then `backlog → active`, then the first pending step.
-
-    A forecast whose resolution nobody adjudicates cannot be scored, which makes
-    running it a waste of the whole search budget — so all four fields are checked
-    here, where the run starts, not at creation, where a half-formed backlog idea is
-    legitimate.
-    """
+    """The four-field gate, then `backlog → active`, then the first pending step."""
     run = db.get_gated_run(run_id)
     if run is None:
         raise db.NotFoundError(f"run {run_id}")
@@ -81,27 +69,14 @@ Identity = tuple[str, str, str]
 
 
 def _all_complete(steps: list[dict], keys: set[Identity]) -> bool:
-    """True when every key has a row and all of those rows are complete.
-
-    Checks keys rather than a whole stage, which covers both gaps: a row that is still
-    pending, and a row an edit has not created yet.
-    """
+    """True when every key has a row and all of those rows are complete."""
     by_key = {(s["stage"], s["sub_question_id"], s["lens_name"]): s for s in steps}
     return all(by_key.get(k, {}).get("status") == "complete" for k in keys)
 
 
 def expected_steps(steps: list[dict]) -> set[Identity]:
-    """The identities the completed payloads imply. Pure — reads, never writes.
-
-    Walks the five stage names in order, asking at each one whether a finished payload
-    lets it compute that stage's rows, and stops at the first stage that is not fully
-    complete. So a stage's rows never appear before the stage that fans them out has
-    finished.
-
-    Two properties the callers depend on. `decompose` is always included, so its row is
-    never stale. And each stage is added *before* its completeness is checked, so pending
-    rows stay in the result — only rows nobody expects are left out.
-    """
+    """The step identities the completed payloads imply, stopping at the first stage
+    that is not fully complete. Pure."""
     out: set[Identity] = {("decompose", "", "")}
     if not _all_complete(steps, out):
         return out
@@ -142,20 +117,14 @@ def expected_steps(steps: list[dict]) -> set[Identity]:
 
 
 def reconcile(run_id: str) -> None:
-    """Make the step rows match `expected_steps`. The only writer, and idempotent.
-
-    Moving forward from a finished step this does exactly what the old `advance` did:
-    `expected_steps` only grows, so nothing is ever stale and the call is pure insert.
-    After a payload edit it also removes the rows the new payload no longer implies.
-    """
+    """Make the step rows match `expected_steps`. Idempotent."""
     steps = db.list_steps(run_id)
     want = expected_steps(steps)
     have = {(s["stage"], s["sub_question_id"], s["lens_name"]): s for s in steps}
 
     stale = [s for key, s in have.items() if key not in want]
-    # Unreachable: `edit_blocker` forbids an edit once anything downstream has run. If it
-    # ever is reached that is a bug, and deleting somebody's work would hide it. The raise
-    # comes before both writes, so nothing is deleted and nothing is inserted.
+    # `edit_blocker` forbids an edit once anything downstream has run, so this only ever
+    # discards pending rows. Raise rather than delete somebody's work if that changes.
     kept = [s for s in stale if s["status"] != "pending"]
     if kept:
         raise GateError(
@@ -167,44 +136,31 @@ def reconcile(run_id: str) -> None:
     db.insert_steps(run_id, sorted(want - set(have)))
 
 
-DERIVED: dict[str, Callable[[list[dict], dict], list[dict]]] = {
-    # A decomposition with no researchable sub-questions fans out straight to synthesis, so
-    # synthesis is derived directly from the decomposition too.
-    "decompose": lambda steps, step: [
-        s for s in steps if s["stage"] in ("lenses", "synthesis")
-    ],
-    # Every base rate in the run, not only this sub-question's. Populations are chosen
-    # before they are measured (ADR 40), and once any rate has come back, re-choosing
-    # populations *anywhere* is choosing them with a measured number in hand — the run
-    # has seen an answer, so no part of it is pre-registered any more.
-    "lenses": lambda steps, step: [s for s in steps if s["stage"] == "base_rates"],
-}
-"""Editable stage -> the rows whose existence or blindness that stage's payload owns."""
+def _derived(step: dict, steps: list[dict]) -> list[dict]:
+    """The rows whose existence or blindness this step's payload owns (ADR 53)."""
+    if step["stage"] == "decompose":
+        return [s for s in steps if s["stage"] in ("lenses", "synthesis")]
+    if step["stage"] == "lenses":
+        # Every base rate in the run: once any rate is back, re-choosing populations
+        # anywhere is choosing them with a measured number in hand (ADR 40).
+        return [s for s in steps if s["stage"] == "base_rates"]
+    return []
 
 
 def edit_blocker(step: dict, steps: list[dict]) -> str | None:
-    """None while the payload may still be edited; otherwise what already ran.
-
-    A payload is editable exactly while everything derived from it is untouched. So an
-    edit can only ever strand empty pending rows, which is why `reconcile` never has to
-    decide whether some work is worth destroying.
-    """
-    if step["stage"] not in DERIVED:
+    """None while the payload may still be edited; otherwise what already ran."""
+    if step["stage"] not in ("decompose", "lenses"):
         return f"{step['stage']} payloads are not editable"
     if step["status"] != "complete":
         return f"step is {step['status']} — there is no payload to edit"
-    for derived in DERIVED[step["stage"]](steps, step):
+    for derived in _derived(step, steps):
         if derived["status"] != "pending":
             return f"{derived['stage']} step {derived['id']} is {derived['status']}"
     return None
 
 
 def edit_payload(run_id: str, step_id: str, body: dict) -> dict:
-    """Replace a completed payload with one a person wrote, then rebuild what it implies.
-
-    The body is validated here rather than in the route signature because its shape
-    depends on the step's stage, which is only known once the row has been read.
-    """
+    """Replace a completed payload with one a person wrote, then rebuild what it implies."""
     step = db.get_step(step_id)
     if step is None or step["run_id"] != run_id:
         raise db.NotFoundError(f"step {step_id} not found on run {run_id}")
@@ -219,8 +175,6 @@ def edit_payload(run_id: str, step_id: str, body: dict) -> dict:
         raise GateError(f"cannot edit: {blocker}")
 
     if step["stage"] == "decompose":
-        # Ids are stamped by the same helper the agent's own output goes through, so a
-        # hand-written decomposition and a generated one are numbered identically.
         payload = with_ids(Decomposition.model_validate(body))
     else:
         payload = SubQuestionLensesEdit.model_validate(body)
@@ -248,10 +202,8 @@ async def execute_step(
 ) -> dict:
     """Claim and run one gated step; persist whatever happens to it.
 
-    The caller owns the connection this runs under — cancellation (the client hung
-    up) lands the step as `error='cancelled'` and re-raises, so the step is
-    immediately claimable again. Everything else lands as the step's error text and
-    the run's red chip.
+    Cancellation (the client hung up, ADR 46) lands the step as `error='cancelled'` and
+    re-raises, so it is immediately claimable again.
     """
     step = db.get_step(step_id)
     if step is None:
@@ -261,11 +213,9 @@ async def execute_step(
         raise db.NotFoundError(f"run {step['run_id']}")
     if run["status"] != "active":
         raise GateError(f"run is {run['status']}, not active")
-
     offender = gate_offender(step, db.list_steps(run["id"]))
     if offender is not None:
         raise GateError(f"gate not satisfied: {offender}")
-
     if _slot.locked():
         raise BusyError("another step is already running")
 
@@ -288,47 +238,32 @@ async def execute_step(
         )
         deps = ForecastDeps(emit=emit, store=store)
 
-        cancelled: asyncio.CancelledError | None = None
-        try:
-            # One span per step, so every agent run inside it — reflect plus both
-            # synthesis attempts, say — nests under a single trace instead of
-            # surfacing as unrelated root spans.
-            with logfire.span(
-                "step {stage}",
-                stage=step["stage"],
-                run_id=run["id"],
-                step_id=step_id,
-                sub_question_id=step["sub_question_id"],
-                lens_name=step["lens_name"],
-                attempt=claimed["attempts"],
-            ) as span:
-                try:
-                    async with asyncio.timeout(get_stage_timeout() or None):
-                        payload_json = await _dispatch(step, run["id"], input, deps)
-                except asyncio.CancelledError as exc:
-                    # Deliberate stop (ADR 46), not a failure: tag the span, let it
-                    # close cleanly, and re-raise after — the errors view should show
-                    # only real ones.
-                    span.set_attribute("cancelled", True)
-                    cancelled = exc
-        except AgentTimeout as exc:
-            # One agent stalled — its own failure, not the stage ceiling's, even
-            # though both subclass TimeoutError.
-            db.fail_step(step_id, f"{type(exc).__name__}: {exc}")
-            raise
-        except TimeoutError:
-            exc = StageTimeout(
-                f"stage exceeded {get_stage_timeout():.0f}s (STAGE_TIMEOUT_SECONDS)"
-            )
-            db.fail_step(step_id, f"{type(exc).__name__}: {exc}")
-            raise exc from None
-        except Exception as exc:
-            db.fail_step(step_id, f"{type(exc).__name__}: {exc}")
-            raise
-
-        if cancelled is not None:
-            db.fail_step(step_id, "cancelled")
-            raise cancelled
+        with logfire.span(
+            "step {stage}",
+            stage=step["stage"],
+            run_id=run["id"],
+            step_id=step_id,
+            attempt=claimed["attempts"],
+        ) as span:
+            try:
+                async with asyncio.timeout(get_stage_timeout() or None):
+                    payload_json = await _dispatch(step, run["id"], input, deps)
+            except asyncio.CancelledError:
+                span.set_attribute("cancelled", True)
+                db.fail_step(step_id, "cancelled")
+                raise
+            except AgentTimeout as exc:
+                _record_failure(step_id, exc)
+                raise
+            except TimeoutError:
+                exc = StageTimeout(
+                    f"stage exceeded {get_stage_timeout():.0f}s (STAGE_TIMEOUT_SECONDS)"
+                )
+                _record_failure(step_id, exc)
+                raise exc from None
+            except Exception as exc:
+                _record_failure(step_id, exc)
+                raise
 
         finished = db.finish_step(step_id, payload_json)
         if step["stage"] == "synthesis":
@@ -340,6 +275,10 @@ async def execute_step(
         else:
             reconcile(run["id"])
         return finished
+
+
+def _record_failure(step_id: str, exc: BaseException) -> None:
+    db.fail_step(step_id, f"{type(exc).__name__}: {exc}")
 
 
 async def _dispatch(
@@ -410,7 +349,6 @@ def _decomposition_of(steps: list[dict]) -> Decomposition:
 
 def _sub_question(decomposition: Decomposition, sub_question_id: str) -> SubPrediction:
     if not sub_question_id:
-        # Whole-question steps (decompose, synthesis) have no column of their own.
         return SubPrediction(
             question=decomposition.sub_questions[0].question,
             probability=0.5,
