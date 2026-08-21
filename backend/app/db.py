@@ -99,7 +99,7 @@ def connect() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 """Bump this and add a step to `MIGRATIONS` whenever an existing table has to change.
 
 `CREATE TABLE IF NOT EXISTS` covers a fresh database and nothing else. It does not add a
@@ -194,26 +194,26 @@ _RESEARCH_TABLES = """
             );
 
             CREATE VIRTUAL TABLE IF NOT EXISTS research_index USING fts5(
-                title, body,
+                title, url, body,
                 content='research_docs', content_rowid='rowid',
                 tokenize='porter unicode61'
             );
 
             CREATE TRIGGER IF NOT EXISTS research_ai AFTER INSERT ON research_docs BEGIN
-                INSERT INTO research_index(rowid, title, body)
-                VALUES (new.rowid, new.title, new.body);
+                INSERT INTO research_index(rowid, title, url, body)
+                VALUES (new.rowid, new.title, new.url, new.body);
             END;
 
             CREATE TRIGGER IF NOT EXISTS research_ad AFTER DELETE ON research_docs BEGIN
-                INSERT INTO research_index(research_index, rowid, title, body)
-                VALUES ('delete', old.rowid, old.title, old.body);
+                INSERT INTO research_index(research_index, rowid, title, url, body)
+                VALUES ('delete', old.rowid, old.title, old.url, old.body);
             END;
 
             CREATE TRIGGER IF NOT EXISTS research_au AFTER UPDATE ON research_docs BEGIN
-                INSERT INTO research_index(research_index, rowid, title, body)
-                VALUES ('delete', old.rowid, old.title, old.body);
-                INSERT INTO research_index(rowid, title, body)
-                VALUES (new.rowid, new.title, new.body);
+                INSERT INTO research_index(research_index, rowid, title, url, body)
+                VALUES ('delete', old.rowid, old.title, old.url, old.body);
+                INSERT INTO research_index(rowid, title, url, body)
+                VALUES (new.rowid, new.title, new.url, new.body);
             END;
 """
 """The research store, in one place because two callers need it verbatim.
@@ -228,6 +228,26 @@ SQLite maintains whatever the primary key is. The three triggers are what keep t
 step; without `research_ad` a delete would leave the index answering for rows that are
 gone.
 """
+
+
+def _rebuild_research_index(conn: sqlite3.Connection) -> None:
+    """Migration 6's Python step: re-make the FTS index over the new column set.
+
+    `DROP` then re-`CREATE` then `'rebuild'`, rather than an ALTER, because FTS5 has no
+    ALTER. Nothing is lost: an external-content index stores no text of its own, so the
+    rebuild reads every row back out of `research_docs`.
+
+    Safe on a fresh database, where the create block has already built the new shape and
+    there is nothing to read back.
+    """
+    conn.executescript("""
+        DROP TRIGGER IF EXISTS research_ai;
+        DROP TRIGGER IF EXISTS research_ad;
+        DROP TRIGGER IF EXISTS research_au;
+        DROP TABLE IF EXISTS research_index;
+    """)
+    conn.executescript(_RESEARCH_TABLES)
+    conn.execute("INSERT INTO research_index(research_index) VALUES('rebuild')")
 
 
 def _create_research_tables(conn: sqlite3.Connection) -> None:
@@ -272,6 +292,11 @@ MIGRATIONS: dict[int, tuple[MigrationStep, ...]] = {
         "ALTER TABLE forecasts ADD COLUMN research_id TEXT;",
         "ALTER TABLE gated_runs ADD COLUMN research_id TEXT;",
     ),
+    # A URL is evidence about a page — the domain is often the whole reason a person
+    # recognises a source — and it was not searchable. Adding a column to an FTS5 table
+    # means rebuilding it, which is safe here because `research_docs` holds the text and
+    # the index holds nothing of its own.
+    6: (_rebuild_research_index,),
 }
 """version -> steps that take the schema from `version - 1` to `version`.
 

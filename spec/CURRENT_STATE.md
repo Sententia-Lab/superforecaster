@@ -49,7 +49,7 @@ neither.
 
 ## Endpoint index
 
-All 23 routes, each traced in the section named.
+All 24 routes, each traced in the section named.
 
 | Method + path | Traced in |
 |---|---|
@@ -64,6 +64,7 @@ All 23 routes, each traced in the section named.
 | `POST /runs/{id}/steps/{step_id}/stream` | §3 Running one step |
 | `PUT /runs/{id}/steps/{step_id}/payload` | §3g Editing a payload |
 | `GET /runs/{id}` | §4 Reload |
+| `GET /runs/{id}/research` | §4b Research panel |
 | `DELETE /runs/{id}` | §5 Delete |
 | `POST /forecasts` | §6 Ungated pipeline |
 | `GET /forecasts` | §7 Forecast reads |
@@ -421,7 +422,8 @@ with the search that returned it. The stream's `source` chips die with the reque
 read back from `run_steps.payload_json`, so a reloaded run still shows what each cell read.
 
 **Prose.** Every agent-written string renders through `Prose.jsx` (`react-markdown` +
-`remark-gfm`), which is also what turns a bare URL into a link (ADR 60).
+`remark-gfm`), which is also what turns a bare URL into a link (ADR 60). `inline` flattens
+headings and paragraphs into a span, for a scraped title that has to stay one row (§4b).
 
 ### 3e. Retry / deeper budget
 
@@ -511,6 +513,84 @@ from SQLite with no agent calls and no in-memory state.
 sub-question carrying the question text, its lens rows, one row per modifier beneath its lens
 (`derive.adjustmentsForLens`), and a `Blended` footer per sub-question. It scrolls inside its
 own container rather than widening the page.
+
+---
+
+## 4b. Research panel — `GET /runs/{id}/research`
+
+An icon button top right under the header — a page under a lens, tooltip "View research" —
+toggles a dock beside the run. It is the only way to see the store without being an agent.
+
+A dock rather than a sheet: research is read *against* the forecast, so both have to be
+legible at once. It takes its own column out of `.layout`, which narrows `.main` and
+re-centres the run rather than covering it. Below 1180px there is no width to give away —
+280px of rail plus 460px of dock leaves the run a ribbon — so it covers instead, and the
+run keeps its width.
+
+```
+click Research  ->  ResearchPanel mounts
+  └─ api.runResearch(runId, q)   GET /runs/{id}/research[?q=]
+       └─ db.get_gated_run(run_id)            ← 404 if absent
+       └─ q ?  research.search_research(research_id, q, limit, mark=True)
+            :  research.list_research(research_id, limit)        [reads: research_docs]
+       └─ research.count_research(research_id)
+     ◄── ResearchPage
+```
+
+```json
+{"total": 29, "query": "US-China tariff negotiations",
+ "results": [{"rank": 1, "score": 14.9841,
+              "url": "https://reuters.com/us-china-steel-talks",
+              "title": "US and China resume steel talks",
+              "content": "Beijing and Washington resumed tariff negotiations …"}]}
+```
+
+Writes: **none.**
+
+The search box runs the *same* BM25 query `search_research` runs for an agent — the point
+of looking is to see what the agent would get back, so a different ranking here would
+answer a different question. Typing is debounced 250ms.
+
+**Matching and marking.** The FTS5 index covers `title`, `url` and `body`, weighted
+5.0 / 2.0 / 0.5. A URL earns its place: a domain is often the whole reason a person
+recognises a source. It sits below the title because every URL also carries `https`,
+`www` and `com`, which match everything and rank nothing.
+
+Hits come back wrapped in `MARK_START`/`MARK_END` (STX/ETX) from SQLite's own
+`highlight()`, and `Prose`'s `marks` turns them into `<mark>` after the markdown is
+parsed — so a hit spanning a bold run marks the words rather than breaking the markup.
+STX and ETX because the string passes through JSON and a markdown parser before anything
+splits on it, and neither can read a control character as syntax. Both are stripped from
+every page on the way in, so a pair in a result is always ours.
+
+The marking is SQLite's rather than a search-and-replace over the result, because the two
+disagree: the index is stemmed, so `negotiations` matches a page that says `negotiating`
+and `filing` matches `file`. A literal highlighter would return the row and mark nothing
+in it, which reads as a wrong result.
+
+`mark=True` is the endpoint's alone. `search_research` defaults to off, because its other
+caller is an agent, and control characters in a model's context are noise it has to read.
+
+`total` is the whole store rather than the page, so the header reads "2 of 7 pages, ranked"
+while a query narrows it. `score` is null on a browse, because nothing ranked it. The chip
+is hidden when the score is 0: BM25 gives a term appearing in half the corpus an IDF of
+exactly zero, which is ordinary in a two-page store and would read as "irrelevant".
+
+Titles and bodies render as markdown through `Prose` (ADR 60), because that is the form
+`extract_pages` stores them in — `format="markdown"`. Two adjustments for scraped text: a
+title renders `inline`, so a stray `#` cannot turn a list row into a heading; and a body's
+headings keep their weight but lose their scale, because a scraped page's headings are its
+furniture — a nav label, the site's own name — not the structure of anything being read
+here.
+
+Each page is an `Accordion` — the same `<details>` a lens gets, so find-in-page and the
+keyboard work without JavaScript. Closed it is one title row, which is what makes a
+hundred pages scannable; open it carries the link and the whole text. Rows open by default
+**on a search and not on a browse**: a hit the reader cannot see is a result they have to
+take on trust, which is the thing this panel exists to remove.
+
+A run with `research_id` NULL — started before the store existed — renders as empty rather
+than as an error.
 
 ---
 
@@ -700,7 +780,7 @@ scheduler, and no side effects on import.
 |---|---|
 | `config.py` | `load_env`, `ENV_FILE`, `AppSettings`/`get_app_settings` (database path, cron schedule, frontend dir), `set_runtime_key`, `origin`, `RUNTIME_KEYS` |
 | `db.py` | SQLite (WAL, FKs, migrations). Forecast fns + gated-run fns + `NotFoundError`/`StateError` |
-| `research.py` | the research store: `index_documents`, `search_research`, `has_documents`, `delete_research`, `_match_expression`, and `SqliteResearchStore`/`new_store` — the `ResearchStore` the library takes |
+| `research.py` | the research store: `index_documents`, `search_research`, `list_research`, `count_research`, `has_documents`, `delete_research`, `_match_expression`, and `SqliteResearchStore`/`new_store`/`store_for` — the `ResearchStore` the library takes |
 | `machine.py` | gated-run state machine: `start_run`, `expected_steps`, `reconcile`, `gate_offender`, `execute_step`, `edit_blocker`, `edit_payload`, `detail`, `busy`, `DERIVED`, `REQUIRED_FIELDS`, `GateError`, `BusyError` |
 | `update.py` | `run_update_graph` — loads the record, runs the core cycle, writes the result |
 | `cron.py` | `run_daily_refresh`, APScheduler wiring |
@@ -736,7 +816,7 @@ scheduler, and no side effects on import.
 | `hooks/useRunQueue.js` | Run All / Run Section: `drain`, `stop`. A browser loop, no server queue (ADR 55) |
 | `App.jsx` | shell + selection model (`new` \| run id); theme toggle; `/config`-driven chips |
 | `labels.js` | `subQuestionLabel`, `ordinal`, `firstSentence` — display labels computed from position, never stored (ADR 59). Also `DEPENDENCE_KINDS` / `dependenceKind`, the label and one-line meaning of each dependence kind |
-| `components/` | `Sidebar`, `NewForecastView`, `BacklogView`, `RunView`, `RunHeader`, `FieldEditor`, `EditorField`, `StepControls`, `BaseRateCard`, `ModifierCard`, `SourceList`, `LensCard`, `HowThisWorks`, `LensOrigin`, `Accordion`, `Prose`, `KeyPanel`, `CellActivity`, `LiveTail`, `SynthesisSection`, `DecomposeEditor`, `DependentGroups`, `LensSetEditor`, `ConfirmDialog` |
+| `components/` | `Sidebar`, `NewForecastView`, `BacklogView`, `RunView`, `RunHeader`, `FieldEditor`, `EditorField`, `StepControls`, `BaseRateCard`, `ModifierCard`, `SourceList`, `LensCard`, `HowThisWorks`, `LensOrigin`, `Accordion`, `Prose`, `KeyPanel`, `ResearchPanel`, `CellActivity`, `LiveTail`, `SynthesisSection`, `DecomposeEditor`, `DependentGroups`, `LensSetEditor`, `ConfirmDialog` |
 
 ---
 
@@ -767,7 +847,8 @@ scheduler, and no side effects on import.
   Server-held keys apply on the next request and are dropped on restart; no route ever
   returns a key value (§0b, ADR 61).
 - **A research store per run** — every page `search_web` and `extract_pages` fetch is kept
-  whole, and `search_research` reads it back ranked by BM25 (SQLite FTS5). Every agent that
+  whole, and `search_research` reads it back ranked by BM25 (SQLite FTS5). **Research** in
+  the run header opens a drawer showing the same store, searched the same way (§4b). Every agent that
   can call a tool has it; `reflect`, `synthesize`, and `draft` do not, because their
   `tool_calls` is 0. `update`, `resolution`, and `postmortem` reach the store months later
   through `ForecastRecord.research_id`, so a refresh reads what the forecast was built on.

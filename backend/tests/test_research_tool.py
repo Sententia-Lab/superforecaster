@@ -183,6 +183,21 @@ async def test_no_store_at_all_says_so(store):
     assert "unavailable" in out
 
 
+async def test_the_agent_never_sees_display_markers(store):
+    """The panel marks search hits so a person can see why a row is there. A model has no
+    use for that, and control characters in its context are noise it has to read."""
+    store.remember(
+        [ResearchDoc(url="https://a", title="Steel tariffs", body="exclusion process")]
+    )
+
+    out = await research_store_tools.search_research(
+        _Ctx(ForecastDeps(store=store)), "steel"
+    )
+
+    assert "\x02" not in out and "\x03" not in out
+    assert "Steel tariffs" in out
+
+
 # ---------- a saved forecast keeps its store ----------
 
 
@@ -268,3 +283,111 @@ async def test_a_store_read_spends_a_tool_call(store, monkeypatch):
 
     assert _names(await withdraw_tools(_Ctx(deps, budget.tool_calls - 1), ALL_TOOLS))
     assert await withdraw_tools(_Ctx(deps, budget.tool_calls), ALL_TOOLS) == []
+
+
+# ---------- the panel's endpoint ----------
+
+
+def test_run_research_lists_then_ranks(client_module_free=None):
+    """Browse and search are one route, because the panel is one view of one store."""
+    from fastapi.testclient import TestClient
+    from api.main import app
+
+    run = db.create_gated_run(
+        question="Q?", resolution_criteria="c", resolution_source="s"
+    )
+    db.start_gated_run(run["id"])
+    rid = db.get_gated_run(run["id"])["research_id"]
+    research.index_documents(
+        rid,
+        [ResearchDoc(url="https://a", title="Steel tariffs", body="exclusion process")]
+        + [
+            ResearchDoc(
+                url=f"https://b{i}", title=f"Shoes {i}", body="marathon training"
+            )
+            for i in range(4)
+        ],
+    )
+
+    with TestClient(app) as client:
+        listed = client.get(f"/runs/{run['id']}/research").json()
+        assert listed["total"] == 5
+        assert listed["query"] == ""
+        assert [h["url"] for h in listed["results"]][0] == "https://a"
+        assert all(
+            h["score"] is None for h in listed["results"]
+        ), "a browse ranks nothing, so a score there would be invented"
+
+        found = client.get(f"/runs/{run['id']}/research", params={"q": "steel"}).json()
+        assert [h["url"] for h in found["results"]] == ["https://a"]
+        assert found["total"] == 5, "total is the store, not the page"
+        assert found["results"][0]["score"] > 0
+
+
+def test_run_research_on_a_run_with_no_store():
+    """A run started before the store existed keeps `research_id` NULL. The panel has to
+    render that as empty, not as an error."""
+    from fastapi.testclient import TestClient
+    from api.main import app
+
+    run = db.create_gated_run(
+        question="Q?", resolution_criteria="c", resolution_source="s"
+    )
+
+    with TestClient(app) as client:
+        body = client.get(f"/runs/{run['id']}/research").json()
+
+    assert body == {"total": 0, "query": "", "results": []}
+
+
+def test_run_research_404s_on_a_run_that_is_not_there():
+    from fastapi.testclient import TestClient
+    from api.main import app
+
+    with TestClient(app) as client:
+        assert client.get("/runs/nope/research").status_code == 404
+
+
+def test_a_prose_query_from_the_search_box_never_500s():
+    """The box takes whatever a person types, and FTS5 reads its argument as syntax."""
+    from fastapi.testclient import TestClient
+    from api.main import app
+
+    run = db.create_gated_run(
+        question="Q?", resolution_criteria="c", resolution_source="s"
+    )
+    db.start_gated_run(run["id"])
+
+    with TestClient(app) as client:
+        for q in ["US-China tariffs", "Trump: what next?", "AND", '"', "*", "NOT OR"]:
+            assert (
+                client.get(f"/runs/{run['id']}/research", params={"q": q}).status_code
+                == 200
+            )
+
+
+def test_bm25_scores_zero_when_every_page_matches():
+    """Not a bug, and the panel hides the chip rather than printing "0.00".
+
+    BM25 weights a term by how much it distinguishes one document from the rest. A term
+    in half the corpus distinguishes nothing, so its IDF is exactly zero — which is the
+    ordinary case for a store holding two pages, and disappears as the run fills it.
+    """
+    two = research.new_store()
+    two.remember(
+        [
+            ResearchDoc(url="https://a", title="Steel", body="one"),
+            ResearchDoc(url="https://b", title="Shoes", body="two"),
+        ]
+    )
+    assert two.find("steel")[0].score == 0.0
+
+    many = research.new_store()
+    many.remember(
+        [ResearchDoc(url="https://a", title="Steel", body="one")]
+        + [
+            ResearchDoc(url=f"https://b{i}", title="Shoes", body="two")
+            for i in range(9)
+        ]
+    )
+    assert many.find("steel")[0].score > 2

@@ -112,6 +112,46 @@ def test_migration_from_v4_keeps_its_forecasts(tmp_path, monkeypatch):
     assert len(research.search_research(RID, "alpha")) == 1
 
 
+def test_migration_5_to_6_keeps_the_pages_and_indexes_the_url(tmp_path, monkeypatch):
+    """Adding a column to an FTS5 table means rebuilding it, and the rebuild must not cost
+    a run its research — those pages cannot be fetched again."""
+    old = tmp_path / "v5.db"
+    monkeypatch.setenv("DATABASE_PATH", str(old))
+    db.init_db()
+    research.index_documents(
+        RID, [_doc("https://www.reuters.com/steel", title="Trade", body="Geneva talks")]
+    )
+
+    # Put it back the way version 5 built it: no `url` column in the index.
+    with db.connect() as c:
+        c.executescript("""
+            DROP TRIGGER research_ai; DROP TRIGGER research_ad; DROP TRIGGER research_au;
+            DROP TABLE research_index;
+            CREATE VIRTUAL TABLE research_index USING fts5(
+                title, body, content='research_docs', content_rowid='rowid',
+                tokenize='porter unicode61');
+            CREATE TRIGGER research_ai AFTER INSERT ON research_docs BEGIN
+                INSERT INTO research_index(rowid,title,body) VALUES(new.rowid,new.title,new.body);
+            END;
+        """)
+        c.execute("INSERT INTO research_index(research_index) VALUES('rebuild')")
+        c.execute("PRAGMA user_version = 5")
+
+    assert research.search_research(RID, "reuters") == [], "v5 could not search a URL"
+
+    db.init_db()
+
+    with db.connect() as c:
+        assert c.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+        assert c.execute("SELECT count(*) FROM research_docs").fetchone()[0] == 1
+    assert [h.url for h in research.search_research(RID, "reuters")] == [
+        "https://www.reuters.com/steel"
+    ]
+    assert research.search_research(
+        RID, "Geneva"
+    ), "the rebuild kept the body searchable"
+
+
 # ---------- searching ----------
 
 
@@ -227,3 +267,77 @@ def test_delete_leaves_no_orphan_index_rows(stocked):
         ).fetchone()[0]
 
     assert n == 1
+
+
+# ---------- why a result is here ----------
+
+
+def test_search_matches_the_url_not_only_the_text(stocked):
+    """A domain is often the whole reason a person recognises a source."""
+    assert [h.url for h in research.search_research(RID, "reuters")] == [
+        "https://reuters.com/talks"
+    ]
+
+
+def test_every_matched_field_is_marked(stocked):
+    """Title, URL and body each carry their own hits, so a reader can see which one put
+    the row on screen."""
+    hit = research.search_research(RID, "reuters talks", mark=True)[0]
+
+    assert research.MARK_START in hit.marked_url
+    assert "reuters" in _marked(hit.marked_url)
+    assert "China trade talks" == hit.title.replace(research.MARK_START, "").replace(
+        research.MARK_END, ""
+    )
+    assert "talks" in _marked(hit.title)
+
+
+def test_marking_follows_the_stemmer_not_the_letters():
+    """The index is stemmed, so "negotiations" matches a page that says "negotiating".
+
+    Only the tokenizer knows which characters that was. A literal highlighter would
+    return the row and mark nothing in it, which reads as a wrong result.
+    """
+    store = research.new_store()
+    store.remember(
+        [ResearchDoc(url="https://a", title="Tariff negotiating session", body="x")]
+        + [ResearchDoc(url=f"https://b{i}", title="other", body="y") for i in range(8)]
+    )
+
+    hit = research.search_research(store.research_id, "negotiations", mark=True)[0]
+
+    assert _marked(hit.title) == ["negotiating"]
+
+
+def test_a_browse_marks_nothing(stocked):
+    """Nothing was searched, so nothing can be shown as the reason."""
+    for hit in research.list_research(RID):
+        assert research.MARK_START not in hit.title
+        assert hit.marked_url is None
+
+
+def test_a_page_cannot_smuggle_the_marks_in(stocked):
+    """The markers are ours. A page carrying them would fake a hit."""
+    research.index_documents(
+        RID,
+        [
+            _doc(
+                "https://evil",
+                title=f"Real{research.MARK_START}fake{research.MARK_END}",
+                body="alpha",
+            )
+        ],
+    )
+
+    hit = research.search_research(RID, "alpha", mark=True)[0]
+    assert research.MARK_START not in hit.title
+    assert hit.title == "Realfakе".replace("е", "e")
+
+
+def _marked(text: str) -> list[str]:
+    """The runs of text a search marked, in order."""
+    import re
+
+    return re.findall(
+        f"{research.MARK_START}(.*?){research.MARK_END}", text or "", re.S
+    )

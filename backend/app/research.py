@@ -30,10 +30,26 @@ from superforecaster.models import ResearchDoc, ResearchHit
 from .db import connect
 
 TITLE_WEIGHT = 5.0
+URL_WEIGHT = 2.0
 BODY_WEIGHT = 0.5
 """BM25 column weights. A page whose *title* is about the query answers it more often than
 one that mentions it once in the body, and SQLite weights columns rather than letting the
-caller re-rank."""
+caller re-rank. A URL sits between them: a domain is often the whole reason a person
+recognises a source, but every URL also carries `https`, `www` and `com`, which match
+everything and therefore rank nothing."""
+
+MARK_START = "\x02"
+MARK_END = "\x03"
+"""What wraps a matched run of text in a search result.
+
+STX and ETX, because the marked string then travels through JSON and a markdown renderer
+before anyone splits on it, and neither can mistake a control character for syntax. Both
+are stripped from any page on the way in, so a pair in a result is always ours."""
+
+
+def _scrub(text: str) -> str:
+    """A stored page cannot contain the characters that mark a search hit."""
+    return text.replace(MARK_START, "").replace(MARK_END, "")
 
 
 def _match_expression(query: str) -> str:
@@ -73,13 +89,28 @@ def index_documents(research_id: str, docs: list[ResearchDoc]) -> int:
                     title = excluded.title,
                     body = excluded.body
                 """,
-                (research_id, doc.url, doc.title, doc.body),
+                (research_id, doc.url, _scrub(doc.title), _scrub(doc.body)),
             )
     return sum(1 for d in docs if d.url)
 
 
-def search_research(research_id: str, query: str, limit: int = 5) -> list[ResearchHit]:
+def search_research(
+    research_id: str, query: str, limit: int = 5, mark: bool = False
+) -> list[ResearchHit]:
     """The documents this run already read, ranked against `query`.
+
+    Matches on title, URL and body.
+
+    `mark` wraps every matched run of text in `MARK_START` and `MARK_END`, so a reader can
+    see *why* a result is here. Off by default, because the other caller is an agent: a
+    model reading a result has no use for display markers, and control characters in its
+    context are noise it has to pay attention to.
+
+    The marking is SQLite's own `highlight()` rather than a search-and-replace over the
+    result, because the two do not agree: the index is stemmed, so a query for
+    "negotiations" matches a page that says "negotiating", and only the tokenizer knows
+    which characters that was. A literal highlighter would return the row and mark
+    nothing in it, which reads as a wrong result.
 
     Scoped to `research_id`: one run never reads another's store.
     """
@@ -87,30 +118,91 @@ def search_research(research_id: str, query: str, limit: int = 5) -> list[Resear
     if not research_id or not expression:
         return []
 
+    start, end = (MARK_START, MARK_END) if mark else ("", "")
     with connect() as conn:
         rows = conn.execute(
             """
-            SELECT d.url, d.title, d.body,
-                   -bm25(research_index, ?, ?) AS score
+            SELECT highlight(research_index, 0, ?, ?) AS title,
+                   highlight(research_index, 1, ?, ?) AS url,
+                   highlight(research_index, 2, ?, ?) AS body,
+                   d.url AS href,
+                   -bm25(research_index, ?, ?, ?) AS score
             FROM research_index
             JOIN research_docs d ON d.rowid = research_index.rowid
             WHERE research_index MATCH ? AND d.research_id = ?
             ORDER BY score DESC
             LIMIT ?
             """,
-            (TITLE_WEIGHT, BODY_WEIGHT, expression, research_id, limit),
+            (
+                start,
+                end,
+                start,
+                end,
+                start,
+                end,
+                TITLE_WEIGHT,
+                URL_WEIGHT,
+                BODY_WEIGHT,
+                expression,
+                research_id,
+                limit,
+            ),
         ).fetchall()
 
     return [
         ResearchHit(
             rank=i + 1,
             score=round(r["score"], 4),
-            url=r["url"],
+            url=r["href"],
+            marked_url=r["url"] if mark else None,
             title=r["title"],
             content=r["body"],
         )
         for i, r in enumerate(rows)
     ]
+
+
+def list_research(
+    research_id: str | None, limit: int = 100, offset: int = 0
+) -> list[ResearchHit]:
+    """Everything the run stored, newest URL last, for a person browsing rather than an
+    agent searching.
+
+    Separate from `search_research` because a browse has no query to rank against, and
+    ranking a list nobody asked a question of would invent an order.
+    """
+    if not research_id:
+        return []
+
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT url, title, body FROM research_docs
+            WHERE research_id = ?
+            ORDER BY rowid
+            LIMIT ? OFFSET ?
+            """,
+            (research_id, limit, offset),
+        ).fetchall()
+
+    return [
+        ResearchHit(
+            rank=offset + i + 1, url=r["url"], title=r["title"], content=r["body"]
+        )
+        for i, r in enumerate(rows)
+    ]
+
+
+def count_research(research_id: str | None) -> int:
+    """How many pages the run stored. What the panel's header counts."""
+    if not research_id:
+        return 0
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT count(*) AS n FROM research_docs WHERE research_id = ?",
+            (research_id,),
+        ).fetchone()
+    return row["n"]
 
 
 def has_documents(research_id: str | None) -> bool:

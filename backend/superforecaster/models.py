@@ -741,13 +741,29 @@ class ResearchDoc(BaseModel):
 
 
 class ResearchHit(BaseModel):
-    """One document the research store returned, with its BM25 rank."""
+    """One document the research store returned.
+
+    `score` is None when nothing ranked it — a browse has no query to score against, and
+    a zero there would read as "scored, and irrelevant".
+    """
 
     rank: int
-    score: float
     url: str
+    """The real URL — always unmarked, because it is also the link and the identity."""
     title: str
     content: str
+    score: Optional[float] = None
+    marked_url: Optional[str] = None
+    """The URL with search hits marked, for display. None when nothing was searched."""
+
+
+class ResearchPage(BaseModel):
+    """One page of a run's research store, as the panel reads it."""
+
+    total: int
+    """Documents in the whole store, so a filtered view can say what it is filtering."""
+    query: str = ""
+    results: list[ResearchHit] = []
 
 
 # ---------- DB record types ----------

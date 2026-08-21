@@ -48,7 +48,7 @@ INSTRUCTIONS = """You review a forecast that has already been researched, and su
 two things nobody looking at one piece of it could see. You do not adjust anything and
 you do not produce a probability — both are already decided.
 
-You are given every adjustment made across every part of the question, and the
+You are given every adjustment made across every pa rt of the question, and the
 sub-question-level counter-arguments the researchers wrote.
 
 `search_research` returns the pages this run already read, and it is your only tool —
