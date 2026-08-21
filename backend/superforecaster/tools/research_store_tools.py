@@ -18,7 +18,11 @@ async def search_research(
     store = ctx.deps.store
     if store is None:
         return "Research store unavailable: this run keeps no store."
-    hits = store.find(query, limit=limit)
+    try:
+        hits = store.find(query, limit=limit)
+    except Exception as e:
+        # A store that cannot be read is a lost convenience, not a lost cell.
+        return f"Research store error: {e}"
     if not hits:
         return f"Nothing stored yet for: {query}. Search the web."
     ctx.deps.sources_seen.extend(

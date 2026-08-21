@@ -122,13 +122,13 @@ def forecast(
             "category": input("Category: ").strip(),
         }
     input_ = ForecastInput(**{**data, "max_iterations": max_iterations})
+    db.init_db()  # the research store lives in the database even when nothing is saved
     store = research.new_store()
     result, violations = asyncio.run(run_all(input_, store=store))
 
     for v in violations:
         print(f"[methodology] P{v.principle} {v.name}: {v.detail}", file=sys.stderr)
     if not no_save:
-        db.init_db()
         fid = db.save_forecast(
             result,
             resolution_source=data["resolution_source"],
