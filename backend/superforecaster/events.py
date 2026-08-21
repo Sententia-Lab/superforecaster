@@ -1,8 +1,4 @@
-"""What an agent reports while it works, and the SSE frame each event becomes.
-
-A caller subscribes by putting a `Sink` on `ForecastDeps.emit`. The field names in
-`frame` are read by `frontend/src/hooks/useStepStream.js`.
-"""
+"""What an agent reports while it works, and the SSE frame each event becomes."""
 
 from __future__ import annotations
 

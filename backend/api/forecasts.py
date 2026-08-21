@@ -22,12 +22,7 @@ router = APIRouter(prefix="/forecasts", tags=["forecasts"])
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_forecast(body: CreateForecastRequest) -> ForecastRecord:
-    """Run the whole pipeline back-to-back (no gates) and persist.
-
-    The gated flow (`/runs`) is the primary path; this blocking endpoint is the API
-    twin of `superforecaster forecast` for scripted use. Runs live, with no
-    `model` clamp — those exist for backtesting.
-    """
+    """Run the whole pipeline back-to-back (no gates) and persist."""
     store = research.new_store()
     forecast, _violations = await run_all(
         ForecastInput(
@@ -60,11 +55,7 @@ def list_forecasts(
 
 @router.delete("/{forecast_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_forecast(forecast_id: str) -> None:
-    """Remove a forecast, its updates, and the research store the run built for it.
-
-    A gated run that produced this forecast survives with its `forecast_id` cleared —
-    the mirror of `DELETE /runs/{id}`, which leaves the forecast alive.
-    """
+    """Remove a forecast, its updates, and the research store the run built for it."""
     try:
         db.delete_forecast(forecast_id)
     except db.NotFoundError as exc:
@@ -113,10 +104,6 @@ def resolve(forecast_id: str, body: ResolveRequest) -> ForecastRecord:
 
 @router.post("/{forecast_id}/refresh")
 async def refresh(forecast_id: str) -> RefreshActionResponse:
-    """Manually trigger one update cycle for a single forecast.
-
-    Same graph the cron job runs — resolution check first, then the probability
-    update. The response shape predates the graph and is kept for the frontend.
-    """
+    """Manually trigger one update cycle for a single forecast."""
     outcome = await run_update_graph(forecast_id)
     return RefreshActionResponse(updated=outcome.updated, reason=outcome.reason)

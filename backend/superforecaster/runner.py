@@ -59,11 +59,7 @@ def _tool_query_arg(args: Any) -> str:
 
 
 def _make_event_handler(sink: Sink, sub_question: str | None):
-    """Turn the agent's event stream into `Query`/`Source`/`Thought` events.
-
-    Sources are detected by diffing `deps.sources_seen` after each tool result, which
-    is why every research cell gets a private list.
-    """
+    """Turn the agent's event stream into `Query`/`Source`/`Thought` events."""
 
     async def _handler(
         ctx: RunContext[Any], stream: AsyncIterable[AgentStreamEvent]
@@ -118,12 +114,7 @@ async def run_agent(
     timeout: float | None = None,
     run_name: str = "agent run",
 ) -> Any:
-    """Run an agent with a model, a budget, a deadline, and tracing.
-
-    The budget rides on a copy of `deps` so `withdraw_tools` can read it on every
-    request. The deadline catches a provider call that never returns, which no usage
-    limit would.
-    """
+    """Run an agent with a model, a budget, a deadline, and tracing."""
     deps = replace(deps or ForecastDeps(), budget=budget)
     if budget.tool_calls > 0:
         prompt += search_note(budget)

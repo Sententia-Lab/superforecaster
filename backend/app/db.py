@@ -377,11 +377,7 @@ def save_forecast(
     submission_gap_days: int = 7,
     research_id: str | None = None,
 ) -> str:
-    """Insert a new forecast plus its initial update row. Returns UUID.
-
-    `research_id` binds the run's research store to the forecast it produced, so deleting
-    the forecast can take the store with it. None when the run kept no store.
-    """
+    """Insert a new forecast plus its initial update row. Returns UUID."""
     fid = str(uuid.uuid4())
     now = _utcnow()
     submission_deadline = forecast.resolution_date - timedelta(days=submission_gap_days)
@@ -429,13 +425,7 @@ def save_forecast(
 
 
 def delete_forecast(forecast_id: str) -> None:
-    """Remove a forecast, its updates (via CASCADE), and its research store.
-
-    One transaction, because a store that outlives its forecast is unreachable and a
-    forecast that outlives its store has lost its evidence. Any gated run that produced
-    this forecast survives with `forecast_id` set to NULL — the mirror of
-    `delete_gated_run`, which deliberately leaves the forecast alive.
-    """
+    """Remove a forecast, its updates (via CASCADE), and its research store."""
     with connect() as conn:
         row = conn.execute(
             "SELECT research_id FROM forecasts WHERE id = ?", (forecast_id,)
@@ -454,11 +444,7 @@ def add_forecast_update(
     probability: float,
     reasoning: str,
 ) -> ForecastUpdateRecord:
-    """Insert a new probability update.
-
-    Raises StateError if the forecast is already resolved or past
-    resolution_date. Sets `is_late` if within 24h of resolution_date.
-    """
+    """Insert a new probability update."""
     now = _utcnow()
     with connect() as conn:
         row = conn.execute(
@@ -521,14 +507,7 @@ def list_forecasts(
     limit: int = 50,
     offset: int = 0,
 ) -> list[ForecastRecord]:
-    """List forecasts with optional status filter.
-
-    `status`:
-        - "active": unresolved, not ambiguous
-        - "resolved": has an outcome (not ambiguous)
-        - "ambiguous": is_ambiguous = true
-        - None: all
-    """
+    """List forecasts with optional status filter."""
     sql = "SELECT * FROM forecasts"
     params: list = []
     if status == "active":
@@ -601,11 +580,7 @@ def compute_time_weighted_probability(forecast_id: str) -> float:
 
 
 def resolve_forecast(forecast_id: str, outcome: float | None) -> None:
-    """Record a resolution.
-
-    `outcome=None` marks the forecast as ambiguous (excluded from scoring).
-    Otherwise computes scored_probability + brier_score from the update history.
-    """
+    """Record a resolution."""
     now = _utcnow()
     with connect() as conn:
         f_row = conn.execute(
@@ -757,12 +732,7 @@ def update_gated_run_fields(
 
 
 def start_gated_run(run_id: str) -> None:
-    """CAS `backlog` → `active`. Raises StateError if it already left the backlog.
-
-    Mints the run's `research_id` here rather than at creation, because this is where the
-    run starts reading pages. A run that was already active when this column arrived keeps
-    NULL and simply keeps no store.
-    """
+    """CAS `backlog` → `active`. Raises StateError if it already left the backlog."""
     with connect() as conn:
         cur = conn.execute(
             "UPDATE gated_runs SET status = 'active', started_at = ?, research_id = ? "
@@ -779,11 +749,8 @@ def start_gated_run(run_id: str) -> None:
 
 
 def complete_gated_run(run_id: str, forecast_id: str) -> None:
-    """Bind the finished forecast to its run, and the run's research store to the forecast.
-
-    The store is copied across rather than looked up through the run, because
-    `delete_gated_run` may remove the run while the forecast lives on.
-    """
+    """Bind the finished forecast to its run, and the run's research store to the
+    forecast."""
     with connect() as conn:
         conn.execute(
             "UPDATE gated_runs SET status = 'complete', forecast_id = ?, "
@@ -839,11 +806,7 @@ def delete_gated_run(run_id: str) -> None:
 
 
 def insert_steps(run_id: str, steps: list[tuple[str, str, str]]) -> list[dict]:
-    """Materialize pending steps. Each entry is (stage, sub_question_id, lens_name).
-
-    `INSERT OR IGNORE` against the UNIQUE key makes re-materialization idempotent —
-    advancing a stage twice (a retried final cell, say) must not duplicate rows.
-    """
+    """Materialize pending steps. Each entry is (stage, sub_question_id, lens_name)."""
     with connect() as conn:
         for stage, sub_question_id, lens_name in steps:
             conn.execute(
@@ -858,11 +821,7 @@ def insert_steps(run_id: str, steps: list[tuple[str, str, str]]) -> list[dict]:
 
 
 def delete_steps(step_ids: list[str]) -> int:
-    """Remove step rows by id. Returns how many went. Empty list is a no-op.
-
-    Only `machine.reconcile` calls this, and only for rows still `pending` — it checks
-    that itself, because a delete here cannot be undone.
-    """
+    """Remove step rows by id. Returns how many went. Empty list is a no-op."""
     if not step_ids:
         return 0
     placeholders = ",".join("?" for _ in step_ids)
@@ -874,11 +833,7 @@ def delete_steps(step_ids: list[str]) -> int:
 
 
 def edit_step_payload(step_id: str, payload_json: str) -> dict:
-    """Replace a completed step's payload with one a person wrote.
-
-    `status` and `attempts` deliberately do not move: the step is still complete, and an
-    edit is not an attempt. `edited_at` is what tells the two kinds of payload apart.
-    """
+    """Replace a completed step's payload with one a person wrote."""
     with connect() as conn:
         conn.execute(
             "UPDATE run_steps SET payload_json = ?, edited_at = ? WHERE id = ?",
@@ -891,11 +846,7 @@ def edit_step_payload(step_id: str, payload_json: str) -> dict:
 
 
 def claim_step(step_id: str) -> dict | None:
-    """CAS `pending`/`error` → `running`. Returns the claimed step, or None if lost.
-
-    Also clears the owning run's red-chip error: a retry in flight is no longer a
-    failed run until it fails again.
-    """
+    """CAS `pending`/`error` → `running`. Returns the claimed step, or None if lost."""
     with connect() as conn:
         cur = conn.execute(
             """UPDATE run_steps

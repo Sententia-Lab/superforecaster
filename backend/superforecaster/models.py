@@ -363,10 +363,7 @@ class CheckViolation(BaseModel):
 
 
 class EvidenceItem(BaseModel):
-    """P11 — likelihood assessment for one new fact.
-
-    See `checks.check_bayes_direction` for how these two numbers are used.
-    """
+    """P11 — likelihood assessment for one new fact."""
 
     fact: str
     source: str
@@ -391,13 +388,7 @@ class UpdateDecision(BaseModel):
 
 
 class UpdateOutcome(BaseModel):
-    """Final output of the update cycle, and everything a caller needs to persist it.
-
-    The cycle itself writes nothing — it returns this, and whoever owns the storage
-    decides what to do with it. `reason` says what the cycle concluded; `reasoning`
-    carries the agent's own argument for the move, which is what gets recorded against
-    the forecast when `updated` is true.
-    """
+    """Final output of the update cycle, and everything a caller needs to persist it."""
 
     flagged_resolved: bool = False
     updated: bool = False

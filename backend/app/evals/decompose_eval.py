@@ -1,21 +1,4 @@
-"""Run the decompose agent against a fixed set of questions and score its output.
-
-This runs the real model, so it costs money and needs a real API key. That is why it
-is a script rather than a pytest test — `uv run pytest` stubs the key and never
-reaches a provider.
-
-    make eval decompose
-    make eval decompose ARGS="--model anthropic:claude-haiku-4-5 --budget 0,3,40000"
-
-Two kinds of evaluator run on every case. `Structure`, `MentionsTerms`, and
-`ChainRuleIs` are mechanical — they answer yes or no, cost nothing, and never
-disagree with themselves. The `LLMJudge` asks a second model to grade the
-decomposition against `RUBRIC` and return a score with a rationale, which catches the
-failures no assertion can express.
-
-Everything that runs the cases and prints the report is pydantic-evals. What this
-module owns is the cases, what counts as good, and the flags.
-"""
+"""Run the decompose agent against a fixed set of questions and score its output."""
 
 from __future__ import annotations
 
@@ -63,11 +46,7 @@ class MentionsTerms(Evaluator[ForecastInput, Decomposition, dict]):
 
 @dataclass
 class ChainRuleIs(Evaluator[ForecastInput, Decomposition, dict]):
-    """Did it pick the combining rule the question actually has?
-
-    Skipped (scores True) for a case that names no expected rule, because a question
-    with no obvious rule should not fail the one case that has one.
-    """
+    """Did it pick the combining rule the question actually has?"""
 
     def evaluate(self, ctx: Ctx) -> bool:
         expected = (ctx.metadata or {}).get("chain_rule")
@@ -99,11 +78,8 @@ hold, say so in one sentence."""
 
 
 def judge(model: str) -> LLMJudge:
-    """Grade the decomposition with a second model. Score plus rationale, not pass/fail.
-
-    `model` is always passed. The library default judge is an OpenAI model, and this
-    project holds no OpenAI key.
-    """
+    """Grade the decomposition with a second model. Score plus rationale, not
+    pass/fail."""
     return LLMJudge(
         rubric=RUBRIC,
         model=model,

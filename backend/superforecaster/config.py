@@ -148,12 +148,7 @@ def get_budget(name: str, *, max_iterations: int | None = None) -> Budget:
 
 
 def get_model_settings() -> dict:
-    """Settings shared by every agent.
-
-    `parallel_tool_calls=False` keeps one search per turn, so the tool-call ceiling is
-    exact. The `anthropic_cache_*` flags cache the tools, the instructions, and the
-    transcript, which is most of a research cell's input (ADR 81).
-    """
+    """Settings shared by every agent."""
     return {
         "max_tokens": int(os.getenv("AGENT_MAX_TOKENS", str(DEFAULT_AGENT_MAX_TOKENS))),
         "parallel_tool_calls": False,

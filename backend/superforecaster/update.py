@@ -1,9 +1,5 @@
-"""The daily update cycle. Reads nothing and writes nothing; `app.update` owns storage.
-
-resolution check --resolved--> flagged, no update
-     | not resolved
-update agent -> large move? -> verify once -> gate (noise, consistency) -> outcome
-"""
+"""The daily update cycle. Reads nothing and writes nothing; `app.update` owns
+storage."""
 
 from __future__ import annotations
 

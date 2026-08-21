@@ -1,8 +1,4 @@
-"""The update cycle, wired to storage.
-
-`superforecaster.update` decides what should happen to a forecast. This decides where
-the record comes from and what gets written when the answer arrives.
-"""
+"""The update cycle, wired to storage."""
 
 from __future__ import annotations
 
@@ -14,11 +10,8 @@ from . import db, research
 
 
 async def run_update_graph(forecast_id: str) -> UpdateOutcome:
-    """Run the daily cycle on one saved forecast. Callable from cron, the API, or the CLI.
-
-    `mark_refreshed` runs whatever the outcome, including a flagged one — the forecast
-    was looked at, which is what the timestamp records.
-    """
+    """Run the daily cycle on one saved forecast. Callable from cron, the API, or the
+    CLI."""
     record = db.get_forecast(forecast_id)
     if record is None:
         return UpdateOutcome(reason="forecast not found")

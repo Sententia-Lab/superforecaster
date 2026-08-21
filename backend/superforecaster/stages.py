@@ -1,11 +1,4 @@
-"""Per-stage forecast functions — the gated pipeline's unit of work.
-
-The server's state machine (`app.machine`) calls one function per user click; the CLI
-and evals call `run_all`, which drives the same functions back-to-back. The
-methodology's ordering guarantees are call signatures: `run_lenses_stage` never sees a
-rate (ADR 40), `run_base_rate_step` re-stamps the chosen lens's identity, and
-`run_inside_step` requires a measured lens (P4, ADR 12).
-"""
+"""Per-stage forecast functions — the gated pipeline's unit of work."""
 
 from __future__ import annotations
 

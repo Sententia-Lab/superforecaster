@@ -1,8 +1,4 @@
-"""Gated run endpoints — the sidebar CRUD plus the step stream.
-
-`POST .../steps/{id}/stream` *is* the step's execution (ADR 46): the connection is the
-agent's lifetime, so a client that hangs up cancels the step.
-"""
+"""Gated run endpoints — the sidebar CRUD plus the step stream."""
 
 from __future__ import annotations
 

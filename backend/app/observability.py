@@ -1,12 +1,4 @@
-"""Logfire configuration, and the terminal progress printer.
-
-The core library emits spans and logs but never configures Logfire — deciding whether
-traces leave this process, and where they go, is the application's call. This module
-makes it, once, at each entry point.
-
-The token is probed over HTTP before use. An invalid one silently sends nothing, and a
-run that produced no trace looks exactly like a run nobody looked at.
-"""
+"""Logfire configuration, and the terminal progress printer."""
 
 from __future__ import annotations
 
@@ -50,11 +42,7 @@ def _token_is_valid(token: str) -> bool:
 
 
 def configure_logfire(*, verbose: bool = False) -> None:
-    """Point Logfire at the cloud, the console, or nowhere. Idempotent.
-
-    The console is switched on whenever cloud tracing is off, so a run always reports
-    itself somewhere. `verbose` turns it on as well even when traces are being sent.
-    """
+    """Point Logfire at the cloud, the console, or nowhere. Idempotent."""
     global _logfire_configured, _warned_invalid_logfire_token
     if _logfire_configured:
         return

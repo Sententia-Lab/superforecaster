@@ -22,12 +22,7 @@ only when a tool returned that exact URL — a check rejects invented links."""
 
 
 async def withdraw_tools(ctx: RunContext[ForecastDeps], tool_defs: list) -> list:
-    """Drop the Tavily tools without a key, and every tool once the budget is spent.
-
-    The output tool is exempt from `tool_calls_limit`, so returning the answer is always
-    still possible. `search_research` stays while calls remain, so the tool list — and
-    the prompt cache — is stable for the whole run (ADR 81).
-    """
+    """Drop the Tavily tools without a key, and every tool once the budget is spent."""
     if not get_settings().tavily_api_key:
         tool_defs = [t for t in tool_defs if getattr(t, "name", t) not in _TAVILY_TOOLS]
     budget = getattr(ctx.deps, "budget", None)

@@ -1,9 +1,4 @@
-"""The gated-run state machine — every legal transition, in one place (ADR 45).
-
-`db` reads and writes rows; this module decides. A run is `backlog → active →
-complete`; a step is `pending → running → complete | error`, with `error → running`
-on retry. One agent step runs at a time in the whole process.
-"""
+"""The gated-run state machine — every legal transition, in one place (ADR 45)."""
 
 from __future__ import annotations
 
@@ -200,11 +195,7 @@ async def execute_step(
     max_iterations: int | None = None,
     emit: Sink | None = None,
 ) -> dict:
-    """Claim and run one gated step; persist whatever happens to it.
-
-    Cancellation (the client hung up, ADR 46) lands the step as `error='cancelled'` and
-    re-raises, so it is immediately claimable again.
-    """
+    """Claim and run one gated step; persist whatever happens to it."""
     step = db.get_step(step_id)
     if step is None:
         raise db.NotFoundError(f"step {step_id}")

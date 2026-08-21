@@ -1,29 +1,4 @@
-"""Run the criteria critic against a fixed set of questions and score it.
-
-Like `decompose_eval`, this runs the real model, so it costs money and needs a real API
-key. That is why it is a script rather than a pytest test.
-
-    make eval critic
-    make eval critic ARGS="--model anthropic:claude-haiku-4-5 --budget 2,3,40000"
-
-The critic is the first agent here graded on its **path** as well as its answer. It has
-one tool and a strict instruction about it: at most two searches, and only to confirm that
-a source it is about to name really publishes what the criteria assume. A critique that
-names the right source after three searches for the answer to the question is a worse run
-than the identical critique after one, and no evaluator that reads only the output can
-see the difference. `ToolTrajectoryJudge` reads the run.
-
-Three tiers run on every case. `Verdict` and `NamedASource` are mechanical and read the
-output; `MaxToolCalls` and `MaxModelRequests` are pydantic-evals' own span-based
-evaluators and read the run. All four are free and never disagree with themselves.
-`LLMJudge` grades the rewrite against `RUBRIC`. `ToolTrajectoryJudge` grades the tool
-calls against `TOOL_RUBRIC`.
-
-`MaxToolCalls` and `ToolTrajectoryJudge` both look at how many searches happened, and the
-overlap is deliberate. The count is a fact and belongs in an assertion. Whether the count
-was *right for this question* is a judgment — a question that already names the BLS needs
-a search that a question saying "significant adoption" does not.
-"""
+"""Run the criteria critic against a fixed set of questions and score it."""
 
 from __future__ import annotations
 
@@ -143,11 +118,7 @@ WHAT THIS MEANS FOR EACH SCORE
 
 
 def judge(model: str) -> LLMJudge:
-    """Grade the rewrite with a second model. Score plus rationale, not pass/fail.
-
-    `model` is always passed. The library default judge is an OpenAI model, and this
-    project holds no OpenAI key.
-    """
+    """Grade the rewrite with a second model. Score plus rationale, not pass/fail."""
     return LLMJudge(
         rubric=RUBRIC,
         model=model,
@@ -158,12 +129,7 @@ def judge(model: str) -> LLMJudge:
 
 
 def make_task():
-    """The task under evaluation, bound to a model.
-
-    `record_trajectory` is the whole cost of making this agent's path gradable. It reads
-    the run through a context variable, so `run_critique` is called exactly as production
-    calls it.
-    """
+    """The task under evaluation, bound to a model."""
 
     async def task(input: CriticInput) -> CriteriaCritique:
         with record_trajectory():
@@ -237,13 +203,7 @@ CASES = [
 
 
 def build_dataset(judge_model: str) -> Dataset:
-    """Every case gets these; the per-case `MaxToolCalls` ceilings sit on the cases.
-
-    `MaxModelRequests` reads the same number the runtime enforces. It is not a second
-    ceiling — it is the eval reporting *which* case ran the agent in circles, which the
-    `UsageLimitExceeded` path cannot, because that kills the run and returns a degraded
-    critique with no trace of how close the others came.
-    """
+    """Every case gets these; the per-case `MaxToolCalls` ceilings sit on the cases."""
     return Dataset(
         name="critic",
         cases=CASES,
