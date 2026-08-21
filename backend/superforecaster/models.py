@@ -724,6 +724,32 @@ class SourceRef(BaseModel):
     tool: str
 
 
+class ResearchDoc(BaseModel):
+    """One page the run fetched, kept whole so a later step can read it again.
+
+    `SourceRef` records that a page was seen — which query found it, which tool, what date
+    it carried. This records what it *said*. The two are written side by side by the same
+    tools and neither repeats the other: a check reads the reference, an agent reads the
+    document, and provenance is asked of the reference.
+    """
+
+    url: str
+    title: str = ""
+    body: str = ""
+    """The page text as the tool received it. Already truncated by the tool that fetched
+    it, so nothing here re-truncates."""
+
+
+class ResearchHit(BaseModel):
+    """One document the research store returned, with its BM25 rank."""
+
+    rank: int
+    score: float
+    url: str
+    title: str
+    content: str
+
+
 # ---------- DB record types ----------
 
 
@@ -760,6 +786,11 @@ class ForecastRecord(BaseModel):
     decompositions: list[SubPrediction]
     research: ResearchSummary
     updates: list[ForecastUpdateRecord]
+    research_id: Optional[str] = None
+    """The research store the original run built, if it kept one.
+
+    What makes a refresh able to re-read what the forecast was built on. None for a
+    forecast saved before the store existed, or by a run that kept none."""
     created_at: datetime
 
 

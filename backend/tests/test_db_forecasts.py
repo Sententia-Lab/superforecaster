@@ -6,9 +6,10 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app import db
+from app import db, research
 from superforecaster.models import (
     Forecast,
+    ResearchDoc,
     HistoricalAnalog,
     ResearchSummary,
     SubPrediction,
@@ -250,3 +251,52 @@ def test_active_forecast_ids_excludes_resolved_and_ambiguous():
 
     active_ids = set(db.list_active_forecast_ids())
     assert active_ids == {f1_id}
+
+
+# ---------- deleting ----------
+
+
+def test_delete_forecast_removes_its_research():
+    """The store is reachable only through the forecast, so it goes with it."""
+    rid = "run-1"
+    research.index_documents(
+        rid,
+        [ResearchDoc(url="https://a", title="A", body="alpha")],
+    )
+    fid = db.save_forecast(_make_forecast(), resolution_source="x", research_id=rid)
+
+    db.delete_forecast(fid)
+
+    assert db.get_forecast(fid) is None
+    assert research.search_research(rid, "alpha") == []
+
+
+def test_delete_forecast_takes_its_updates():
+    fid = db.save_forecast(_make_forecast(), resolution_source="x")
+    db.add_forecast_update(fid, probability=0.6, reasoning="moved")
+
+    db.delete_forecast(fid)
+
+    with db.connect() as c:
+        n = c.execute(
+            "SELECT count(*) FROM forecast_updates WHERE forecast_id = ?", (fid,)
+        ).fetchone()[0]
+    assert n == 0
+
+
+def test_delete_forecast_keeps_the_run_that_made_it():
+    """The mirror of `delete_gated_run`, which deliberately leaves the forecast alive."""
+    run = db.create_gated_run(question="Q?")
+    fid = db.save_forecast(_make_forecast(), resolution_source="x")
+    db.complete_gated_run(run["id"], fid)
+
+    db.delete_forecast(fid)
+
+    kept = db.get_gated_run(run["id"])
+    assert kept is not None
+    assert kept["forecast_id"] is None
+
+
+def test_delete_forecast_that_is_not_there():
+    with pytest.raises(db.NotFoundError):
+        db.delete_forecast("nope")

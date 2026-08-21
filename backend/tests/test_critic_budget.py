@@ -45,14 +45,18 @@ def _capture(monkeypatch) -> dict:
 # ---------- the budget ----------
 
 
-def test_the_critic_gets_three_searches_total():
+def test_the_critic_gets_four_tool_calls_total():
     """A resolvability review is one or two lookups — checking that a source it is about
     to name exists. Anything past that is the critic drifting into forecasting the
-    question, which its own prompt forbids and its budget should not fund."""
+    question, which its own prompt forbids and its budget should not fund.
+
+    Four rather than three because `search_research` is one of the tools now, and reading
+    what the run already found should not cost the critic a lookup it would have spent.
+    """
     b = config.get_budget("critic")
 
-    assert b.tool_calls == 3
-    assert b.iterations == 6
+    assert b.tool_calls == 4
+    assert b.iterations == 7
 
 
 async def test_the_critic_runs_on_its_own_budget_not_a_shared_default(monkeypatch):
@@ -60,7 +64,7 @@ async def test_the_critic_runs_on_its_own_budget_not_a_shared_default(monkeypatc
     await critic.run_critique("Will X happen?", "X is significant.")
 
     assert seen["budget"].name == "critic"
-    assert seen["budget"].tool_calls == 3
+    assert seen["budget"].tool_calls == 4
 
 
 # ---------- the wall ----------

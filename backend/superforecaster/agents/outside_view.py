@@ -39,6 +39,7 @@ from ..tools import (
     crawl_site,
     extract_pages,
     map_site,
+    search_research,
     search_web,
     search_wikipedia,
 )
@@ -60,6 +61,7 @@ You'll be given a question asking for the rate of occurrence of an event, and a 
 - COUNTED data is raw data pulled from an index, table, survey or "list of" article. Take every relevant case from that page and record it.
 
 ## Search in this order:
+  0. Read what this run has already found: `search_research`. It costs a tool call like any other, and it is the cheapest one you have — the pages are already fetched. Take what answers the question and go no further.
   1. Find a published statistic for this population. One search — the cheapest full answer.
   2. If (1) fails, find a page listing many cases at once: an index, table, survey, or "list of" article.
      One or two searches. Take every case from that one page.
@@ -71,7 +73,7 @@ You'll be given a question asking for the rate of occurrence of an event, and a 
 3. Stop at whichever comes first:
   - you hold a published block, or a counted block with 3 or more named cases;
   - two searches in a row return nothing new;
-  - two searches remain.
+  - two tool calls remain.
 
 ## WHEN YOU CANNOT MEASURE THIS POPULATION
 Say so. Return whatever you found, graded `low`, and name the problem in `disagreement`.
@@ -92,8 +94,8 @@ Say in `note` what makes it that grade.
 
 A counted block must name every case in `analogs`, because a check compares that list against `n` and `hits`. Three cases you can name beat ten you cannot.
 
-Your searches run out. When they do the search tools are withdrawn, and whatever you hold
-at that moment becomes the answer — so land deliberately rather than being cut off.
+Your tool calls run out. When they do the search tools are withdrawn, and whatever you
+hold at that moment becomes the answer — so land deliberately rather than being cut off.
 """
 
 
@@ -108,7 +110,14 @@ def build_base_rate_cell_agent(
         deps_type=ForecastDeps,
         output_type=SubQuestionBaseRates,
         system_prompt=INSTRUCTIONS,
-        tools=[search_web, extract_pages, crawl_site, map_site, search_wikipedia],
+        tools=[
+            search_research,
+            search_web,
+            extract_pages,
+            crawl_site,
+            map_site,
+            search_wikipedia,
+        ],
         capabilities=[Hooks(prepare_tools=withdraw_tools)],
         retries=1,
     )

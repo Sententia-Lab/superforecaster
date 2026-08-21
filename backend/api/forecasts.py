@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from app import db
+from app import db, research
 from app.update import run_update_graph
 from superforecaster.stages import run_all
 from superforecaster.models import (
@@ -28,18 +28,21 @@ async def create_forecast(body: CreateForecastRequest) -> ForecastRecord:
     twin of `superforecaster forecast` for scripted use. Runs live: no `forecast_date` or
     `model` clamp — those exist for backtesting.
     """
+    store = research.new_store()
     forecast, _violations = await run_all(
         ForecastInput(
             question=body.question,
             resolution_criteria=body.resolution_criteria,
             resolution_date=body.resolution_date,
             category=body.category,
-        )
+        ),
+        store=store,
     )
     fid = db.save_forecast(
         forecast,
         resolution_source=body.resolution_source,
         submission_gap_days=body.submission_gap_days,
+        research_id=store.research_id,
     )
     record = db.get_forecast(fid)
     assert record is not None
@@ -53,6 +56,19 @@ def list_forecasts(
     offset: int = 0,
 ) -> list[ForecastRecord]:
     return db.list_forecasts(status=status_filter, limit=limit, offset=offset)
+
+
+@router.delete("/{forecast_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_forecast(forecast_id: str) -> None:
+    """Remove a forecast, its updates, and the research store the run built for it.
+
+    A gated run that produced this forecast survives with its `forecast_id` cleared —
+    the mirror of `DELETE /runs/{id}`, which leaves the forecast alive.
+    """
+    try:
+        db.delete_forecast(forecast_id)
+    except db.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.get("/{forecast_id}")

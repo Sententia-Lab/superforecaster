@@ -14,20 +14,22 @@ Deliberately not here:
 - **Why it is shaped this way** — `spec/ADR.md`.
 - **The 16 principles** (`P<n>` below) — `spec/superforecasting_methodology.md`.
 
-Last regenerated: 2026-08-17.
+Last regenerated: 2026-08-20.
 
 ---
 
 ## Storage map
 
-Everything persists in four SQLite tables (`backend/app/db.py`, `SCHEMA_VERSION = 4`).
+Everything persists in six SQLite tables (`backend/app/db.py`, `SCHEMA_VERSION = 5`).
 
 | Table | One row means | Written by |
 |---|---|---|
 | `gated_runs` | one forecast question + its lifecycle | `create/update/start/complete/delete_gated_run` |
 | `run_steps` | one stage cell (`UNIQUE(run_id, stage, sub_question_id, lens_name)`) | `insert/claim/finish/fail/delete_steps`, `edit_step_payload` |
-| `forecasts` | a *published* forecast, written only at synthesis | `save_forecast`, `resolve_forecast`, `mark_refreshed` |
+| `forecasts` | a *published* forecast, written only at synthesis | `save_forecast`, `resolve_forecast`, `mark_refreshed`, `complete_gated_run` |
 | `forecast_updates` | probability history for one forecast | `save_forecast`, `add_forecast_update` |
+| `research_docs` | one page a run read (`PRIMARY KEY (research_id, url)`) | `research.index_documents`, `research.delete_research` |
+| `research_index` | the FTS5 index over `research_docs` | three triggers; never written directly |
 
 Run status: `backlog → active → complete`. Step status: `pending → running → complete|error`.
 `gated_runs.error` mirrors the latest failing step — a red chip, not a status.
@@ -37,11 +39,17 @@ Run status: `backlog → active → complete`. Step status: `pending → running
 Two lifecycles meet at exactly one point: a gated run produces a `forecasts` row at synthesis,
 and from then on the forecast lives independently (delete the run, the forecast survives).
 
+`research_id` is a third key, and it is not a foreign key to either. A run mints one in
+`start_gated_run`; the tools write pages under it while the run is in flight, which is before
+any `forecasts` row exists. `complete_gated_run` copies it onto the forecast, and from then on
+the forecast owns the store — `delete_forecast` removes both, `delete_gated_run` removes
+neither.
+
 ---
 
 ## Endpoint index
 
-All 22 routes, each traced in the section named.
+All 23 routes, each traced in the section named.
 
 | Method + path | Traced in |
 |---|---|
@@ -60,6 +68,7 @@ All 22 routes, each traced in the section named.
 | `POST /forecasts` | §6 Ungated pipeline |
 | `GET /forecasts` | §7 Forecast reads |
 | `GET /forecasts/{id}` | §7 Forecast reads |
+| `DELETE /forecasts/{id}` | §7b Deleting a forecast |
 | `POST /forecasts/{id}/updates` | §8 Update, resolve, refresh |
 | `PATCH /forecasts/{id}/resolve` | §8 Update, resolve, refresh |
 | `POST /forecasts/{id}/refresh` | §8 Update, resolve, refresh |
@@ -525,11 +534,14 @@ The API twin of `superforecaster forecast`. Not called by the React app.
 
 ```
 POST /forecasts {question, criteria, date, category, resolution_source, submission_gap_days}
-  └─ stages.run_all(ForecastInput)          ← blocking, minutes, all 5 stages back-to-back
+  └─ research.new_store()                   ► SqliteResearchStore(research_id=uuid4())
+  └─ stages.run_all(ForecastInput, store=)  ← blocking, minutes, all 5 stages back-to-back
        decompose → lenses → base_rates → inside_view → synthesis
        per-stage fan-out = asyncio.gather(return_exceptions=True)  ← a failed cell degrades
+       every search_web/extract_pages call also writes: research_docs
      ► (forecast, violations)
-  └─ db.save_forecast   INSERT forecasts + INSERT forecast_updates (the initial probability)
+  └─ db.save_forecast(research_id=store.research_id)
+                        INSERT forecasts + INSERT forecast_updates (the initial probability)
   └─ db.get_forecast    ◄── ForecastRecord
 ```
 
@@ -550,6 +562,27 @@ Pure SELECTs against the published table. Not called by the React app.
 | `GET /forecasts/{id}` | `db.get_forecast` → `ForecastRecord`, or 404 |
 
 Writes: **none.**
+
+---
+
+## 7b. Deleting a forecast — `DELETE /forecasts/{id}`
+
+Not called by the React app. The CLI's twin of `DELETE /runs/{id}`, and its mirror image:
+that one keeps the forecast, this one keeps the run.
+
+```
+DELETE /forecasts/{id}
+  └─ db.delete_forecast(forecast_id)                      ← one transaction
+       SELECT research_id FROM forecasts WHERE id = ?     ← 404 if absent
+       research.delete_research(research_id, conn)        [deletes: research_docs]
+                                                          [research_index follows by trigger]
+       DELETE FROM forecasts WHERE id = ?                 [cascades: forecast_updates]
+                                                          [gated_runs.forecast_id → NULL]
+  ► 204
+```
+
+One transaction because a store that outlives its forecast is unreachable — nothing else
+knows its `research_id` — and a forecast that outlives its store has lost its evidence.
 
 ---
 
@@ -649,16 +682,17 @@ scheduler, and no side effects on import.
 | `models.py` | every Pydantic model |
 | `checks.py` | the 16 principles as pure functions; `lens_rate`, `anchor_from`, `implied_probability`, `combine_sub_question_rates`, `run_forecast_checks`, `blocking` |
 | `scoring.py` | `time_weighted_probability`, `brier_score`, `calibration` — pure |
-| `deps.py` | `ForecastDeps` — the `as_of`/`model` clamps, the column tag, the run's `Budget`, `sources_seen`, the `emit` sink |
+| `deps.py` | `ForecastDeps` — the `as_of`/`model` clamps, the column tag, the run's `Budget`, `sources_seen`, the `emit` sink, the `store`; and `ResearchStore`, the protocol `app` implements |
 | `events.py` | `Query`, `Source`, `Thought`, `Exhausted`, and the `Sink` type `deps.emit` takes |
 | `runner.py` | `run_agent` — attaches the budget, applies the deadline, opens the span, translates timeouts. Emits Logfire spans; never configures Logfire |
-| `tools/` | the tools an agent may call, one module per upstream. `__init__.py` re-exports all six so a caller writes `from ..tools import search_web` |
-| `tools/tavily_tools.py` | `search_web`, `extract_pages`, `crawl_site`, `map_site`, `find_disconfirming_evidence` — one per `AsyncTavilyClient` method; `_search_kwargs` and `_drop_leaked` are the `as_of` clamp |
+| `tools/` | the tools an agent may call, one module per upstream. `__init__.py` re-exports all seven so a caller writes `from ..tools import search_web` |
+| `tools/tavily_tools.py` | `search_web`, `extract_pages`, `crawl_site`, `map_site`, `find_disconfirming_evidence` — one per `AsyncTavilyClient` method; `_remember` keeps the page text in the run's store |
+| `tools/research_store_tools.py` | `search_research` — reads back the pages this run already fetched, through `ctx.deps.store` |
 | `tools/wikipedia_tools.py` | `search_wikipedia`, and the revision-as-of request builders |
 | `tools/dates.py` | `_as_utc`, `_parse_published` — timestamp parsing both upstreams need |
 | `errors.py` | `AgentTimeout`, `StageTimeout` |
 | `model_garden.py` | model registry with published training cutoffs (backtest clamp). Reads its bundled JSON; never writes it |
-| `agents/` | eleven agents, one module each: `decompose`, `lenses`, `outside_view`, `inside_view`, `reflect`, `synthesize`, `critic`, `draft`, `resolution`, `update`, `postmortem`. `__init__.py` holds `attach_budget` — the per-iteration budget instruction, in three bands so the order to stop arrives while a search is still legal (ADR 68) — `withdraw_tools`, which stops offering a tool the agent cannot spend a call on — the Tavily tools when there is no `TAVILY_API_KEY`, everything once the budget is spent (ADR 69), plus `SEARCH_RESERVE` and `spent_usd` |
+| `agents/` | eleven agents, one module each: `decompose`, `lenses`, `outside_view`, `inside_view`, `reflect`, `synthesize`, `critic`, `draft`, `resolution`, `update`, `postmortem`. `__init__.py` holds `attach_budget` — the per-iteration budget instruction, in three bands so the order to stop arrives while a search is still legal (ADR 68) — `withdraw_tools`, which stops offering a tool the agent cannot spend a call on — the Tavily tools when there is no `TAVILY_API_KEY`, `search_research` while the store is empty, everything once the budget is spent (ADR 69), plus `CALL_RESERVE` and `spent_usd` |
 
 **Backend — `backend/app/`** — everything that runs it.
 
@@ -666,6 +700,7 @@ scheduler, and no side effects on import.
 |---|---|
 | `config.py` | `load_env`, `ENV_FILE`, `AppSettings`/`get_app_settings` (database path, cron schedule, frontend dir), `set_runtime_key`, `origin`, `RUNTIME_KEYS` |
 | `db.py` | SQLite (WAL, FKs, migrations). Forecast fns + gated-run fns + `NotFoundError`/`StateError` |
+| `research.py` | the research store: `index_documents`, `search_research`, `has_documents`, `delete_research`, `_match_expression`, and `SqliteResearchStore`/`new_store` — the `ResearchStore` the library takes |
 | `machine.py` | gated-run state machine: `start_run`, `expected_steps`, `reconcile`, `gate_offender`, `execute_step`, `edit_blocker`, `edit_payload`, `detail`, `busy`, `DERIVED`, `REQUIRED_FIELDS`, `GateError`, `BusyError` |
 | `update.py` | `run_update_graph` — loads the record, runs the core cycle, writes the result |
 | `cron.py` | `run_daily_refresh`, APScheduler wiring |
@@ -731,6 +766,13 @@ scheduler, and no side effects on import.
 - **The Keys panel** — the LLM, Tavily and Wikipedia keys, settable from the header.
   Server-held keys apply on the next request and are dropped on restart; no route ever
   returns a key value (§0b, ADR 61).
+- **A research store per run** — every page `search_web` and `extract_pages` fetch is kept
+  whole, and `search_research` reads it back ranked by BM25 (SQLite FTS5). Every agent that
+  can call a tool has it; `reflect`, `synthesize`, and `draft` do not, because their
+  `tool_calls` is 0. `update`, `resolution`, and `postmortem` reach the store months later
+  through `ForecastRecord.research_id`, so a refresh reads what the forecast was built on.
+  It is scoped to one run, offered only once it holds something, and deleted with the
+  forecast it belongs to (§7b).
 - The CLI pipeline (`forecast`) and component evals through the same `stages` functions.
 - Daily refresh cron + manual refresh through the update cycle; resolution + scoring +
   calibration report.

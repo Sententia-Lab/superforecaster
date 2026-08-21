@@ -23,6 +23,7 @@ from ..tools import (
     crawl_site,
     extract_pages,
     map_site,
+    search_research,
     search_web,
     search_wikipedia,
 )
@@ -50,11 +51,13 @@ A wrong "appears_resolved=false" is low-cost: it gets re-checked tomorrow.
 
 PROCESS
 1. Read resolution_criteria carefully.
-2. Search for direct evidence the criteria has been met, or definitively cannot be
+2. Call `search_research` first — the pages this forecast was built on may already name
+   the source the criteria point at, and reading one costs no network call.
+3. Search for direct evidence the criteria has been met, or definitively cannot be
    met before the resolution_date.
-3. If found, set appears_resolved=true with suggested_outcome, confidence, and
+4. If found, set appears_resolved=true with suggested_outcome, confidence, and
    resolution_evidence.
-4. Otherwise set appears_resolved=false and explain what you searched for and what
+5. Otherwise set appears_resolved=false and explain what you searched for and what
    you did and did not find.
 """
 
@@ -69,7 +72,14 @@ def build_resolution_agent(
         deps_type=ForecastDeps,
         output_type=ResolutionCheckResult,
         system_prompt=INSTRUCTIONS,
-        tools=[search_web, extract_pages, crawl_site, map_site, search_wikipedia],
+        tools=[
+            search_research,
+            search_web,
+            extract_pages,
+            crawl_site,
+            map_site,
+            search_wikipedia,
+        ],
         capabilities=[Hooks(prepare_tools=withdraw_tools)],
         retries=1,
     )
