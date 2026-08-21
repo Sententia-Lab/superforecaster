@@ -21,7 +21,6 @@ from superforecaster.models import (
     UpdateOutcome,
     Forecast,
     HistoricalAnalog,
-    RefreshActionResponse,
     ResearchSummary,
     SubPrediction,
 )

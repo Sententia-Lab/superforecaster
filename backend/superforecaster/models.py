@@ -37,13 +37,6 @@ to exist and was removed: it was self-reported, nothing verified it, and
 than by finding better evidence.
 """
 
-Confidence = Literal["low", "medium", "high"]
-"""The resolution checker's certainty that a question *has resolved*.
-
-A different axis from `SourceConfidence` — it grades an observation about the world,
-not the support behind a claim. Kept separate so the two cannot drift into each other.
-"""
-
 Knowability = Literal["researchable", "judgment"]
 Direction = Literal["up", "down", "neutral"]
 BiasName = Literal[
@@ -646,7 +639,7 @@ class ResolutionCheckResult(BaseModel):
 
     appears_resolved: bool
     suggested_outcome: Optional[float] = Field(default=None, description="0.0 or 1.0")
-    confidence: Confidence
+    confidence: SourceConfidence
     resolution_evidence: Optional[str] = None
     reasoning: str
 
@@ -1054,111 +1047,3 @@ class ModelEntry(BaseModel):
         default=False, description="Set by `models probe`, not hand-edited"
     )
     notes: str = ""
-
-
-# ---------- Evals ----------
-
-
-class GoldenQuestion(BaseModel):
-    """One row of evals/golden_questions.json."""
-
-    id: str
-    question: str
-    resolution_criteria: str
-    asked_at: datetime = Field(
-        description="Both clamps key off this: tools see nothing published later, "
-        "and the model must have a training cutoff earlier than it"
-    )
-    resolution_date: datetime
-    outcome: float = Field(ge=0.0, le=1.0, description="0.0 or 1.0")
-    category: str
-    baseline_prior: float = Field(
-        ge=0.0, le=1.0, description="Human or crowd estimate — the number to beat"
-    )
-    contamination_risk: int = Field(
-        ge=1, le=3, description="1 = obscure, 3 = certainly in training data"
-    )
-
-
-class QuestionScore(BaseModel):
-    """One golden question's result in a backtest."""
-
-    id: str
-    forecast_probability: Optional[float] = None
-    outcome: float
-    brier: Optional[float] = None
-    baseline_brier: Optional[float] = None
-    violations: list[CheckViolation] = Field(default_factory=list)
-    model_used: str = ""
-    model_cutoff: Optional[date] = Field(
-        default=None, description="Proof the run was clean"
-    )
-    leaked_sources: list[SourceRef] = Field(default_factory=list)
-    error: Optional[str] = None
-    skipped: Optional[str] = Field(
-        default=None,
-        description="e.g. 'no available model with a cutoff before 2020-11-04'",
-    )
-
-    @property
-    def was_scored(self) -> bool:
-        return self.brier is not None
-
-
-class Scorecard(BaseModel):
-    """Output of `superforecaster test e2e`."""
-
-    mode: Literal["clean", "production"]
-    n: int = 0
-    n_scored: int = 0
-    n_skipped_no_clean_model: int = 0
-    n_error: int = 0
-    clean_coverage: float = 0.0
-    mean_brier: Optional[float] = None
-    baseline_mean_brier: Optional[float] = None
-    brier_by_contamination_tier: dict[int, float] = Field(default_factory=dict)
-    count_by_contamination_tier: dict[int, int] = Field(default_factory=dict)
-    calibration_buckets: list[CalibrationBucket] = Field(default_factory=list)
-    process_score: float = 0.0
-    round_number_rate: float = 0.0
-    leaked_source_count: int = 0
-    models_used: dict[str, int] = Field(default_factory=dict)
-    violations_by_principle: dict[int, int] = Field(default_factory=dict)
-    scores: list[QuestionScore] = Field(default_factory=list)
-
-
-class ComponentCase(BaseModel):
-    """One row of evals/components/<agent>.json.
-
-    `expect` is agent-specific — each scorer in `evals.components.SCORERS` knows how
-    to read its own agent's keys — so it stays an untyped dict on purpose.
-    """
-
-    id: str
-    agent: str
-    input: dict[str, Any]
-    expect: dict[str, Any] = Field(default_factory=dict)
-    forecast_date: Optional[datetime] = None
-
-
-class ComponentScore(BaseModel):
-    """One component case's result."""
-
-    case_id: str
-    passed: bool = False
-    assertions: dict[str, bool] = Field(
-        default_factory=dict, description="Named assertion -> pass/fail"
-    )
-    detail: str = ""
-    error: Optional[str] = None
-    skipped: Optional[str] = None
-
-
-class ComponentReport(BaseModel):
-    """Output of `superforecaster test component <name>`."""
-
-    agent: str
-    n: int = 0
-    pass_rate: float = 0.0
-    assertion_pass_rates: dict[str, float] = Field(default_factory=dict)
-    scores: list[ComponentScore] = Field(default_factory=list)

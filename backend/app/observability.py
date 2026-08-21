@@ -20,8 +20,6 @@ from superforecaster.config import get_settings
 
 _logfire_configured = False
 _warned_invalid_logfire_token = False
-_cloud_tracing_active = False
-_console_active = False
 
 
 def _looks_like_logfire_write_token(token: str) -> bool:
@@ -31,14 +29,6 @@ def _looks_like_logfire_write_token(token: str) -> bool:
 def logfire_tracing_enabled() -> bool:
     token = (get_settings().logfire_token or "").strip()
     return _looks_like_logfire_write_token(token)
-
-
-def cloud_tracing_active() -> bool:
-    return _cloud_tracing_active
-
-
-def console_active() -> bool:
-    return _console_active
 
 
 def _logfire_base_url(token: str) -> str:
@@ -65,7 +55,7 @@ def configure_logfire(*, verbose: bool = False) -> None:
     The console is switched on whenever cloud tracing is off, so a run always reports
     itself somewhere. `verbose` turns it on as well even when traces are being sent.
     """
-    global _logfire_configured, _warned_invalid_logfire_token, _cloud_tracing_active, _console_active
+    global _logfire_configured, _warned_invalid_logfire_token
     if _logfire_configured:
         return
 
@@ -107,6 +97,4 @@ def configure_logfire(*, verbose: bool = False) -> None:
     # and the agentic evaluators read both shapes.
     logfire.instrument_pydantic_ai(include_content=True, version=5)
 
-    _cloud_tracing_active = tracing
-    _console_active = bool(kwargs["console"])
     _logfire_configured = True

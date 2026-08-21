@@ -44,7 +44,6 @@ from superforecaster.models import (
     SubPrediction,
 )
 from superforecaster import model_garden
-from .evals import components as component_evals
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -409,32 +408,6 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
-# ---------- test subcommand ----------
-
-
-async def _cmd_test(args: argparse.Namespace) -> int:
-    """Component tests. The end-to-end backtest lives in spec4.md and is not built."""
-    if args.suite != "component":
-        print(
-            "Only `test component` exists today. The end-to-end backtest over resolved\n"
-            "questions is specified in spec/change_specs/spec4.md and is deferred until\n"
-            "a corpus of recently-resolved questions is chosen.",
-            file=sys.stderr,
-        )
-        return 2
-
-    agents = component_evals.AGENTS if args.agent in (None, "all") else (args.agent,)
-    unknown = [a for a in agents if a not in component_evals.SCORERS]
-    if unknown:
-        print(f"unknown agent(s): {', '.join(unknown)}", file=sys.stderr)
-        return 2
-
-    for agent in agents:
-        report = await component_evals.run_component(agent, mode=args.mode)
-        print(component_evals.render_report(report))
-    return 0
-
-
 # ---------- arg parser ----------
 
 
@@ -560,23 +533,6 @@ def diagram(
     if graph not in ("forecast", "update"):
         raise typer.BadParameter("graph must be forecast or update")
     _run(_cmd_diagram, graph=graph, verbose=verbose)
-
-
-@app.command()
-def test(
-    suite: str = typer.Argument("component", help="component | e2e"),
-    agent: str = typer.Argument("all", help="Agent name, or 'all'"),
-    mode: str = typer.Option(
-        "clean", help="clean picks a model trained before the case"
-    ),
-    verbose: bool = VERBOSE,
-) -> None:
-    """Run the component eval harness."""
-    if suite not in ("component", "e2e"):
-        raise typer.BadParameter("suite must be component or e2e")
-    if mode not in ("clean", "production"):
-        raise typer.BadParameter("mode must be clean or production")
-    _run(_cmd_test, suite=suite, agent=agent, mode=mode, verbose=verbose)
 
 
 @app.command()

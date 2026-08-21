@@ -36,7 +36,6 @@ from tavily import AsyncTavilyClient
 from ..config import get_settings
 from ..deps import ForecastDeps
 from ..models import ResearchDoc, SourceRef
-from .dates import _as_utc, _parse_published
 
 MAX_RESULTS = 5
 MAX_CHUNKS_PER_SOURCE = 3

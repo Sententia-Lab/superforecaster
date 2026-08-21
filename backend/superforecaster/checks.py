@@ -37,7 +37,6 @@ from .models import (
     InsideView,
     OutsideView,
     ResearchedLens,
-    SourceConfidence,
     SourceRef,
     UpdateDecision,
 )
@@ -102,24 +101,6 @@ def implied_probability(
     if combined is None:
         return _clamp(o.aggregate_base_rate + whole_question)
     return _clamp(combined + whole_question)
-
-
-def base_rate_spread(o: OutsideView) -> float:
-    """How far apart the reference classes are: max minus min.
-
-    A range, not a variance — the thresholds it is compared against are calibrated to
-    one, and two classes 0.20 apart have a variance of 0.01, an order of magnitude
-    smaller. Renaming this without recomputing would change nothing; recomputing it
-    without retuning `reference_class_disagreement` would quietly break P7.
-
-    Public because the UI reports it as a statistic in its own right, and re-deriving it
-    there would let the number shown and the number checked drift apart.
-
-    Whole-view, so it is only meaningful when every class measures the same thing. Once
-    research fans out per sub-question that stops being true — use `sub_question_spreads`.
-    """
-    rates = [lens_rate(l) for l in o.lenses]
-    return max(rates) - min(rates) if rates else 0.0
 
 
 def sub_question_spreads(o: OutsideView) -> dict[str | None, float]:
@@ -232,26 +213,6 @@ def chain_inputs(
     return rows
 
 
-_CONFIDENCE_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
-_RANK_CONFIDENCE: tuple[SourceConfidence, ...] = ("low", "medium", "high")
-
-
-def claim_support(sources: list[GradedSource]) -> SourceConfidence:
-    """How well one claim is supported: its strongest source.
-
-    Max rather than mean. A claim backed by a solid dataset *and* a blog post is not
-    worse supported than one backed by the dataset alone — averaging would penalise
-    citing extra corroboration, which teaches the agent to cite less. Overstating is
-    caught by `check_citations`, not by arithmetic here.
-
-    No sources at all grades `low` rather than raising: an adjustment can legitimately
-    be a judgment call, and recording that honestly is more useful than forbidding it.
-    """
-    if not sources:
-        return "low"
-    return _RANK_CONFIDENCE[max(_CONFIDENCE_RANK[s.confidence] for s in sources)]
-
-
 def _weighted_mean(pairs: list[tuple[float, float]]) -> float | None:
     """Weighted mean, or None when nothing carries weight.
 
@@ -263,50 +224,6 @@ def _weighted_mean(pairs: list[tuple[float, float]]) -> float | None:
     if total <= _EPSILON:
         return None
     return sum(w * v for w, v in pairs) / total
-
-
-def _weighted_support(pairs: list[tuple[float, SourceConfidence]]) -> float | None:
-    """Weighted mean rank over (weight, grade)."""
-    return _weighted_mean([(w, _CONFIDENCE_RANK[c]) for w, c in pairs])
-
-
-def aggregate_source_confidence(
-    o: OutsideView, i: InsideView, t: CheckThresholds | None = None
-) -> SourceConfidence:
-    """The forecast's overall evidential support — derived, never self-reported.
-
-    Two levels. Within a claim, `claim_support` takes the strongest source. Across
-    claims, a weighted mean: reference classes by `weight` (fit, not sample size), and
-    adjustments by `magnitude`, since evidence that barely moves the number should not
-    drive the grade. Noise is skipped for the same reason `signed_adjustment` zeroes it.
-
-    The two views are normalised separately and then averaged, rather than pooled — a
-    class `weight` and an adjustment `magnitude` are different units, and pooling them
-    would silently let the outside view dominate as an artefact of scale rather than a
-    decision anyone made.
-    """
-    th = _thresholds(t)
-    outside = _weighted_support(
-        [(l.weight, claim_support(lens_sources(l))) for l in o.lenses]
-    )
-    inside = _weighted_support(
-        [
-            (abs(a.magnitude), claim_support(a.sources))
-            for a in i.adjustments
-            if not a.is_noise
-        ]
-    )
-
-    scores = [s for s in (outside, inside) if s is not None]
-    if not scores:
-        return "low"
-
-    mean = sum(scores) / len(scores)
-    if mean >= th.support_high:
-        return "high"
-    if mean >= th.support_medium:
-        return "medium"
-    return "low"
 
 
 # ---------- Decomposition ----------
@@ -1002,53 +919,18 @@ def is_large_move(d: UpdateDecision, t: CheckThresholds | None = None) -> bool:
 # ---------- Suites ----------
 
 
-FORECAST_CHECKS: tuple[tuple[str, int, str, Any], ...] = (
-    (
-        "decomposition",
-        1,
-        "P1 · P2 decomposition",
-        lambda c: check_decomposition(c.d, c.t),
-    ),
-    (
-        "linkage",
-        1,
-        "P1 sub-question linkage",
-        lambda c: check_linkage(c.f, c.d, c.o, c.i, c.t),
-    ),
-    (
-        "base_rates",
-        4,
-        "P4 base rates derived",
-        lambda c: check_base_rate_derivation(c.o),
-    ),
-    ("dragonfly", 7, "P7 dragonfly", lambda c: check_dragonfly(c.o, c.t)),
-    (
-        "aggregation",
-        7,
-        "P7 base-rate aggregation",
-        lambda c: check_aggregation(c.o, c.d, c.t),
-    ),
-    ("citations", 4, "P4 citations", lambda c: check_citations(c.o, c.i, c.seen)),
-    (
-        "signal_vs_noise",
-        9,
-        "P9 signal vs noise",
-        lambda c: check_signal_vs_noise(c.i, c.t),
-    ),
-    ("disconfirming", 14, "P14 disconfirming", lambda c: check_disconfirming(c.i, c.t)),
-    ("bias_coverage", 15, "P15 bias coverage", lambda c: check_bias_coverage(c.i, c.t)),
-    (
-        "derivation",
-        6,
-        "P6 derivation",
-        lambda c: check_derivation(c.f, c.o, c.i, c.d, c.t),
-    ),
-    (
-        "calibration_hygiene",
-        16,
-        "P16 calibration hygiene",
-        lambda c: check_calibration_hygiene(c.f, c.o, c.t),
-    ),
+FORECAST_CHECKS: tuple[tuple[str, Any], ...] = (
+    ("decomposition", lambda c: check_decomposition(c.d, c.t)),
+    ("linkage", lambda c: check_linkage(c.f, c.d, c.o, c.i, c.t)),
+    ("base_rates", lambda c: check_base_rate_derivation(c.o)),
+    ("dragonfly", lambda c: check_dragonfly(c.o, c.t)),
+    ("aggregation", lambda c: check_aggregation(c.o, c.d, c.t)),
+    ("citations", lambda c: check_citations(c.o, c.i, c.seen)),
+    ("signal_vs_noise", lambda c: check_signal_vs_noise(c.i, c.t)),
+    ("disconfirming", lambda c: check_disconfirming(c.i, c.t)),
+    ("bias_coverage", lambda c: check_bias_coverage(c.i, c.t)),
+    ("derivation", lambda c: check_derivation(c.f, c.o, c.i, c.d, c.t)),
+    ("calibration_hygiene", lambda c: check_calibration_hygiene(c.f, c.o, c.t)),
 )
 """(slot name, principle, label, how to run it) in the order the checks run.
 
@@ -1094,7 +976,7 @@ def run_forecast_checks(
     lives on `ForecastDeps`, which this module also must not import.
     """
     ctx = _Ctx(forecast, decomposition, outside, inside, list(sources_seen), t)
-    return [v for _n, _p, _l, run in FORECAST_CHECKS if (v := run(ctx)) is not None]
+    return [v for _name, run in FORECAST_CHECKS if (v := run(ctx)) is not None]
 
 
 def run_update_checks(

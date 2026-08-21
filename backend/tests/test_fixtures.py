@@ -7,7 +7,6 @@ matches what the CLI's `--fixture` paths expect.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -23,11 +22,6 @@ def forecast_question_data(fixtures_dir):
 @pytest.fixture
 def existing_forecast_data(fixtures_dir):
     return json.loads((fixtures_dir / "existing_forecast.json").read_text())
-
-
-@pytest.fixture
-def likely_resolved_data(fixtures_dir):
-    return json.loads((fixtures_dir / "likely_resolved_forecast.json").read_text())
 
 
 def test_forecast_question_fixture_parses_into_forecast_input(forecast_question_data):
@@ -55,14 +49,3 @@ def test_existing_forecast_fixture_builds_a_record(existing_forecast_data):
     assert record.updates[1].probability == 0.64
     assert record.research.empirical_base_rate is not None
     assert len(record.research.historical_analogs) >= 3
-
-
-def test_likely_resolved_fixture_builds_a_record(likely_resolved_data):
-    record = _record_from_fixture(likely_resolved_data)
-    assert record.id == "fixture-forecast-002"
-    assert "Musk" in record.question or "DOGE" in record.question
-    # Resolution criteria are specific enough to test against
-    assert (
-        "DOGE" in record.resolution_criteria
-        or "leadership" in record.resolution_criteria
-    )

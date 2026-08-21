@@ -46,7 +46,6 @@ from .config import get_app_settings
 from superforecaster import scoring
 from superforecaster.stages import STAGE_ORDER
 from superforecaster.models import (
-    CalibrationBucket,
     CalibrationReport,
     Forecast,
     ForecastRecord,

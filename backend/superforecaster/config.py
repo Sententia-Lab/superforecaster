@@ -88,11 +88,7 @@ class CheckThresholds:
     large_move: float  # P12 — jump that triggers VerifyLargeMove
     derivation_slack: float  # P6  — stated vs implied probability tolerance
     aggregate_slack: float  # P7  — stated vs weight-implied base rate tolerance
-    round_number_rate: float  # P8  — run-level rounding rate that gets flagged
     min_probability_delta: float  # P10 — below this an update is noise
-    # Cutoffs on the 0..2 mean rank in `checks.aggregate_source_confidence`.
-    support_high: float  # at or above this, evidential support reads "high"
-    support_medium: float  # at or above this, "medium"; below it, "low"
 
 
 def get_settings() -> Settings:
@@ -127,10 +123,7 @@ def get_check_thresholds() -> CheckThresholds:
         large_move=float(os.getenv("CHECK_LARGE_MOVE", "0.75")),
         derivation_slack=float(os.getenv("CHECK_DERIVATION_SLACK", "0.05")),
         aggregate_slack=float(os.getenv("CHECK_AGGREGATE_SLACK", "0.05")),
-        round_number_rate=float(os.getenv("CHECK_ROUND_NUMBER_RATE", "0.40")),
         min_probability_delta=float(os.getenv("MIN_PROBABILITY_DELTA", "0.03")),
-        support_high=float(os.getenv("CHECK_SUPPORT_HIGH", "1.5")),
-        support_medium=float(os.getenv("CHECK_SUPPORT_MEDIUM", "0.5")),
     )
 
 

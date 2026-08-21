@@ -801,7 +801,6 @@ def test_dragonfly_ignores_spread_between_different_columns():
         lenses=[researched("sq1", 0.15), researched("sq4", 0.80)],
         disagreement="",
     )
-    assert checks.base_rate_spread(o) == pytest.approx(0.65)
     assert checks.check_dragonfly(o) is None
 
 
@@ -888,63 +887,6 @@ def test_graded_source_keeps_a_real_url():
         source="x", url="https://example.test/a?b=c", confidence="high", note="n"
     )
     assert s.url == "https://example.test/a?b=c"
-
-
-# ---------- Source confidence ----------
-
-
-def test_claim_support_takes_the_strongest_source():
-    """Max, not mean — citing extra weak corroboration must not downgrade a claim.
-
-    Averaging would teach the agent to cite less, which is the opposite of the point.
-    """
-    assert checks.claim_support([graded(confidence="high")]) == "high"
-    assert (
-        checks.claim_support([graded(confidence="high"), graded(confidence="low")])
-        == "high"
-    )
-
-
-def test_claim_support_with_no_sources_is_low():
-    assert checks.claim_support([]) == "low"
-
-
-def test_aggregate_source_confidence_is_weighted_by_fit_and_magnitude():
-    strong = outside(
-        lenses=[
-            ref("a", 0.20, weight=1.0, sources=[graded(confidence="high")]),
-            ref("b", 0.24, weight=1.0, sources=[graded(confidence="high")]),
-        ]
-    )
-    i = inside(
-        adjustments=[adjustment("up", 0.10, sources=[graded(confidence="high")])]
-    )
-    assert checks.aggregate_source_confidence(strong, i) == "high"
-
-    thin = outside(
-        lenses=[
-            ref("a", 0.20, weight=1.0, sources=[graded(confidence="low")]),
-            ref("b", 0.24, weight=1.0, sources=[graded(confidence="low")]),
-        ]
-    )
-    assert checks.aggregate_source_confidence(thin, i) == "medium"
-
-
-def test_aggregate_source_confidence_skips_noise_adjustments():
-    """Noise contributes zero to the probability, so it must not drag the grade."""
-    o = outside(
-        lenses=[
-            ref("a", 0.20, sources=[graded(confidence="high")]),
-            ref("b", 0.24, sources=[graded(confidence="high")]),
-        ]
-    )
-    noisy = inside(
-        adjustments=[
-            adjustment("up", 0.10, sources=[graded(confidence="high")]),
-            adjustment("up", 0.0, is_noise=True, sources=[]),
-        ]
-    )
-    assert checks.aggregate_source_confidence(o, noisy) == "high"
 
 
 # ---------- P11: Bayesian direction ----------
