@@ -13,7 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 from superforecaster import config
-from superforecaster.agents.draft import build_draft_agent
+from superforecaster.agents import draft
 from superforecaster.models import DraftedQuestion
 
 FIELDS = {
@@ -46,9 +46,10 @@ def test_the_draft_agent_has_no_tools_to_match_its_budget():
     catches nothing, turning a draft into a 500. It names the adjudicator from what it
     knows; the critic is the agent that searches to check the name.
     """
-    agent = build_draft_agent(model="test")
     named = [
-        name for toolset in agent.toolsets for name in getattr(toolset, "tools", {})
+        name
+        for toolset in draft.agent.toolsets
+        for name in getattr(toolset, "tools", {})
     ]
 
     assert config.get_budget("draft").tool_calls == 0

@@ -1,30 +1,4 @@
-"""Grade the path an agent took, not just where it arrived.
-
-Six agents in this repo carry tools, and every eval reads only their final output. Two
-critic runs can return the same `CriteriaCritique` and be worth different amounts: one
-searched once to confirm the source it names, the other searched three times, twice for
-the answer to a question it was told not to forecast. An output eval scores both the same.
-
-pydantic-evals answers half of this already. Its agentic evaluators — `MaxToolCalls`,
-`MaxModelRequests`, `ToolCorrectness`, `TrajectoryMatch`, `ArgumentCorrectness` — read the
-OTel span tree and are deterministic, so use them for anything a case can state as ground
-truth. Counting calls is theirs; do not hand-roll it.
-
-What they cannot do is judge. They compare tool names against a list you wrote and
-arguments against a dict you wrote, and a free-text search query has neither. They also
-never see the model's reasoning, which is not in a span. So this module covers the part
-that needs an opinion:
-
-    record_trajectory()       records the run on the case
-    ToolTrajectoryJudge(...)  grades tool choice, arguments, and call count with a model
-
-The run comes from `capture_run_messages` rather than from the span tree, because the
-messages carry the text the model wrote between its calls. A judge asked whether a search
-was worth making needs to read why the agent thought it was.
-
-This module is agent-neutral. Each agent's eval supplies its own rubric, the same way each
-supplies its own `LLMJudge` rubric.
-"""
+"""Grade the path an agent took, not just where it arrived."""
 
 from __future__ import annotations
 
@@ -64,12 +38,7 @@ transcript, and the judge is grading the query, not the search engine."""
 
 
 def trajectory_events(messages: list[ModelMessage]) -> list[dict[str, Any]]:
-    """Flatten a run's messages into ordered events.
-
-    One flat list rather than one record per call, because a run that called nothing still
-    has reasoning worth grading — the agent decided a search was unnecessary, and that
-    decision is the thing under test.
-    """
+    """Flatten a run's messages into ordered events."""
     events: list[dict[str, Any]] = []
     for message in messages:
         if isinstance(message, ModelResponse):
@@ -114,15 +83,7 @@ def _clip(content: Any) -> str:
 
 @contextmanager
 def record_trajectory() -> Iterator[None]:
-    """Record one agent run on the current case, for `ToolTrajectoryJudge` to read.
-
-    Wraps exactly one run. `capture_run_messages` keeps the messages of the *first* run
-    inside its context and joins an outer context when one is already open, so a task that
-    calls two agents needs one recorder around each.
-
-    Nothing here touches the agent. The messages are read from outside the run through a
-    context variable, so no production entry point changes to make its trajectory gradable.
-    """
+    """Record one agent run on the current case, for `ToolTrajectoryJudge` to read."""
     with capture_run_messages() as messages:
         try:
             yield
@@ -158,11 +119,7 @@ def render_trajectory(events: list[dict[str, Any]]) -> str:
 
 
 class TrajectoryVerdict(BaseModel):
-    """Three scores, because the three failures are independent.
-
-    A well-written query passed to the wrong tool is not the same mistake as the right
-    tool called five times, and one number would average them into something unreadable.
-    """
+    """Three scores, because the three failures are independent."""
 
     tool_selection: float = Field(
         ge=0.0,
@@ -232,15 +189,7 @@ def _judge_agent(model: str | None) -> Agent[None, TrajectoryVerdict]:
 
 @dataclass
 class ToolTrajectoryJudge(Evaluator[object, object, object]):
-    """Score an agent's tool use with a second model.
-
-    Reads the trajectory `record_trajectory` left on the case. `rubric` is agent-specific
-    and names the tools the agent had and the guidance its prompt gave about using them —
-    without that, the judge invents its own standard and scores against it.
-
-    `model` is always worth passing. The agent under test must never grade its own path:
-    asked to, it approves itself.
-    """
+    """Score an agent's tool use with a second model."""
 
     rubric: str
     model: str | None = None

@@ -237,15 +237,6 @@ def test_reindex_same_url_updates_it(stocked):
     ]
 
 
-def test_has_documents(stocked):
-    assert research.has_documents(RID)
-    assert not research.has_documents("never-used")
-    assert not research.has_documents(None)
-
-
-# ---------- deleting ----------
-
-
 def test_delete_research_leaves_other_runs(stocked):
     assert research.delete_research(RID) == 4
 

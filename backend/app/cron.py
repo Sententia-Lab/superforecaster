@@ -1,11 +1,4 @@
-"""Scheduled jobs and orchestrators.
-
-One job registered with APScheduler in the FastAPI lifespan:
-- run_daily_refresh: resolution sweep + probability sweep across active forecasts
-
-The orchestrator function is also exposed as a plain async callable so the API and
-CLI can trigger it on demand.
-"""
+"""Scheduled jobs and orchestrators."""
 
 from __future__ import annotations
 
@@ -21,13 +14,7 @@ from .update import run_update_graph
 
 
 async def run_daily_refresh() -> RefreshSummary:
-    """Run the update graph over every active forecast.
-
-    Previously two sweeps with a `flagged_ids` set carried between them. The graph
-    now enforces that ordering internally — `CheckResolved` short-circuits to `End`
-    on a resolved forecast, so the probability update is unreachable for it — which
-    means this is a single loop and the invariant lives in one place.
-    """
+    """Run the update graph over every active forecast."""
     summary = RefreshSummary()
     forecast_ids = db.list_active_forecast_ids()
     summary.total_checked = len(forecast_ids)

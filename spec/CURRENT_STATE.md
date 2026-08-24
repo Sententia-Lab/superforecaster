@@ -14,13 +14,13 @@ Deliberately not here:
 - **Why it is shaped this way** — `spec/ADR.md`.
 - **The 16 principles** (`P<n>` below) — `spec/superforecasting_methodology.md`.
 
-Last regenerated: 2026-08-20.
+Last regenerated: 2026-08-21.
 
 ---
 
 ## Storage map
 
-Everything persists in six SQLite tables (`backend/app/db.py`, `SCHEMA_VERSION = 5`).
+Everything persists in six SQLite tables (`backend/app/db.py`, `SCHEMA_VERSION = 7`).
 
 | Table | One row means | Written by |
 |---|---|---|
@@ -219,7 +219,7 @@ verifies the adjudicator with a live search.
 | DB | **nothing written.** The draft lives in React state until you press a save button |
 | Errors | draft `AgentTimeout` → **504** (you get your text back); the critique degrades to "Nothing changed" with your own criteria handed back, never raising |
 
-`_require_a_source` (`agents/critic.py:139`) forces `is_resolvable=False` and appends the
+`_require_a_source` (`agents/critic.py`) forces `is_resolvable=False` and appends the
 gap to `what_changed` when the critic named no source. `POST /runs` refuses an empty
 `resolution_source` regardless (ADR 44).
 
@@ -304,7 +304,7 @@ FastAPI  stream_step ── preflight ──► generate()
                asyncio.timeout(STAGE_TIMEOUT)   │ │
                _dispatch → stages.run_*_stage ──┘─┘
                runner._make_event_handler emits typed events;
-               app/stream.py:16 turns each into a frame
+               superforecaster.events.frame turns each into a frame
 ```
 
 | Frame | Emitted from | Front-end effect (`useStepStream.js:39`) |
@@ -312,23 +312,24 @@ FastAPI  stream_step ── preflight ──► generate()
 | `thought` | `PartDeltaEvent.content_delta` | appends to `thoughts`, tail-clipped to 4000 chars |
 | `query` | `FunctionToolCallEvent` | replaces the one-line `"tool: query"` |
 | `source` | diff of `deps.sources_seen` after each tool result | pushes a source chip |
-| `exhausted` | `outside_view.exhausted_notice` | "search budget exhausted — wrapping up". Payload `{id}` |
-| `result` | `work()` after `finish_step` | (not consumed — `run` supersedes it) |
+| `exhausted` | `stages._notice_exhausted` on `UsageLimitExceeded` | "search budget exhausted — wrapping up" |
 | `run` | `machine.detail(run_id)` | `setRun(payload)`, and `start` resolves to it — whole tree swap |
 | `error` | any exception, via `_failure_hint` | sets `failure = {stepId, message}`, which outlives the request — the card shows the message next to its Retry button |
 
 A `source` frame is a URL a tool recorded. `search_web` appends a `SourceRef` for every
-result Tavily returned — including the ones `_drop_leaked` withheld — `extract_pages` and
-`crawl_site` append one per page they read, and `search_wikipedia` appends one per article.
-`map_site` appends none: it lists what a site has without reading any of it, so recording
-those would let `check_citations` accept a URL the agent never opened. `runner._make_event_handler` diffs
-`deps.sources_seen` after each tool result, so nothing in the tool has to know the stream
-exists. A backtest's refs carry a real `published_date`; a live run's carry whatever Tavily
-returned, which is usually nothing.
+result Tavily returned, `extract_pages` one per page it read, `search_wikipedia` one per
+article, and `search_research` one per stored page it returned. `runner._make_event_handler`
+diffs `deps.sources_seen` after each tool result, so nothing in a tool knows the stream
+exists.
 
-In a backtest only `search_web` and `search_wikipedia` run. `extract_pages`, `crawl_site`,
-and `map_site` return an explanatory string instead, because no Tavily endpoint but
-`/search` accepts a date and the other three would serve today's page (ADR 78).
+Every research agent holds the same four tools: `search_research`, `search_web`,
+`extract_pages`, `search_wikipedia` (ADR 83). `search_web` and `extract_pages` return
+the Tavily dicts filtered to `title`/`url`/`content` (or `text`); Pydantic AI serialises
+them. Each tool call is one of `Budget.tool_calls`; the user prompt ends with one static
+sentence naming that number, and `agents.withdraw_tools` removes every tool once it is
+spent, so the answer is the only call left (ADR 81). The tool list and the system prompt
+never change within a run, which is what lets Anthropic prompt caching cover the tools,
+the instructions, and the transcript.
 
 `api.streamStep` splits the byte stream on `/\r?\n\r?\n/` and flushes whatever is still
 buffered when the reader finishes. `sse_starlette` writes **CRLF**, so a split on `"\n\n"`
@@ -345,7 +346,7 @@ can keep yielding for the minutes the agent runs. Ping every 15s.
 | Outcome | Writes |
 |---|---|
 | Success (non-synthesis) | `finish_step`: `run_steps.payload_json = <model_dump_json>`, `status='complete'` → then `machine.reconcile(run_id)` materializes the next stage's **pending** rows |
-| Success (synthesis) | `finish_step`, then `db.save_forecast` (new row in `forecasts`, first row in `forecast_updates`), then `complete_gated_run`: `status='complete'`, `forecast_id`, `error=NULL` |
+| Success (synthesis) | `finish_step`, then `db.save_forecast` (new row in `forecasts` — `decompositions_json`, no research summary since migration 7 — and the first row in `forecast_updates`), then `complete_gated_run`: `status='complete'`, `forecast_id`, `error=NULL` |
 | Agent/stage failure | `fail_step`: `run_steps.status='error'`, `error=<msg>`; mirrored to `gated_runs.error` |
 | Client disconnects | generator `finally` → `task.cancel()` → `CancelledError` inside `execute_step` → `fail_step(step_id, "cancelled")` → **immediately re-claimable** |
 | Process restart mid-step | `init_db` → `mark_interrupted_steps` flips `running` → `error='interrupted by restart'` |
@@ -369,13 +370,19 @@ UNIQUE key makes it idempotent: retrying the last cell of a stage must not dupli
 stage's rows.
 
 The stage functions carry the methodology's code-stamped invariants as data transforms:
-`run_lenses_stage` never receives a rate (populations chosen blind, ADR 40); `run_base_rate_step`
-re-stamps the lens identity from the *chosen* lens so a cell cannot re-weight its population
-after measuring it — a cell that cannot measure its population reports that and grades itself
-`low` rather than measuring a different one (ADR 72); `run_inside_step` requires a measured `BaseRateStepPayload` by signature
-(P4 as a call signature); `run_synthesis_stage` computes the anchor and implied probability with
-`checks.anchor_from` / `checks.implied_probability` — **arithmetic first, never the model** —
-then loops against `checks.run_forecast_checks` with one retry.
+`run_lenses_stage` never receives a rate (populations chosen blind, ADR 40);
+`run_base_rate_step` builds the `ResearchedLens` from the *chosen* lens plus the cell's
+`BaseRateResult` (evidence, analogs, disagreement), so a cell cannot re-weight its
+population after measuring it (ADR 72, ADR 82); `run_inside_step` requires a measured
+`BaseRateStepPayload` by signature (P4 as a call signature) and stamps `lens_name` and
+`sub_question_ids` onto the cell's `AdjustmentResult`; `run_synthesis_stage` computes the
+anchor and implied probability with `checks.anchor_from` / `checks.implied_probability` —
+**arithmetic first, never the model** — then loops synthesize against
+`checks.run_forecast_checks` with one retry. The synthesis agent returns a
+`ForecastAnswer` (probability, reasoning, extreme_justification); the stage stamps the
+question fields and the decomposition onto the `Forecast` it saves (ADR 82). A run whose
+decomposition marked nothing researchable fails at synthesis with "no researchable
+sub-question produced a base rate".
 
 `anchor_from` and `implied_probability` both reach `checks.combine_sub_question_rates(rates,
 chain_rule, dependent_groups)`, the only place the chain is applied. Sub-questions named by a
@@ -617,7 +624,7 @@ POST /forecasts {question, criteria, date, category, resolution_source, submissi
   └─ research.new_store()                   ► SqliteResearchStore(research_id=uuid4())
   └─ stages.run_all(ForecastInput, store=)  ← blocking, minutes, all 5 stages back-to-back
        decompose → lenses → base_rates → inside_view → synthesis
-       per-stage fan-out = asyncio.gather(return_exceptions=True)  ← a failed cell degrades
+       per-stage fan-out = stages._gather_ok (gather, keep what did not raise)
        every search_web/extract_pages call also writes: research_docs
      ► (forecast, violations)
   └─ db.save_forecast(research_id=store.research_id)
@@ -626,9 +633,8 @@ POST /forecasts {question, criteria, date, category, resolution_source, submissi
 ```
 
 Same `stages` functions the gated flow uses — one implementation of the methodology, not two
-(ADR 45). No gates, no SSE, no `run_steps` rows: nothing to resume if it dies. Runs live, with
-no `as_of` or `model` clamp (those exist for backtesting). `violations` is computed and
-discarded by this endpoint.
+(ADR 45). No gates, no SSE, no `run_steps` rows: nothing to resume if it dies. `violations`
+is computed and discarded by this endpoint.
 
 ---
 
@@ -684,21 +690,21 @@ PATCH /forecasts/{id}/resolve {outcome: 0|1|null}
 POST /forecasts/{id}/refresh
   └─ app.update.run_update_graph(id)
        db.get_forecast(id)                 → None means "not found", decided here
-       superforecaster.update.run_update_cycle(record, deps)   ← no storage below this line
-         CheckResolved   run_resolution_check agent
-                         appears_resolved → End (flagged_resolved=True)  ← short-circuit
-         ApplyBayes      run_update agent → P11 likelihoods
-         VerifyLargeMove second opinion when the move is large
-         GuardUpdate     |Δp| < MIN_PROBABILITY_DELTA → drop as noise
-                         else End(updated=True, new_probability, reasoning)
+       superforecaster.update.run_update_cycle(record, deps)   ← one function, no storage
+         run_resolution_check agent
+           appears_resolved → return UpdateOutcome(flagged_resolved=True)  ← short-circuit
+         run_update agent → P11 likelihoods
+         large move? → run_update(verify=(prior, posterior)) once
+         |Δp| < MIN_PROBABILITY_DELTA → noise; blocking check → not written
+         else UpdateOutcome(updated=True, new_probability, reasoning)
        db.mark_refreshed(id, flagged=outcome.flagged_resolved)   UPDATE forecasts
        outcome.updated → db.add_forecast_update  INSERT forecast_updates
      ◄── RefreshActionResponse {updated, reason}
 ```
 
-The resolution check runs **before** the probability update and short-circuits on a resolved
-forecast, so a resolved question can never be re-forecast. That ordering lives in the graph, not
-in the callers — which is why §10's sweep is a plain loop.
+The resolution check runs **before** the probability update and returns early on a resolved
+forecast, so a resolved question can never be re-forecast (ADR 84). The update and
+postmortem prompts carry the last ten updates only (`agents.format_history`).
 
 ---
 
@@ -756,23 +762,21 @@ scheduler, and no side effects on import.
 | Module | Holds |
 |---|---|
 | `__init__.py` | the public surface: `ForecastInput`, `ForecastDeps`, `Forecast`, `run_all`, `__version__` |
-| `config.py` | `Budget`/`BUDGETS`/`get_budget`, `CheckThresholds`/`get_check_thresholds`, `Settings`/`get_settings`, `resolve_agent_model`, `get_model_settings`, the two timeouts. Reads `os.environ`; never loads a file |
+| `config.py` | `Budget{tool_calls, requests, tokens}`/`BUDGETS`/`get_budget`, `CheckThresholds`/`get_check_thresholds`, `Settings`/`get_settings`, `resolve_agent_model`, `get_model_settings` (max tokens, serial tool calls, Anthropic prompt caching), the two timeouts, `MAX_SEARCH_DEPTH`. Reads `os.environ`; never loads a file |
 | `stages.py` | `STAGE_ORDER`, `run_decompose_stage`, `run_lenses_stage`, `run_base_rate_step`, `run_inside_step`, `assemble_outside`, `run_synthesis_stage`, `run_all`, `normalize_weights` |
-| `update.py` | the update cycle: `CheckResolved → ApplyBayes → VerifyLargeMove → GuardUpdate`, `run_update_cycle`, `UpdateState`, `update_mermaid`. Returns an `UpdateOutcome`; writes nothing |
+| `update.py` | `run_update_cycle` — resolution check, update, verify a large move once, gate. Returns an `UpdateOutcome`; writes nothing |
 | `models.py` | every Pydantic model |
 | `checks.py` | the 16 principles as pure functions; `lens_rate`, `anchor_from`, `implied_probability`, `combine_sub_question_rates`, `run_forecast_checks`, `blocking` |
 | `scoring.py` | `time_weighted_probability`, `brier_score`, `calibration` — pure |
-| `deps.py` | `ForecastDeps` — the `as_of`/`model` clamps, the column tag, the run's `Budget`, `sources_seen`, the `emit` sink, the `store`; and `ResearchStore`, the protocol `app` implements |
-| `events.py` | `Query`, `Source`, `Thought`, `Exhausted`, and the `Sink` type `deps.emit` takes |
-| `runner.py` | `run_agent` — attaches the budget, applies the deadline, opens the span, translates timeouts. Emits Logfire spans; never configures Logfire |
-| `tools/` | the tools an agent may call, one module per upstream. `__init__.py` re-exports all seven so a caller writes `from ..tools import search_web` |
-| `tools/tavily_tools.py` | `search_web`, `extract_pages`, `crawl_site`, `map_site`, `find_disconfirming_evidence` — one per `AsyncTavilyClient` method; `_remember` keeps the page text in the run's store |
+| `deps.py` | `ForecastDeps` — `sources_seen`, the `emit` sink, the column tag, the `store`, the run's `Budget`; and `ResearchStore`, the protocol `app` implements |
+| `events.py` | `Query`, `Source`, `Thought`, `Exhausted`, the `Sink` type `deps.emit` takes, and `frame` — the SSE shape the browser reads |
+| `runner.py` | `run_agent` — picks the model, attaches the budget, appends the search note, applies the deadline, opens the span. Emits Logfire spans; never configures Logfire |
+| `tools/` | the four tools, re-exported from `__init__.py` |
+| `tools/tavily_tools.py` | `search_web`, `extract_pages`; `_record` notes every URL and keeps the page text in the run's store |
 | `tools/research_store_tools.py` | `search_research` — reads back the pages this run already fetched, through `ctx.deps.store` |
-| `tools/wikipedia_tools.py` | `search_wikipedia`, and the revision-as-of request builders |
-| `tools/dates.py` | `_as_utc`, `_parse_published` — timestamp parsing both upstreams need |
+| `tools/wikipedia_tools.py` | `search_wikipedia` |
 | `errors.py` | `AgentTimeout`, `StageTimeout` |
-| `model_garden.py` | model registry with published training cutoffs (backtest clamp). Reads its bundled JSON; never writes it |
-| `agents/` | eleven agents, one module each: `decompose`, `lenses`, `outside_view`, `inside_view`, `reflect`, `synthesize`, `critic`, `draft`, `resolution`, `update`, `postmortem`. `__init__.py` holds `attach_budget` — the per-iteration budget instruction, in three bands so the order to stop arrives while a search is still legal (ADR 68) — `withdraw_tools`, which stops offering a tool the agent cannot spend a call on — the Tavily tools when there is no `TAVILY_API_KEY`, `search_research` while the store is empty, everything once the budget is spent (ADR 69), plus `CALL_RESERVE` and `spent_usd` |
+| `agents/` | eleven agents, one module each: `decompose`, `lenses`, `outside_view`, `inside_view`, `reflect`, `synthesize`, `critic`, `draft`, `resolution`, `update`, `postmortem`. Each holds `INSTRUCTIONS`, a module-level `agent` built without a model (`run_agent` supplies it), and `run_<n>`. `__init__.py` holds `withdraw_tools` (ADR 81), `format_question`, `format_history`, and the shared `GRADING` ladder |
 
 **Backend — `backend/app/`** — everything that runs it.
 
@@ -780,18 +784,17 @@ scheduler, and no side effects on import.
 |---|---|
 | `config.py` | `load_env`, `ENV_FILE`, `AppSettings`/`get_app_settings` (database path, cron schedule, frontend dir), `set_runtime_key`, `origin`, `RUNTIME_KEYS` |
 | `db.py` | SQLite (WAL, FKs, migrations). Forecast fns + gated-run fns + `NotFoundError`/`StateError` |
-| `research.py` | the research store: `index_documents`, `search_research`, `list_research`, `count_research`, `has_documents`, `delete_research`, `_match_expression`, and `SqliteResearchStore`/`new_store`/`store_for` — the `ResearchStore` the library takes |
-| `machine.py` | gated-run state machine: `start_run`, `expected_steps`, `reconcile`, `gate_offender`, `execute_step`, `edit_blocker`, `edit_payload`, `detail`, `busy`, `DERIVED`, `REQUIRED_FIELDS`, `GateError`, `BusyError` |
+| `research.py` | the research store: `index_documents`, `search_research`, `list_research`, `count_research`, `delete_research`, `_match_expression`, and `SqliteResearchStore`/`new_store`/`store_for` — the `ResearchStore` the library takes |
+| `machine.py` | gated-run state machine: `start_run`, `expected_steps`, `reconcile`, `gate_offender`, `execute_step`, `edit_blocker`, `edit_payload`, `detail`, `busy`, `REQUIRED_FIELDS`, `GateError`, `BusyError` |
 | `update.py` | `run_update_graph` — loads the record, runs the core cycle, writes the result |
 | `cron.py` | `run_daily_refresh`, APScheduler wiring |
 | `observability.py` | `configure_logfire`, the write-token probe, `cloud_tracing_active`, `console_active` |
-| `stream.py` | `frame` — an `AgentEvent` as the `{type, sub_question, payload}` the browser reads |
-| `cli.py` | typer CLI (`superforecaster` console script): `forecast`, `refresh`, `resolve`, `critique`, `postmortem`, `models`, `diagram`, `test`, `config`, `serve` |
-| `fixtures/` | the three JSON questions `--fixture` loads |
-| `evals/components.py` | per-agent eval harness (`run_component`, `SCORERS`). Scorers only — the case files are not written yet |
-| `evals/decompose_eval.py` | pydantic-evals dataset for the decompose agent: three mechanical evaluators plus an `LLMJudge` scoring against `RUBRIC`. `--model`, `--judge-model`, `--budget` flags. Run as a script, not under pytest — it calls the real model |
+| `cli.py` | typer CLI (`superforecaster` console script): `forecast`, `refresh`, `resolve`, `critique`, `postmortem`, `diagram`, `config`, `serve` |
+| `fixtures/` | the two JSON files `--fixture` loads |
+| `evals/__init__.py` | `eval_main` — the shared command line (`--model`, `--judge-model`, `--budget`) |
+| `evals/decompose_eval.py` | pydantic-evals dataset for the decompose agent: three mechanical evaluators plus an `LLMJudge` scoring against `RUBRIC`. Run as a script, not under pytest — it calls the real model |
 | `evals/eval_agents/trajectory.py` | judges an agent's tool calls, not its output. `record_trajectory` captures one run via `capture_run_messages` and writes it to the case; `ToolTrajectoryJudge` scores tool selection, arguments, and call count with a second model. Counting is left to pydantic-evals' own `MaxToolCalls`/`MaxModelRequests`, which read spans. Agent-neutral — each eval brings its own rubric |
-| `evals/critic_eval.py` | pydantic-evals dataset for the critic agent: `Verdict` and `NamedASource` on the output, `MaxToolCalls` (per case) and `MaxModelRequests` on the spans, an `LLMJudge` on `RUBRIC`, and a `ToolTrajectoryJudge` on `TOOL_RUBRIC`. Same flags as `decompose_eval.py`, and the same reason for being a script |
+| `evals/critic_eval.py` | pydantic-evals dataset for the critic agent: `Verdict` and `NamedASource` on the output, `MaxToolCalls` (per case) and `MaxModelRequests` on the spans, an `LLMJudge` on `RUBRIC`, and a `ToolTrajectoryJudge` on `TOOL_RUBRIC` |
 
 **Backend — `backend/api/`**
 
@@ -848,12 +851,13 @@ scheduler, and no side effects on import.
   returns a key value (§0b, ADR 61).
 - **A research store per run** — every page `search_web` and `extract_pages` fetch is kept
   whole, and `search_research` reads it back ranked by BM25 (SQLite FTS5). **Research** in
-  the run header opens a drawer showing the same store, searched the same way (§4b). Every agent that
-  can call a tool has it; `reflect`, `synthesize`, and `draft` do not, because their
-  `tool_calls` is 0. `update`, `resolution`, and `postmortem` reach the store months later
-  through `ForecastRecord.research_id`, so a refresh reads what the forecast was built on.
-  It is scoped to one run, offered only once it holds something, and deleted with the
-  forecast it belongs to (§7b).
+  the run header opens a drawer showing the same store, searched the same way (§4b). Every
+  agent that can call a tool has it; `decompose`, `lenses`, and `draft` have no tools.
+  `update`, `resolution`, and `postmortem` reach the store months later through
+  `ForecastRecord.research_id`. It is scoped to one run and deleted with the forecast it
+  belongs to (§7b).
+- **Prompt caching** — the tools, the system prompt, and the transcript are cached on
+  every research cell (ADR 81); a run costs roughly half what it did before.
 - The CLI pipeline (`forecast`) and component evals through the same `stages` functions.
 - Daily refresh cron + manual refresh through the update cycle; resolution + scoring +
   calibration report.
@@ -871,20 +875,13 @@ scheduler, and no side effects on import.
 
 - **A permanently failing cell blocks its run** — strict gating has no skip-a-cell escape
   hatch; retry (optionally deeper) is the only recovery today (deferred in spec5).
-- The end-to-end backtest (`test e2e`) is specified in `spec/planned/spec6.md` and not
-  built; `superforecaster test e2e` says so and exits 2.
-- `GoldenQuestion`, `QuestionScore`, and `Scorecard` are defined in `models.py` but unused —
-  the eval corpus they describe does not exist yet (spec6).
-- **The component eval harness has no data.** `app/evals/components.py` holds a working
-  scorer for each of eight agents; the case files were deleted rather than kept as eight
-  empty arrays, so `superforecaster test component` reports 0 cases for every agent.
-- **`Forecast.decompositions[].probability` is carried by the model, not computed.**
-  `run_synthesis_stage` hands the synthesis agent the decomposition JSON — pre-research
-  working estimates included — and instructs it to carry the sub-questions through.
-  `check_linkage` verifies the ids survive; nothing compares the probabilities to
-  `checks.chain_inputs`. So a saved forecast can show a pre-research guess against a
-  sub-question that was actually measured. The fix mirrors `ResearchedLens`, which has no
-  `base_rate` field because the rate is computed from evidence. Own spec, not yet written.
+- The end-to-end backtest is specified in `spec/planned/spec6.md` and not built. The
+  backtest clamps were removed (ADR 80); a future backtest re-adds a date clamp.
+- **`Forecast.decompositions[].probability` is the decompose agent's pre-research
+  estimate.** The stage stamps the decomposition onto the forecast unchanged, so a saved
+  forecast shows the working estimate beside a sub-question that was measured. The
+  measured rates live in the synthesis payload (`checks.chain_inputs`). Own spec, not yet
+  written.
 - **Old lens weights do not sum to 1.** Runs completed before ADR 54 keep their raw
   relative weights. Every consumer divides by Σw, so no number is wrong — only the
   displayed weights of an old run fail to add up.

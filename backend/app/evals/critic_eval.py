@@ -1,36 +1,7 @@
-"""Run the criteria critic against a fixed set of questions and score it.
-
-Like `decompose_eval`, this runs the real model, so it costs money and needs a real API
-key. That is why it is a script rather than a pytest test.
-
-    make eval critic
-    make eval critic ARGS="--model anthropic:claude-haiku-4-5 --budget 0.05,40000,2,3"
-
-The critic is the first agent here graded on its **path** as well as its answer. It has
-one tool and a strict instruction about it: at most two searches, and only to confirm that
-a source it is about to name really publishes what the criteria assume. A critique that
-names the right source after three searches for the answer to the question is a worse run
-than the identical critique after one, and no evaluator that reads only the output can
-see the difference. `ToolTrajectoryJudge` reads the run.
-
-Three tiers run on every case. `Verdict` and `NamedASource` are mechanical and read the
-output; `MaxToolCalls` and `MaxModelRequests` are pydantic-evals' own span-based
-evaluators and read the run. All four are free and never disagree with themselves.
-`LLMJudge` grades the rewrite against `RUBRIC`. `ToolTrajectoryJudge` grades the tool
-calls against `TOOL_RUBRIC`.
-
-`MaxToolCalls` and `ToolTrajectoryJudge` both look at how many searches happened, and the
-overlap is deliberate. The count is a fact and belongs in an assertion. Whether the count
-was *right for this question* is a judgment — a question that already names the BLS needs
-a search that a question saying "significant adoption" does not.
-"""
+"""Run the criteria critic against a fixed set of questions and score it."""
 
 from __future__ import annotations
 
-import argparse
-import os
-import shutil
-import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -46,12 +17,11 @@ from pydantic_evals.evaluators import (
 from pydantic_evals.evaluators.common import OutputConfig
 
 from superforecaster.agents.critic import run_critique
-from superforecaster.config import get_budget, resolve_agent_model
+from superforecaster.config import get_budget
 from superforecaster.deps import ForecastDeps
 from superforecaster.models import CriteriaCritique
 
-from ..config import load_env
-from ..observability import configure_logfire
+from . import eval_main
 from .eval_agents.trajectory import ToolTrajectoryJudge, record_trajectory
 
 
@@ -66,7 +36,6 @@ class CriticInput(BaseModel):
 
 Ctx = EvaluatorContext[CriticInput, CriteriaCritique, dict]
 
-BUDGET_FORMAT = "COST,TOKENS,TOOL_CALLS,ITERATIONS"
 
 PROMPT_MAX_CALLS = 2
 """What `critic.INSTRUCTIONS` permits: "At most TWO searches". The runtime ceiling in
@@ -149,11 +118,7 @@ WHAT THIS MEANS FOR EACH SCORE
 
 
 def judge(model: str) -> LLMJudge:
-    """Grade the rewrite with a second model. Score plus rationale, not pass/fail.
-
-    `model` is always passed. The library default judge is an OpenAI model, and this
-    project holds no OpenAI key.
-    """
+    """Grade the rewrite with a second model. Score plus rationale, not pass/fail."""
     return LLMJudge(
         rubric=RUBRIC,
         model=model,
@@ -163,13 +128,8 @@ def judge(model: str) -> LLMJudge:
     )
 
 
-def make_task(model: str | None):
-    """The task under evaluation, bound to a model.
-
-    `record_trajectory` is the whole cost of making this agent's path gradable. It reads
-    the run through a context variable, so `run_critique` is called exactly as production
-    calls it.
-    """
+def make_task():
+    """The task under evaluation, bound to a model."""
 
     async def task(input: CriticInput) -> CriteriaCritique:
         with record_trajectory():
@@ -177,7 +137,7 @@ def make_task(model: str | None):
                 question=input.question,
                 resolution_criteria=input.resolution_criteria,
                 resolution_date=input.resolution_date,
-                deps=ForecastDeps(model=model),
+                deps=ForecastDeps(),
             )
 
     return task
@@ -243,13 +203,7 @@ CASES = [
 
 
 def build_dataset(judge_model: str) -> Dataset:
-    """Every case gets these; the per-case `MaxToolCalls` ceilings sit on the cases.
-
-    `MaxModelRequests` reads the same number the runtime enforces. It is not a second
-    ceiling — it is the eval reporting *which* case ran the agent in circles, which the
-    `UsageLimitExceeded` path cannot, because that kills the run and returns a degraded
-    critique with no trace of how close the others came.
-    """
+    """Every case gets these; the per-case `MaxToolCalls` ceilings sit on the cases."""
     return Dataset(
         name="critic",
         cases=CASES,
@@ -263,66 +217,8 @@ def build_dataset(judge_model: str) -> Dataset:
     )
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="critic_eval", description=__doc__)
-    parser.add_argument(
-        "--model",
-        help="Model the critic runs on. Default: the configured agent model.",
-    )
-    parser.add_argument(
-        "--judge-model",
-        help=(
-            "Model that grades the output and the trajectory. Default: the configured "
-            "agent model, which deliberately does NOT follow --model."
-        ),
-    )
-    parser.add_argument(
-        "--budget",
-        metavar=BUDGET_FORMAT,
-        help=(
-            "Override what one critic run may spend, in the field order of "
-            "`config.Budget` — the same format as the BUDGET_CRITIC env var. "
-            "Example: 0.10,60000,2,4"
-        ),
-    )
-    parser.add_argument(
-        "--concurrency",
-        type=int,
-        default=3,
-        help="Cases to run at once. Default: 3.",
-    )
-    return parser.parse_args(argv)
-
-
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-
-    if args.budget:
-        if len(args.budget.split(",")) != 4:
-            print(f"--budget takes four fields: {BUDGET_FORMAT}", file=sys.stderr)
-            return 2
-        os.environ["BUDGET_CRITIC"] = args.budget
-
-    # A span opened before `logfire.configure()` is never exported, and the experiment
-    # span opens before the first case runs. Configure here or lose the tree.
-    load_env()
-    configure_logfire()
-
-    # The judge holds still while `--model` moves, so scores stay comparable between runs
-    # and a weak model under test never grades its own path.
-    dataset = build_dataset(args.judge_model or resolve_agent_model())
-    report = dataset.evaluate_sync(
-        make_task(args.model),
-        name="critic",
-        max_concurrency=args.concurrency,
-    )
-    report.print(
-        width=shutil.get_terminal_size((140, 24)).columns,
-        include_input=False,
-        include_output=False,
-        include_reasons=True,
-    )
-    return 0
+    return eval_main("critic", build_dataset, make_task, argv)
 
 
 if __name__ == "__main__":

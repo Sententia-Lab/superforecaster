@@ -132,7 +132,7 @@ async def test_no_store_means_no_write(monkeypatch):
 
     out = await tavily_tools.search_web(_Ctx(deps), "anything")
 
-    assert "https://a" in out
+    assert out[0]["url"] == "https://a"
     with db.connect() as c:
         assert c.execute("SELECT count(*) FROM research_docs").fetchone()[0] == 0
 
@@ -154,8 +154,7 @@ async def test_the_tool_returns_stored_pages(store):
 
     out = await research_store_tools.search_research(_Ctx(deps), "steel exclusions")
 
-    assert "ustr.gov/exclusions" in out
-    assert "research_store" in out
+    assert "ustr.gov/exclusions" in out[0]["url"]
 
 
 async def test_a_read_is_recorded_as_a_source(store):
@@ -194,8 +193,8 @@ async def test_the_agent_never_sees_display_markers(store):
         _Ctx(ForecastDeps(store=store)), "steel"
     )
 
-    assert "\x02" not in out and "\x03" not in out
-    assert "Steel tariffs" in out
+    assert "\x02" not in out[0]["title"] and "\x03" not in out[0]["content"]
+    assert out[0]["title"] == "Steel tariffs"
 
 
 # ---------- a saved forecast keeps its store ----------
@@ -246,16 +245,12 @@ async def test_the_refresh_reaches_the_original_research(monkeypatch):
 # ---------- when it is offered ----------
 
 
-async def test_withdrawn_while_the_store_is_empty(store, monkeypatch):
-    """The base-rate stage starts against an empty store and runs its cells at once.
-
-    Offering a tool that can only answer "nothing yet" costs a tool call to learn what
-    the hook already knows.
-    """
+async def test_offered_while_the_store_is_empty(store, monkeypatch):
+    """Always offered, so the tool list — and the prompt cache — is stable (ADR 81)."""
     monkeypatch.setenv("TAVILY_API_KEY", "k")
     ctx = _Ctx(ForecastDeps(store=store, budget=get_budget("base_rate_cell")))
 
-    assert "search_research" not in _names(await withdraw_tools(ctx, ALL_TOOLS))
+    assert "search_research" in _names(await withdraw_tools(ctx, ALL_TOOLS))
 
 
 async def test_offered_once_documents_exist(store, monkeypatch):
@@ -264,13 +259,6 @@ async def test_offered_once_documents_exist(store, monkeypatch):
     ctx = _Ctx(ForecastDeps(store=store, budget=get_budget("base_rate_cell")))
 
     assert "search_research" in _names(await withdraw_tools(ctx, ALL_TOOLS))
-
-
-async def test_withdrawn_when_there_is_no_store(monkeypatch):
-    monkeypatch.setenv("TAVILY_API_KEY", "k")
-    ctx = _Ctx(ForecastDeps(budget=get_budget("base_rate_cell")))
-
-    assert "search_research" not in _names(await withdraw_tools(ctx, ALL_TOOLS))
 
 
 async def test_a_store_read_spends_a_tool_call(store, monkeypatch):

@@ -30,13 +30,13 @@ Sources: `spec/implemented/SPEC_04_26_2026.md` (v3), `spec/implemented/spec3.md`
 | [9](#adr-9--daily-batch-updates-not-event-driven) | Daily batch updates, not event-driven | Accepted |
 | [10](#adr-10--a-single-agent-in-one-structured-call) | A single agent in one structured call | **Superseded by 11** |
 | [11](#adr-11--one-agent-per-methodology-step) | One agent per methodology step | Accepted |
-| [12](#adr-12--pydantic-graphs-for-orchestration) | Pydantic graphs for orchestration | Accepted |
+| [12](#adr-12--pydantic-graphs-for-orchestration) | Pydantic graphs for orchestration | **Superseded by 45 and 84** |
 | [13](#adr-13--methodology-checks-are-pure-functions) | Methodology checks are pure functions | Accepted, amended by 29 |
 | [14](#adr-14--every-threshold-is-configuration) | Every threshold is configuration | Accepted |
 | [15](#adr-15--no-per-forecast-granularity-check) | No per-forecast granularity check | Accepted |
 | [16](#adr-16--a-large-move-is-verified-not-capped) | A large move is verified, not capped | Accepted |
-| [17](#adr-17--two-clamps-for-contamination-free-backtesting) | Two clamps for contamination-free backtesting | Accepted |
-| [18](#adr-18--pick_clean_model-returns-none-rather-than-falling-back) | `pick_clean_model` returns None rather than falling back | Accepted |
+| [17](#adr-17--two-clamps-for-contamination-free-backtesting) | Two clamps for contamination-free backtesting | **Superseded by 79 and 80** |
+| [18](#adr-18--pick_clean_model-returns-none-rather-than-falling-back) | `pick_clean_model` returns None rather than falling back | **Superseded by 80** |
 | [19](#adr-19--unit-tests-cover-logic-and-contamination-only) | Unit tests cover logic and contamination only | Accepted |
 | [20](#adr-20--component-golden-data-ships-empty) | Component golden data ships empty | Accepted |
 | [21](#adr-21--the-end-to-end-backtest-is-deferred) | The end-to-end backtest is deferred | Accepted |
@@ -77,9 +77,15 @@ Sources: `spec/implemented/SPEC_04_26_2026.md` (v3), `spec/implemented/spec3.md`
 | [59](#adr-59--display-labels-are-a-frontend-concern) | Display labels are a frontend concern | Accepted |
 | [60](#adr-60--agent-prose-is-markdown) | Agent prose is markdown | Accepted |
 | [61](#adr-61--runtime-keys-are-set-in-the-process-never-on-disk) | Runtime keys are set in the process, never on disk | Accepted |
-| [62](#adr-62--four-ceilings-per-agent-injected-every-iteration) | Four ceilings per agent, injected every iteration | Accepted |
+| [62](#adr-62--four-ceilings-per-agent-injected-every-iteration) | Four ceilings per agent, injected every iteration | **Superseded by 81** |
 | [63](#adr-63--the-critique-is-a-rewrite-not-a-report) | The critique is a rewrite, not a report | Accepted, narrowed by 64 |
 | [64](#adr-64--the-draft-names-the-adjudicator) | The draft names the adjudicator | Accepted |
+| 65–79 | *Sections below; 68, 69, and 78 are superseded by 81 and 83* | Accepted |
+| [80](#adr-80--the-backtest-clamps-are-removed) | The backtest clamps are removed | Accepted |
+| [81](#adr-81--prompt-caching-and-a-static-budget-line) | Prompt caching, and a static budget line | Accepted |
+| [82](#adr-82--an-agents-output-carries-only-what-the-agent-decides) | An agent's output carries only what the agent decides | Accepted |
+| [83](#adr-83--four-research-tools) | Four research tools | Accepted |
+| [84](#adr-84--the-update-cycle-is-a-function) | The update cycle is a function | Accepted |
 
 ---
 
@@ -1924,6 +1930,8 @@ management, and its own text says so.
 
 ## ADR 62 — Four ceilings per agent, injected every iteration
 
+**Status:** Superseded by ADR 81 (2026-08-21).
+
 **Status:** Accepted (2026-08-08). Supersedes ADR 32.
 
 **Decision.** One `Budget` per agent, carrying four numbers: cost in dollars, tokens, tool
@@ -2239,6 +2247,8 @@ first line rather than the third bullet of a constraints list.
 
 ## ADR 68 — The order to stop arrives while a search is still legal
 
+**Status:** Superseded by ADR 81 (2026-08-21).
+
 **Amends ADR 62. Extends ADR 67.**
 
 `attach_budget` reported searches in two bands: while any remained, "N of 8 searches left.
@@ -2298,6 +2308,8 @@ endgame is now driven directly: a model that always searches, the budget's own `
 and an assertion that the order to stop precedes the point of no return.
 
 ## ADR 69 — The search tools are withdrawn, not discouraged
+
+**Status:** Superseded by ADR 81 (2026-08-21): withdrawal stays, the empty-store withdrawal of `search_research` does not.
 
 **Supersedes the approach in ADR 68. Extends ADR 62.**
 
@@ -2763,6 +2775,8 @@ REST endpoint.
 
 ## ADR 78 — One tool per Tavily endpoint, and three of them refuse in a backtest
 
+**Status:** Superseded by ADR 83 (2026-08-21).
+
 **Status:** Accepted (2026-08-19)
 
 **Decision.** `superforecaster/tools.py` becomes `superforecaster/tools/`, one module per
@@ -3067,3 +3081,102 @@ no orphans to sweep.
 **The general finding.** A library that stores things does not have to import the storage.
 The protocol is three methods, and it is what let the store live in `app` where ADR 73 says
 storage lives, while the tools that use it stayed in the library where the agents are.
+
+
+---
+
+## ADR 80 — The backtest clamps are removed
+
+**Status:** Accepted (2026-08-21). Supersedes ADR 17 (clamp 2) and ADR 18.
+
+**Decision.** `ForecastDeps.forecast_date`, `ForecastDeps.model`, `model_garden.py`,
+the Wikipedia revision-as-of request, and the `test_forecasting_baseline/` corpus are
+deleted.
+
+**Rationale.** No production path ever set either clamp: the CLI `forecast` command, the
+API, and the gated runner all ran with both at `None`. ADR 21 deferred the backtest
+because no clean corpus exists, and ADR 18 measured 0/66 coverage. The clamps were ~900
+lines of code, prompt text, and tests that every agent paid for and nothing exercised.
+
+**Consequence.** A future backtest re-adds a date clamp against a corpus that exists. The
+audit trail (`ForecastDeps.sources_seen`, `check_citations`) stays.
+
+---
+
+## ADR 81 — Prompt caching, and a static budget line
+
+**Status:** Accepted (2026-08-21). Supersedes ADR 62, ADR 68, and ADR 69's per-request
+withdrawal of `search_research`.
+
+**Decision.** `Budget` is `{tool_calls, requests, tokens}`, enforced by Pydantic AI
+`UsageLimits`. The user prompt ends with one static sentence naming the tool-call
+budget. `withdraw_tools` removes every tool once `tool_calls` is spent, and the Tavily
+tools when there is no key; `search_research` is always offered. `get_model_settings`
+sets `anthropic_cache_tool_definitions`, `anthropic_cache_instructions`, and
+`anthropic_cache`.
+
+**Rationale.** ~93% of a run's cost was the research cells, and ~90% of a cell's input
+was the transcript re-sent every turn. Nothing cached, for two reasons: the budget line
+in the system prompt changed on every request, and `search_research` joined the tool
+list one turn in. Both invalidated the cache prefix. Cached input costs about 10% of
+the normal price.
+
+The per-request countdown was the wrong tool for the job its own docstring described:
+"`withdraw_tools` is what actually caps searching". With `parallel_tool_calls=False`
+the ceiling is exact, so the `tool_calls × 2` headroom went too. The cost ceiling and
+`genai_prices` went with the countdown; three ceilings bound the fourth.
+
+**Rules out.** Anything that varies the system prompt or the tool list within a run.
+
+---
+
+## ADR 82 — An agent's output carries only what the agent decides
+
+**Status:** Accepted (2026-08-21). Amends ADR 11.
+
+**Decision.** `BaseRateResult` is evidence, analogs, and disagreement; code attaches it
+to the chosen `Lens`. `AdjustmentResult` is adjustments and a steel man; code stamps
+`lens_name` and `sub_question_ids`. `ForecastAnswer` is probability, reasoning, and
+justification; code stamps the question fields and the decomposition onto `Forecast`.
+`Forecast.research` (`ResearchSummary`) is deleted, with migration 7.
+
+**Rationale.** The synthesis agent was asked to transcribe the decomposition, a research
+summary, and four question fields back out as output tokens — several thousand at
+$15/MTok per attempt — and the code overwrote four of them immediately. `check_linkage`
+existed partly to catch the transcription going wrong. The base-rate cell re-emitted
+five lens fields the stage overwrote. Nothing read `Forecast.research`.
+
+**Consequence.** `DEFAULT_AGENT_MAX_TOKENS` drops to 8192. The `linkage` check keeps its
+first arm only. The synthesis prompt renders the three views as short lines rather than
+three `model_dump_json(indent=2)` dumps.
+
+---
+
+## ADR 83 — Four research tools
+
+**Status:** Accepted (2026-08-21). Supersedes ADR 78.
+
+**Decision.** `search_web`, `extract_pages`, `search_wikipedia`, `search_research`.
+`crawl_site`, `map_site`, and `find_disconfirming_evidence` are deleted. Tools return
+the upstream dicts, field-filtered; Pydantic AI serialises them.
+
+**Rationale.** Seven tool schemas cost ~1,100 tokens per request on every research cell.
+`crawl_site` and `map_site` were rarely the right tool for a base rate.
+`find_disconfirming_evidence` returned ~5k tokens for one budgeted call and hid three
+searches from the budget. P14 stays as a prompt instruction and `check_disconfirming`.
+The `_json` helper duplicated what `ToolReturnPart` already does.
+
+---
+
+## ADR 84 — The update cycle is a function
+
+**Status:** Accepted (2026-08-21). Supersedes ADR 12 for the update cycle; ADR 45
+already replaced it for the forecast pipeline.
+
+**Decision.** `superforecaster.update.run_update_cycle` is one async function: resolution
+check, update, verify a large move once, gate. `pydantic_graph` is no longer imported.
+
+**Rationale.** Four node classes and a `GraphBuilder` expressed one branch and one loop
+of at most one iteration. The ordering guarantee ADR 12 wanted — resolution blocks the
+update — is an early `return`, which is as unreachable as an edge. The dependency was
+the one that broke a release (`pyproject.toml`).

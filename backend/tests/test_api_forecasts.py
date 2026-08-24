@@ -21,8 +21,6 @@ from superforecaster.models import (
     UpdateOutcome,
     Forecast,
     HistoricalAnalog,
-    RefreshActionResponse,
-    ResearchSummary,
     SubPrediction,
 )
 
@@ -62,15 +60,6 @@ def _mock_forecast() -> Forecast:
             )
             for i in range(3)
         ],
-        research=ResearchSummary(
-            historical_analogs=[
-                HistoricalAnalog(description="A", outcome=1.0, relevance="r"),
-                HistoricalAnalog(description="B", outcome=0.0, relevance="r"),
-                HistoricalAnalog(description="C", outcome=1.0, relevance="r"),
-            ],
-            empirical_base_rate=2 / 3,
-            base_rate_note="ok",
-        ),
         reasoning="Mock reasoning.",
     )
 

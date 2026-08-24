@@ -56,7 +56,7 @@ def test_the_critic_gets_four_tool_calls_total():
     b = config.get_budget("critic")
 
     assert b.tool_calls == 4
-    assert b.iterations == 7
+    assert b.requests == 7
 
 
 async def test_the_critic_runs_on_its_own_budget_not_a_shared_default(monkeypatch):

@@ -24,54 +24,6 @@
       "rationale": "Labor market slowing but not yet at recession levels"
     }
   ],
-  "research": {
-    "historical_analogs": [
-      {
-        "description": "2019 Fed cutting cycle (insurance cuts mid-cycle)",
-        "outcome": 1.0,
-        "relevance": "Soft landing scenario; Fed cut 3 times preventatively"
-      },
-      {
-        "description": "2007 Fed cutting cycle",
-        "outcome": 1.0,
-        "relevance": "Multiple cuts as financial conditions tightened"
-      },
-      {
-        "description": "1998 Fed cutting cycle",
-        "outcome": 1.0,
-        "relevance": "LTCM crisis; 3 cuts in quick succession"
-      },
-      {
-        "description": "1995 Fed pause then cuts",
-        "outcome": 1.0,
-        "relevance": "Successful soft landing"
-      }
-    ],
-    "empirical_base_rate": 0.75,
-    "base_rate_note": "Historical Fed mid-cycle adjustments often yield 2+ cuts; sample limited",
-    "causal_forces": [
-      "Inflation trajectory toward 2% target",
-      "Labor market deterioration",
-      "Financial conditions tightening"
-    ],
-    "evidence": {
-      "supporting": [
-        "FOMC dot plot signals cuts in 2026",
-        "CPI trending down",
-        "Yield curve normalizing"
-      ],
-      "contradicting": [
-        "Sticky services inflation",
-        "Strong consumer spending",
-        "Geopolitical risk-on"
-      ]
-    },
-    "uncertainties": [
-      "Tariff impact on inflation",
-      "Labor market downside surprise",
-      "Election-year political pressure"
-    ]
-  },
   "updates": [
     {
       "probability": 0.71,

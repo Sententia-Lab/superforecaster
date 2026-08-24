@@ -18,7 +18,6 @@ from app import cron, db
 from superforecaster.models import (
     Forecast,
     HistoricalAnalog,
-    ResearchSummary,
     SubPrediction,
     UpdateOutcome,
 )
@@ -35,15 +34,6 @@ def _make_forecast(probability: float = 0.5) -> Forecast:
             SubPrediction(question=f"Sub {i}?", probability=0.5, rationale="r")
             for i in range(3)
         ],
-        research=ResearchSummary(
-            historical_analogs=[
-                HistoricalAnalog(description="A", outcome=1.0, relevance="r"),
-                HistoricalAnalog(description="B", outcome=0.0, relevance="r"),
-                HistoricalAnalog(description="C", outcome=1.0, relevance="r"),
-            ],
-            empirical_base_rate=2 / 3,
-            base_rate_note="ok",
-        ),
         reasoning="Test.",
     )
 

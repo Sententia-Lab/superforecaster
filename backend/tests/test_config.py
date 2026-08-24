@@ -44,7 +44,7 @@ def test_a_budget_carries_all_four_ceilings():
     not stop a model searching forty times for cheap results."""
     b = get_budget("base_rate_cell")
 
-    assert (b.cost_usd, b.tokens, b.tool_calls, b.iterations) == (0.40, 200_000, 10, 13)
+    assert (b.tool_calls, b.requests, b.tokens) == (8, 12, 200_000)
 
 
 def test_three_of_the_four_reach_pydantic_ai():
@@ -69,19 +69,6 @@ def test_the_setting_is_one_pydantic_ai_actually_reads():
     from pydantic_ai.settings import ModelSettings
 
     assert "parallel_tool_calls" in ModelSettings.__annotations__
-
-
-def test_the_enforced_tool_ceiling_is_double_the_budgeted_one():
-    """`agents.withdraw_tools` is what actually caps searching — it stops offering
-    the search tools once `tool_calls` is spent, which a model cannot argue with.
-
-    Pydantic AI's ceiling is a backstop, and it is doubled so that one over-eager batch
-    cannot kill a cell: a batch is refused *whole*, so a model asking for four searches
-    with two left would otherwise die a turn from writing up."""
-    b = get_budget("critic")
-
-    assert b.tool_calls == 4
-    assert b.limits().tool_calls_limit == 8
 
 
 def test_every_agent_has_a_budget():
@@ -200,10 +187,9 @@ def test_a_deeper_run_scales_all_four_numbers():
     base = get_budget("base_rate_cell")
     deep = get_budget("base_rate_cell", max_iterations=10)
 
-    assert deep.iterations == base.iterations * 2
+    assert deep.requests == deep.tool_calls + (base.requests - base.tool_calls)
     assert deep.tool_calls == base.tool_calls * 2
     assert deep.tokens == base.tokens * 2
-    assert deep.cost_usd == base.cost_usd * 2
 
 
 def test_the_baseline_depth_changes_nothing():
@@ -211,10 +197,10 @@ def test_the_baseline_depth_changes_nothing():
 
 
 def test_one_env_var_overrides_one_agent(monkeypatch):
-    monkeypatch.setenv("BUDGET_CRITIC", "0.50,90000,6,9")
+    monkeypatch.setenv("BUDGET_CRITIC", "6,9,90000")
     b = get_budget("critic")
 
-    assert (b.cost_usd, b.tokens, b.tool_calls, b.iterations) == (0.50, 90_000, 6, 9)
+    assert (b.tool_calls, b.requests, b.tokens) == (6, 9, 90_000)
     assert get_budget("draft").tool_calls == 0  # the others are untouched
 
 
@@ -245,43 +231,9 @@ def test_every_agent_run_passes_a_budget():
     assert unbounded == []
 
 
-def test_every_agent_constructor_sets_model_settings():
-    """Every `Agent(...)` must pass `model_settings` — the output-token ceiling.
-
-    The provider default (4096) truncates the synthesize agent's Forecast mid-tool-call
-    (`IncompleteToolCall`), and a retry hits the same wall forever. The failure is
-    invisible until the largest output crosses the ceiling, so it is enforced at every
-    construction site rather than remembered.
-    """
-    import ast
-    import pathlib
-
-    agents_dir = (
-        pathlib.Path(__file__).resolve().parent.parent / "superforecaster" / "agents"
-    )
-    unbounded = []
-    for path in sorted(agents_dir.glob("*.py")):
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            fn = node.func
-            is_agent = (isinstance(fn, ast.Name) and fn.id == "Agent") or (
-                isinstance(fn, ast.Subscript)
-                and isinstance(fn.value, ast.Name)
-                and fn.value.id == "Agent"
-            )
-            if not is_agent:
-                continue
-            if not any(kw.arg == "model_settings" for kw in node.keywords):
-                unbounded.append(path.name)
-
-    assert unbounded == []
-
-
 def test_model_settings_ceiling_is_configurable(monkeypatch):
     from superforecaster.config import get_model_settings
 
-    assert get_model_settings()["max_tokens"] == 16384
+    assert get_model_settings()["max_tokens"] == 8192
     monkeypatch.setenv("AGENT_MAX_TOKENS", "32000")
     assert get_model_settings()["max_tokens"] == 32000

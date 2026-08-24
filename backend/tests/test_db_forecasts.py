@@ -11,7 +11,6 @@ from superforecaster.models import (
     Forecast,
     ResearchDoc,
     HistoricalAnalog,
-    ResearchSummary,
     SubPrediction,
 )
 
@@ -34,18 +33,6 @@ def _make_forecast(
             SubPrediction(question="Sub 2?", probability=0.5, rationale="r2"),
             SubPrediction(question="Sub 3?", probability=0.5, rationale="r3"),
         ],
-        research=ResearchSummary(
-            historical_analogs=[
-                HistoricalAnalog(description="A", outcome=1.0, relevance="r"),
-                HistoricalAnalog(description="B", outcome=0.0, relevance="r"),
-                HistoricalAnalog(description="C", outcome=1.0, relevance="r"),
-            ],
-            empirical_base_rate=2 / 3,
-            base_rate_note="ok",
-            causal_forces=["force1"],
-            evidence={"supporting": ["a"], "contradicting": ["b"]},
-            uncertainties=["u1"],
-        ),
         reasoning="Test reasoning.",
     )
 

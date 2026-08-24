@@ -20,7 +20,6 @@ from superforecaster.models import (
     OutsideView,
     Reflection,
     ResearchedLens,
-    ResearchSummary,
     SubQuestionLenses,
     SubPrediction,
     SynthesisStepPayload,
@@ -132,7 +131,6 @@ def forecast(probability: float = 0.25) -> Forecast:
         category="test",
         probability=probability,
         decompositions=decomposition().sub_questions,
-        research=ResearchSummary(),
         reasoning="Because the chain implies it.",
     )
 
